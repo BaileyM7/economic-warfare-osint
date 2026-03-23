@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 import anthropic
+import httpx
 
 from src.common.config import config
 from src.common.types import (
@@ -68,20 +69,25 @@ class Orchestrator:
         return assessment
 
     async def _decompose(self, query: str) -> list[dict[str, Any]]:
-        """Use Claude to decompose the question into a research plan."""
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=2000,
-            system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": DECOMPOSITION_PROMPT.format(query=query),
-                }
-            ],
+        """Decompose the question into a research plan using external API."""
+        api_url = (
+            "https://api.buildworkforce.ai/api/v1/chatflows/"
+            "ad280c5a-434e-49a4-a13b-91cf160bdcae/prediction"
         )
+        headers = {"Content-Type": "application/json"}
+        payload = {"question": DECOMPOSITION_PROMPT.format(query=query)}
 
-        text = response.content[0].text
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            response = await client.post(api_url, headers=headers, json=payload)
+            response.raise_for_status()
+            response_json: Any = response.json()
+
+        # API can return parsed JSON as a string payload.
+        if isinstance(response_json, str):
+            text = response_json
+        # Be tolerant if API wraps string content in an object.
+        else:
+            text = json.dumps(response_json)
         # Extract JSON from response (may be wrapped in markdown code blocks)
         json_str = _extract_json(text)
         try:
@@ -154,7 +160,7 @@ class Orchestrator:
         }
 
     async def _synthesize(self, query: str, tool_results: dict[str, Any]) -> ImpactAssessment:
-        """Use Claude to synthesize tool results into a final assessment."""
+        """Synthesize tool results into a final assessment using external API."""
         # Determine scenario type from results
         scenario_type = "sanction_impact"  # default
 
@@ -163,23 +169,28 @@ class Orchestrator:
         if len(results_text) > 50000:
             results_text = results_text[:50000] + "\n... [truncated]"
 
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=4000,
-            system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": SYNTHESIS_PROMPT.format(
-                        query=query,
-                        scenario_type=scenario_type,
-                        tool_results=results_text,
-                    ),
-                }
-            ],
+        api_url = (
+            "https://api.buildworkforce.ai/api/v1/chatflows/"
+            "ad280c5a-434e-49a4-a13b-91cf160bdcae/prediction"
         )
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "question": SYNTHESIS_PROMPT.format(
+                query=query,
+                scenario_type=scenario_type,
+                tool_results=results_text,
+            )
+        }
 
-        text = response.content[0].text
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            response = await client.post(api_url, headers=headers, json=payload)
+            response.raise_for_status()
+            response_json: Any = response.json()
+
+        if isinstance(response_json, str):
+            text = response_json
+        else:
+            text = json.dumps(response_json)
         json_str = _extract_json(text)
 
         try:
@@ -195,6 +206,23 @@ class Orchestrator:
                 "confidence_summary": {},
                 "sources_used": [],
             }
+
+        # Some upstream responses return a top-level list instead of an object.
+        if isinstance(data, list):
+            normalized: dict[str, Any] | None = None
+            if data and isinstance(data[0], dict):
+                normalized = data[0]
+            else:
+                normalized = {
+                    "scenario_type": scenario_type,
+                    "executive_summary": str(data)[:500],
+                    "findings": [],
+                    "friendly_fire": [],
+                    "recommendations": [],
+                    "confidence_summary": {},
+                    "sources_used": [],
+                }
+            data = normalized
 
         # Build ImpactAssessment
         try:
