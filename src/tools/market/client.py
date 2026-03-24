@@ -177,6 +177,42 @@ class YFinanceClient:
             return None
 
     @staticmethod
+    def _fetch_history_range(ticker: str, start: str, end: str) -> Any:
+        t = yf.Ticker(ticker)
+        try:
+            return t.history(start=start, end=end)
+        except Exception:
+            logger.warning("yfinance .history range failed for %s", ticker, exc_info=True)
+            return None
+
+    async def get_price_history_range(
+        self, ticker: str, start: str, end: str
+    ) -> list[HistoricalPrice]:
+        """Fetch historical prices between specific dates (YYYY-MM-DD)."""
+        cached = get_cached(self.CACHE_NS, action="hist_range", ticker=ticker, start=start, end=end)
+        if cached is not None:
+            return [HistoricalPrice.model_validate(h) for h in cached]
+
+        hist_df = await asyncio.to_thread(self._fetch_history_range, ticker, start, end)
+        historical: list[HistoricalPrice] = []
+        if hist_df is not None and not hist_df.empty:
+            for idx, row in hist_df.iterrows():
+                dt_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+                close_val = row.get("Close")
+                if close_val is not None:
+                    try:
+                        close_float = float(close_val.iloc[0]) if hasattr(close_val, "iloc") else float(close_val)
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    historical.append(HistoricalPrice(date=dt_str, close=round(close_float, 4)))
+
+        set_cached(
+            [h.model_dump() for h in historical],
+            self.CACHE_NS, action="hist_range", ticker=ticker, start=start, end=end,
+        )
+        return historical
+
+    @staticmethod
     def _fetch_institutional_holders(ticker: str) -> Any:
         t = yf.Ticker(ticker)
         try:

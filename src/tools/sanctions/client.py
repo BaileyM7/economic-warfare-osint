@@ -77,8 +77,8 @@ class OpenSanctionsClient:
             data = await fetch_json(
                 f"{OPENSANCTIONS_BASE}/search/default", params=params
             )
-        except Exception:
-            logger.exception("OpenSanctions search failed for query=%s", query)
+        except Exception as exc:
+            logger.warning("OpenSanctions search unavailable for query=%s: %s", query, exc)
             return []
 
         entries = self._parse_search_results(data)
@@ -100,8 +100,8 @@ class OpenSanctionsClient:
 
         try:
             data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}")
-        except Exception:
-            logger.exception("OpenSanctions get_entity failed for id=%s", entity_id)
+        except Exception as exc:
+            logger.warning("OpenSanctions get_entity unavailable for id=%s: %s", entity_id, exc)
             return None
 
         entry = self._parse_entity(data)
@@ -150,8 +150,8 @@ class OpenSanctionsClient:
             data = await post_json(
                 f"{OPENSANCTIONS_BASE}/match/default", json_body=body
             )
-        except Exception:
-            logger.exception("OpenSanctions match failed for name=%s", name)
+        except Exception as exc:
+            logger.warning("OpenSanctions match unavailable for name=%s: %s", name, exc)
             return []
 
         entries: list[SanctionEntry] = []
@@ -187,10 +187,8 @@ class OpenSanctionsClient:
 
         try:
             data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}")
-        except Exception:
-            logger.exception(
-                "OpenSanctions relationships failed for id=%s", entity_id
-            )
+        except Exception as exc:
+            logger.warning("OpenSanctions relationships unavailable for id=%s: %s", entity_id, exc)
             return []
 
         relationships: list[dict[str, Any]] = []
