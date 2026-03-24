@@ -77,13 +77,18 @@ export default function App() {
         const data = await getAnalysis(analysisId)
 
         // Rebuild progress log from server state
-        setProgress(
-          data.progress.map((msg) => ({
-            text: msg,
-            type: (msg.includes('Error') || msg.includes('failed') ? 'error' : 'step') as ProgressEntry['type'],
-            time: new Date().toLocaleTimeString(),
-          }))
-        )
+        setProgress((prev) => {
+          const rebuiltProgress = data.progress.map((msg, idx) => {
+            const existing = prev[idx]
+            const keepExistingTime = existing && existing.text === msg
+            return {
+              text: msg,
+              type: (msg.includes('Error') || msg.includes('failed') ? 'error' : 'step') as ProgressEntry['type'],
+              time: keepExistingTime ? existing.time : new Date().toLocaleTimeString(),
+            }
+          })
+          return rebuiltProgress
+        })
 
         if (data.status === 'complete' && data.result && data.markdown && data.graph_data) {
           addProgress('Analysis complete!', 'done')
