@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from src.common.types import ImpactAssessment
+from src.common.types import EntityGraph, ImpactAssessment
 
 
 def render_markdown(assessment: ImpactAssessment) -> str:
@@ -106,6 +106,34 @@ def render_markdown(assessment: ImpactAssessment) -> str:
 def render_json(assessment: ImpactAssessment) -> str:
     """Render as structured JSON for downstream ingestion."""
     return assessment.model_dump_json(indent=2)
+
+
+def render_entity_graph(entity_graph: EntityGraph) -> dict[str, Any]:
+    """Render an EntityGraph directly to vis.js node/edge format."""
+    colors = {
+        "company": "#4A90D9", "person": "#7B68EE", "government": "#DC143C",
+        "vessel": "#2E8B57", "sanctions_list": "#F85149",
+        "theme": "#F0883E", "sector": "#3FB950",
+    }
+    nodes = [
+        {
+            "id": e.id,
+            "label": e.name if len(e.name) <= 28 else e.name[:26] + "…",
+            "group": e.entity_type,
+            "title": e.name,
+            "color": colors.get(e.entity_type, "#808080"),
+        }
+        for e in entity_graph.entities
+    ]
+    edges = [
+        {
+            "from": r.source_id, "to": r.target_id,
+            "label": r.relationship_type.replace("_", " "),
+            "arrows": "to", "dashes": r.confidence.value == "LOW",
+        }
+        for r in entity_graph.relationships
+    ]
+    return {"nodes": nodes, "edges": edges}
 
 
 def render_graph_data(assessment: ImpactAssessment) -> dict[str, Any]:

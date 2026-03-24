@@ -6,8 +6,41 @@ Run with:
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
+import time
 import webbrowser
 from typing import Any
+
+# #region agent log
+_AGENT_LOG_PATH = "/Users/deveshkumar/Desktop/economic-warfare-osint/.cursor/debug-7dd19d.log"
+
+
+def _agent_debug_log(
+    location: str, message: str, data: dict[str, Any], hypothesis_id: str
+) -> None:
+    try:
+        with open(_AGENT_LOG_PATH, "a", encoding="utf-8") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "7dd19d",
+                        "timestamp": int(time.time() * 1000),
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "hypothesisId": hypothesis_id,
+                    },
+                    default=str,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+
+
+# #endregion
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,12 +48,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from src.common.config import config
+from src.fusion.renderer import render_entity_graph
 # Orchestrator imports — commented out for demo (single-pane impact view)
-# from src.fusion.graph_builder import build_graph_from_assessment, build_graph_from_results
 # from src.fusion.renderer import render_graph_data, render_json, render_markdown
 # from src.orchestrator.main import Orchestrator, _extract_json
 # from src.orchestrator.tool_registry import ToolRegistry
 from src.sanctions_impact import run_sanctions_impact
+from src.tools.corporate.server import get_beneficial_owners, get_corporate_tree
 
 app = FastAPI(
     title="Economic Warfare OSINT",
@@ -55,6 +89,10 @@ async def _open_browser() -> None:
 
 class SanctionsImpactRequest(BaseModel):
     ticker: str
+
+
+class EntityGraphRequest(BaseModel):
+    query: str
 
 
 # Orchestrator request/response models (commented out for demo)
@@ -128,6 +166,221 @@ async def sanctions_impact(req: SanctionsImpactRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Entity Graph endpoint ---
+
+_ENTITY_COLORS: dict[str, str] = {
+    "company": "#4A90D9", "person": "#7B68EE", "government": "#DC143C",
+    "vessel": "#2E8B57", "sanctions_list": "#F85149",
+    "theme": "#F0883E", "sector": "#3FB950",
+}
+
+
+def _truncate(s: str, n: int = 28) -> str:
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def _node(nid: str, name: str, entity_type: str, country: str | None = None) -> dict[str, Any]:
+    title = f"{name}\n{entity_type}" + (f" · {country}" if country else "")
+    return {"id": nid, "label": _truncate(name), "title": title,
+            "group": entity_type, "color": _ENTITY_COLORS.get(entity_type, "#808080")}
+
+
+_LEI_20 = re.compile(r"[A-Z0-9]{20}")
+
+
+def _canonical_lei(ref: str | None) -> str:
+    """Extract a 20-character LEI from a bare code or JSON:API href-style id."""
+    if not ref or not isinstance(ref, str):
+        return ""
+    compact = ref.strip().upper().replace("-", "").replace(" ", "")
+    m = _LEI_20.search(compact)
+    return m.group(0) if m else ""
+
+
+def _lei_resolve_node_id(lei_map: dict[str, str], ref: str | None) -> str | None:
+    """Map a parent/child reference from API payloads to our graph node id."""
+    if ref is None or ref == "":
+        return None
+    raw = str(ref).strip()
+    cand = _canonical_lei(raw)
+    for key in (raw, cand):
+        if key and key in lei_map:
+            return lei_map[key]
+    return None
+
+
+def _build_graph_data(tree: dict, owners: dict, query: str) -> tuple[list, list]:
+    """Extract vis.js nodes and edges from CorporateTree and BeneficialOwnerResult dicts."""
+    nodes: dict[str, dict] = {}
+    edges: dict[str, dict] = {}  # keyed by "from→to→label" to deduplicate
+
+    def add_node(nid: str, name: str, etype: str, country: str | None = None) -> None:
+        if nid and name and nid not in nodes:
+            nodes[nid] = _node(nid, name, etype, country)
+
+    def add_edge(src: str, tgt: str, label: str, dashes: bool = False) -> None:
+        if src in nodes and tgt in nodes and src != tgt:
+            key = f"{src}→{tgt}→{label}"
+            if key not in edges:
+                edges[key] = {"from": src, "to": tgt,
+                              "label": label.replace("_", " "), "arrows": "to", "dashes": dashes}
+
+    def slug(s: str) -> str:
+        return s.lower().replace(" ", "_").replace(",", "").replace(".", "")[:64]
+
+    # ── Corporate tree ────────────────────────────────────────────────────────
+    tree_data = tree.get("data", {}) if isinstance(tree, dict) else {}
+    if tree_data:
+        entity_name = tree_data.get("entity_name") or query
+        main_id = slug(entity_name)
+        add_node(main_id, entity_name, "company")
+
+        # LEI records → company nodes; build lei→id map for ownership links
+        lei_map: dict[str, str] = {}
+        for rec in (tree_data.get("lei_records") or []):
+            lei_raw = (rec.get("lei") or "").strip()
+            name = (rec.get("legal_name") or "").strip()
+            c_lei = _canonical_lei(lei_raw)
+            nid = c_lei or (lei_raw if lei_raw else "")
+            if not nid and not name:
+                continue
+            disp = name or (f"LEI {nid}" if nid else "Entity")
+            if not nid:
+                nid = slug(disp)
+            for alias in {a for a in (c_lei, lei_raw, nid) if a}:
+                lei_map[alias] = nid
+            add_node(nid, disp, "company", rec.get("country"))
+
+        def _ensure_lei_endpoint(raw_ref: str) -> str | None:
+            """Add a minimal company node for an LEI referenced only on a relationship."""
+            raw = str(raw_ref or "").strip()
+            if not raw:
+                return None
+            hit = _lei_resolve_node_id(lei_map, raw)
+            if hit is not None:
+                return hit
+            c = _canonical_lei(raw)
+            nid = c or raw[:64]
+            for alias in {a for a in (raw, c, nid) if a}:
+                lei_map[alias] = nid
+            add_node(nid, f"LEI {c}" if c else _truncate(raw, 40), "company")
+            return nid
+
+        # Ownership links → edges (GLEIF may use bare LEIs or JSON:API href ids)
+        for link in (tree_data.get("ownership_links") or []):
+            raw_p = str(link.get("parent_id", "") or "")
+            raw_c = str(link.get("child_id", "") or "")
+            pid = _lei_resolve_node_id(lei_map, raw_p)
+            cid = _lei_resolve_node_id(lei_map, raw_c)
+            if pid is None and raw_p:
+                pid = _ensure_lei_endpoint(raw_p)
+            if cid is None and raw_c:
+                cid = _ensure_lei_endpoint(raw_c)
+            rel = link.get("relationship_type", "subsidiary_of")
+            if pid and cid:
+                add_edge(cid, pid, rel)
+            elif pid and main_id:
+                # child is the queried entity itself (lookup missed child LEI)
+                add_edge(main_id, pid, rel)
+
+        # OpenCorporates companies with officers
+        for comp in (tree_data.get("companies") or []):
+            cname = comp.get("name", "")
+            if not cname:
+                continue
+            cid = slug(cname)
+            add_node(cid, cname, "company", comp.get("jurisdiction"))
+            add_edge(cid, main_id, "search result", dashes=True)
+
+            for officer in (comp.get("officers") or []):
+                oname = officer.get("name", "")
+                if not oname:
+                    continue
+                oid = slug(oname)
+                add_node(oid, oname, "person")
+                add_edge(oid, cid, officer.get("role", "officer"))
+
+    # ── Beneficial owners ────────────────────────────────────────────────────
+    owners_data = owners.get("data", {}) if isinstance(owners, dict) else {}
+    if owners_data:
+        entity_name = owners_data.get("entity_name") or query
+        main_id = slug(entity_name)
+        add_node(main_id, entity_name, "company")
+
+        for officer in (owners_data.get("officers") or []):
+            oname = officer.get("name", "")
+            if not oname:
+                continue
+            oid = slug(oname)
+            add_node(oid, oname, "person")
+            add_edge(oid, main_id, officer.get("role", "officer"))
+
+        for entity in (owners_data.get("offshore_connections") or []):
+            ename = entity.get("name", "")
+            if not ename:
+                continue
+            eid = slug(ename)
+            add_node(eid, ename, "company", entity.get("jurisdiction"))
+            add_edge(main_id, eid, "offshore connection")
+
+    # When GLEIF returns many hits but no ownership/OC relationships, avoid N isolates.
+    tree_tail = tree.get("data", {}) if isinstance(tree, dict) else {}
+    if tree_tail and not edges:
+        root = slug(tree_tail.get("entity_name") or query)
+        for rec in (tree_tail.get("lei_records") or [])[:15]:
+            lei_raw = (rec.get("lei") or "").strip()
+            name = (rec.get("legal_name") or "").strip()
+            hit_id = _canonical_lei(lei_raw) or (slug(name) if name else "")
+            if hit_id and root in nodes and hit_id in nodes and hit_id != root:
+                add_edge(root, hit_id, "GLEIF match", dashes=True)
+
+    return list(nodes.values()), list(edges.values())
+
+
+@app.post("/api/entity-graph")
+async def entity_graph_endpoint(req: EntityGraphRequest):
+    """Build vis.js entity graph from corporate tool data."""
+    query = req.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    try:
+        tree, owners = await asyncio.wait_for(
+            asyncio.gather(
+                get_corporate_tree(query),
+                get_beneficial_owners(query),
+                return_exceptions=True,
+            ),
+            timeout=20.0,
+        )
+        graph_nodes, graph_edges = _build_graph_data(
+            tree if not isinstance(tree, BaseException) else {},
+            owners if not isinstance(owners, BaseException) else {},
+            query,
+        )
+        # #region agent log
+        _agent_debug_log(
+            "api.py:entity_graph_endpoint",
+            "entity graph built",
+            {
+                "query_len": len(query),
+                "node_count": len(graph_nodes),
+                "edge_count": len(graph_edges),
+                "tree_error": isinstance(tree, BaseException),
+                "owners_error": isinstance(owners, BaseException),
+                "runId": "post-fix",
+            },
+            "H3",
+        )
+        # #endregion
+        return JSONResponse(content={
+            "nodes": graph_nodes,
+            "edges": graph_edges,
+            "meta": {"query": query, "node_count": len(graph_nodes), "edge_count": len(graph_edges)},
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- Background analysis runner (commented out for demo) ---
 # async def _run_analysis(analysis_id: str, query: str) -> None:
 #     """Run the full analysis pipeline, updating status as we go."""
@@ -146,6 +399,8 @@ def _read_index_html() -> str:
 <title>Economic Warfare OSINT — Sanctions Impact Projector</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/styles/vis-network.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0a0e17; color: #c9d1d9; min-height: 100vh; }
@@ -221,6 +476,20 @@ def _read_index_html() -> str:
   .proj-value.positive { color: #3fb950; }
 
   .source-note { font-size: 11px; color: #484f58; margin-top: 16px; text-align: center; }
+
+  .graph-section { display: none; margin-top: 32px; }
+  .graph-section.active { display: block; }
+  .graph-section-header { font-size: 14px; color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 12px; padding-bottom: 8px;
+    border-bottom: 1px solid #30363d; }
+  .graph-container { background: #0d1117; border: 1px solid #30363d;
+    border-radius: 8px; height: 560px; position: relative; margin-bottom: 12px; }
+  .graph-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8b949e; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .graph-empty { position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%); color: #484f58; font-size: 14px; text-align: center; }
+  .graph-stats { font-size: 11px; color: #484f58; text-align: center; padding: 4px 0; }
 </style>
 </head>
 <body>
@@ -285,11 +554,29 @@ def _read_index_html() -> str:
     </div>
   </div>
 
+  <!-- Entity Relationship Graph — loads below the fold after analysis -->
+  <div id="graphSection" class="graph-section">
+    <div class="graph-section-header">Entity Relationship Graph</div>
+    <div class="graph-legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#4A90D9"></span>Company</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#7B68EE"></span>Person</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#DC143C"></span>Government</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Sanctions</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#2E8B57"></span>Vessel</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#3FB950"></span>Sector</span>
+    </div>
+    <div class="graph-container" id="graphContainer">
+      <div class="graph-empty" id="graphEmpty">Loading entity graph...</div>
+    </div>
+    <div class="graph-stats" id="graphStats"></div>
+  </div>
+
 </div>
 
 <script>
 let impactChart = null;
 let lastData = null;
+let visNetwork = null;
 
 // Known company name → ticker map for natural language input
 const KNOWN_MAP = {
@@ -346,6 +633,80 @@ function clearAll() {
   document.getElementById('queryInput').value = '';
   if (impactChart) { impactChart.destroy(); impactChart = null; }
   lastData = null;
+  document.getElementById('graphSection').classList.remove('active');
+  document.getElementById('graphEmpty').style.display = 'block';
+  document.getElementById('graphEmpty').textContent = 'Loading entity graph...';
+  document.getElementById('graphStats').textContent = '';
+  if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
+}
+
+async function loadEntityGraph(query) {
+  document.getElementById('graphSection').classList.add('active');
+  document.getElementById('graphEmpty').style.display = 'block';
+  document.getElementById('graphEmpty').textContent = 'Loading entity graph...';
+  document.getElementById('graphStats').textContent = '';
+  if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
+  try {
+    const resp = await fetch('/api/entity-graph', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (!resp.ok) { document.getElementById('graphEmpty').textContent = 'Graph unavailable'; return; }
+    const data = await resp.json();
+    // #region agent log
+    fetch('http://127.0.0.1:7922/ingest/af2ad033-51cf-49a6-a08a-c24d16b48fdb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7dd19d'},body:JSON.stringify({sessionId:'7dd19d',location:'inline:loadEntityGraph:after-json',message:'entity-graph payload',data:{nodeLen:(data.nodes&&data.nodes.length)||0,edgeLen:(data.edges&&data.edges.length)||0},timestamp:Date.now(),hypothesisId:'H3'})}).catch(function(){});
+    // #endregion
+    if (!data.nodes || data.nodes.length === 0) {
+      document.getElementById('graphEmpty').textContent = 'No entity relationships found';
+      return;
+    }
+    document.getElementById('graphEmpty').style.display = 'none';
+    const container = document.getElementById('graphContainer');
+    const options = {
+      physics: {
+        solver: 'repulsion',
+        repulsion: { nodeDistance: 180, centralGravity: 0.15, springLength: 200, springConstant: 0.04, damping: 0.09 },
+        stabilization: { iterations: 300 },
+      },
+      nodes: {
+        shape: 'dot', size: 18,
+        font: { color: '#c9d1d9', size: 12, strokeWidth: 3, strokeColor: '#0d1117' },
+        borderWidth: 2,
+        color: { border: '#30363d', highlight: { border: '#58a6ff' }, hover: { border: '#58a6ff' } },
+      },
+      edges: {
+        font: { color: '#8b949e', size: 10, align: 'middle', strokeWidth: 2, strokeColor: '#0d1117' },
+        color: { color: '#58a6ff', highlight: '#ffffff', opacity: 0.6 },
+        width: 2,
+        smooth: { type: 'continuous' },
+        arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+      },
+      interaction: { hover: true, tooltipDelay: 150 },
+      layout: { randomSeed: 42 },
+    };
+    try {
+      visNetwork = new vis.Network(container, {
+        nodes: new vis.DataSet(data.nodes),
+        edges: new vis.DataSet(data.edges),
+      }, options);
+    } catch (e) {
+      // #region agent log
+      fetch('http://127.0.0.1:7922/ingest/af2ad033-51cf-49a6-a08a-c24d16b48fdb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7dd19d'},body:JSON.stringify({sessionId:'7dd19d',location:'inline:loadEntityGraph:vis-error',message:'vis.Network failed',data:{error:String(e)},timestamp:Date.now(),hypothesisId:'H4'})}).catch(function(){});
+      // #endregion
+      throw e;
+    }
+    // #region agent log
+    (function(){ var gc=document.getElementById('graphContainer'); fetch('http://127.0.0.1:7922/ingest/af2ad033-51cf-49a6-a08a-c24d16b48fdb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7dd19d'},body:JSON.stringify({sessionId:'7dd19d',location:'inline:loadEntityGraph:after-vis',message:'vis network created',data:{cw:gc?gc.clientWidth:0,ch:gc?gc.clientHeight:0},timestamp:Date.now(),hypothesisId:'H1'})}).catch(function(){}); })();
+    // #endregion
+    visNetwork.once('stabilized', () => visNetwork.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }));
+    document.getElementById('graphStats').textContent =
+      `${data.meta.node_count} entities · ${data.meta.edge_count} relationships`;
+  } catch(e) {
+    const el = document.getElementById('graphEmpty');
+    el.style.display = 'block';
+    el.textContent = 'Error: ' + e.message;
+  }
 }
 
 async function startAnalysis(tickerOverride) {
@@ -392,6 +753,7 @@ async function startAnalysis(tickerOverride) {
     document.getElementById('progressSpinner').style.display = 'none';
 
     renderResults(data);
+    loadEntityGraph(ticker);  // fire-and-forget, appears below the fold
   } catch (e) {
     addProgress('Error: ' + e.message, 'error');
     document.getElementById('progressSpinner').style.display = 'none';
