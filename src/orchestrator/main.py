@@ -31,9 +31,11 @@ class Orchestrator:
     def __init__(self) -> None:
         issues = config.validate()
         if issues:
-            print(f"Config issues: {', '.join(issues)}")
-            print("Set missing keys in .env file. See .env.example for reference.")
-            sys.exit(1)
+            raise RuntimeError(
+                "Config issues: "
+                + ", ".join(issues)
+                + ". Set missing keys in .env file. See .env.example for reference."
+            )
 
         self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
         self.model = config.model
@@ -285,7 +287,11 @@ async def main() -> None:
         print('  uv run python -m src.orchestrator.main "What happens if we sanction Fujian Jinhua?"')
         sys.exit(1)
 
-    orchestrator = Orchestrator()
+    try:
+        orchestrator = Orchestrator()
+    except RuntimeError as e:
+        print(str(e))
+        sys.exit(1)
     assessment = await orchestrator.analyze(query)
 
     # Print results

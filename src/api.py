@@ -7,40 +7,10 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-import json
 import re
-import time
+import uuid
 import webbrowser
 from typing import Any
-
-# #region agent log
-_AGENT_LOG_PATH = "/Users/deveshkumar/Desktop/economic-warfare-osint/.cursor/debug-7dd19d.log"
-
-
-def _agent_debug_log(
-    location: str, message: str, data: dict[str, Any], hypothesis_id: str
-) -> None:
-    try:
-        with open(_AGENT_LOG_PATH, "a", encoding="utf-8") as _f:
-            _f.write(
-                json.dumps(
-                    {
-                        "sessionId": "7dd19d",
-                        "timestamp": int(time.time() * 1000),
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "hypothesisId": hypothesis_id,
-                    },
-                    default=str,
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-
-
-# #endregion
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,10 +19,8 @@ from pydantic import BaseModel
 
 from src.common.config import config
 from src.fusion.renderer import render_entity_graph
-# Orchestrator imports — commented out for demo (single-pane impact view)
-# from src.fusion.renderer import render_graph_data, render_json, render_markdown
-# from src.orchestrator.main import Orchestrator, _extract_json
-# from src.orchestrator.tool_registry import ToolRegistry
+from src.orchestrator.main import Orchestrator
+from src.orchestrator.tool_registry import ToolRegistry
 from src.sanctions_impact import run_sanctions_impact
 from src.tools.corporate.server import get_beneficial_owners, get_corporate_tree
 
@@ -82,7 +50,7 @@ async def _open_browser() -> None:
 
 
 # --- In-memory state (commented out — orchestrator disabled for demo) ---
-# _analyses: dict[str, dict[str, Any]] = {}
+_analyses: dict[str, dict[str, Any]] = {}
 
 
 # --- Request / Response models ---
@@ -95,20 +63,23 @@ class EntityGraphRequest(BaseModel):
     query: str
 
 
-# Orchestrator request/response models (commented out for demo)
-# class AnalyzeRequest(BaseModel):
-#     query: str
-# class AnalyzeResponse(BaseModel):
-#     analysis_id: str
-#     status: str
-# class AnalysisStatus(BaseModel):
-#     analysis_id: str
-#     status: str
-#     progress: list[str]
-#     result: dict[str, Any] | None = None
-#     markdown: str | None = None
-#     graph_data: dict[str, Any] | None = None
-#     error: str | None = None
+class AnalyzeRequest(BaseModel):
+    query: str
+
+
+class AnalyzeResponse(BaseModel):
+    analysis_id: str
+    status: str
+
+
+class AnalysisStatus(BaseModel):
+    analysis_id: str
+    status: str
+    progress: list[str]
+    result: dict[str, Any] | None = None
+    markdown: str | None = None
+    graph_data: dict[str, Any] | None = None
+    error: str | None = None
 
 
 # --- Health / info ---
@@ -129,25 +100,64 @@ async def health():
     }
 
 
-# @app.get("/api/tools")
-# async def list_tools():
-#     registry = ToolRegistry()
-#     await registry._ensure_loaded()
-#     return {"tools": registry.list_tools()}
+@app.get("/api/tools")
+async def list_tools():
+    registry = ToolRegistry()
+    await registry._ensure_loaded()
+    return {"tools": registry.list_tools()}
 
 
-# --- Orchestrator-based analysis endpoints (commented out for demo) ---
-# The full scenario analysis pipeline is preserved but disabled.
-# To re-enable, uncomment the orchestrator imports above and these endpoints.
+async def _run_analysis(analysis_id: str, query: str) -> None:
+    _analyses[analysis_id]["progress"].append("Starting orchestrator analysis")
+    try:
+        orchestrator = Orchestrator()
+        assessment = await orchestrator.analyze(query)
+        _analyses[analysis_id]["result"] = assessment.model_dump(mode="json")
+        _analyses[analysis_id]["status"] = "completed"
+        _analyses[analysis_id]["progress"].append("Analysis complete")
+    except Exception as e:
+        _analyses[analysis_id]["status"] = "failed"
+        _analyses[analysis_id]["error"] = str(e)
+        _analyses[analysis_id]["progress"].append(f"Error: {e}")
 
-# @app.post("/api/analyze", response_model=AnalyzeResponse)
-# async def start_analysis(req: AnalyzeRequest): ...
-# @app.get("/api/analyze/{analysis_id}", response_model=AnalysisStatus)
-# async def get_analysis(analysis_id: str): ...
-# @app.websocket("/ws/analyze/{analysis_id}")
-# async def ws_analysis(websocket: WebSocket, analysis_id: str): ...
-# @app.post("/api/analyze/sync")
-# async def analyze_sync(req: AnalyzeRequest): ...
+
+@app.post("/api/analyze", response_model=AnalyzeResponse)
+async def start_analysis(req: AnalyzeRequest):
+    query = (req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    analysis_id = uuid.uuid4().hex[:8]
+    _analyses[analysis_id] = {
+        "analysis_id": analysis_id,
+        "status": "running",
+        "progress": ["Queued"],
+        "result": None,
+        "markdown": None,
+        "graph_data": None,
+        "error": None,
+    }
+    asyncio.create_task(_run_analysis(analysis_id, query))
+    return {"analysis_id": analysis_id, "status": "running"}
+
+
+@app.get("/api/analyze/{analysis_id}", response_model=AnalysisStatus)
+async def get_analysis(analysis_id: str):
+    status = _analyses.get(analysis_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return status
+
+
+@app.post("/api/analyze/sync")
+async def analyze_sync(req: AnalyzeRequest):
+    query = (req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    orchestrator = Orchestrator()
+    assessment = await orchestrator.analyze(query)
+    return JSONResponse(content=assessment.model_dump(mode="json"))
 
 
 # --- Sanctions Impact Projector endpoint ---
@@ -357,21 +367,6 @@ async def entity_graph_endpoint(req: EntityGraphRequest):
             owners if not isinstance(owners, BaseException) else {},
             query,
         )
-        # #region agent log
-        _agent_debug_log(
-            "api.py:entity_graph_endpoint",
-            "entity graph built",
-            {
-                "query_len": len(query),
-                "node_count": len(graph_nodes),
-                "edge_count": len(graph_edges),
-                "tree_error": isinstance(tree, BaseException),
-                "owners_error": isinstance(owners, BaseException),
-                "runId": "post-fix",
-            },
-            "H3",
-        )
-        # #endregion
         return JSONResponse(content={
             "nodes": graph_nodes,
             "edges": graph_edges,
@@ -654,9 +649,6 @@ async function loadEntityGraph(query) {
     });
     if (!resp.ok) { document.getElementById('graphEmpty').textContent = 'Graph unavailable'; return; }
     const data = await resp.json();
-    // #region agent log
-    fetch('http://127.0.0.1:7922/ingest/af2ad033-51cf-49a6-a08a-c24d16b48fdb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7dd19d'},body:JSON.stringify({sessionId:'7dd19d',location:'inline:loadEntityGraph:after-json',message:'entity-graph payload',data:{nodeLen:(data.nodes&&data.nodes.length)||0,edgeLen:(data.edges&&data.edges.length)||0},timestamp:Date.now(),hypothesisId:'H3'})}).catch(function(){});
-    // #endregion
     if (!data.nodes || data.nodes.length === 0) {
       document.getElementById('graphEmpty').textContent = 'No entity relationships found';
       return;
@@ -685,20 +677,10 @@ async function loadEntityGraph(query) {
       interaction: { hover: true, tooltipDelay: 150 },
       layout: { randomSeed: 42 },
     };
-    try {
-      visNetwork = new vis.Network(container, {
-        nodes: new vis.DataSet(data.nodes),
-        edges: new vis.DataSet(data.edges),
-      }, options);
-    } catch (e) {
-      // #region agent log
-      fetch('http://127.0.0.1:7922/ingest/af2ad033-51cf-49a6-a08a-c24d16b48fdb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7dd19d'},body:JSON.stringify({sessionId:'7dd19d',location:'inline:loadEntityGraph:vis-error',message:'vis.Network failed',data:{error:String(e)},timestamp:Date.now(),hypothesisId:'H4'})}).catch(function(){});
-      // #endregion
-      throw e;
-    }
-    // #region agent log
-    (function(){ var gc=document.getElementById('graphContainer'); fetch('http://127.0.0.1:7922/ingest/af2ad033-51cf-49a6-a08a-c24d16b48fdb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7dd19d'},body:JSON.stringify({sessionId:'7dd19d',location:'inline:loadEntityGraph:after-vis',message:'vis network created',data:{cw:gc?gc.clientWidth:0,ch:gc?gc.clientHeight:0},timestamp:Date.now(),hypothesisId:'H1'})}).catch(function(){}); })();
-    // #endregion
+    visNetwork = new vis.Network(container, {
+      nodes: new vis.DataSet(data.nodes),
+      edges: new vis.DataSet(data.edges),
+    }, options);
     visNetwork.once('stabilized', () => visNetwork.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }));
     document.getElementById('graphStats').textContent =
       `${data.meta.node_count} entities · ${data.meta.edge_count} relationships`;
