@@ -78,7 +78,7 @@ class OpenSanctionsClient:
                 f"{OPENSANCTIONS_BASE}/search/default", params=params
             )
         except Exception as exc:
-            logger.warning("OpenSanctions search unavailable for query=%s: %s", query, exc)
+            logger.warning("OpenSanctions search unavailable (query=%s): %s", query, type(exc).__name__)
             return []
 
         entries = self._parse_search_results(data)
@@ -101,7 +101,7 @@ class OpenSanctionsClient:
         try:
             data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}")
         except Exception as exc:
-            logger.warning("OpenSanctions get_entity unavailable for id=%s: %s", entity_id, exc)
+            logger.warning("OpenSanctions get_entity unavailable (id=%s): %s", entity_id, type(exc).__name__)
             return None
 
         entry = self._parse_entity(data)
@@ -151,7 +151,7 @@ class OpenSanctionsClient:
                 f"{OPENSANCTIONS_BASE}/match/default", json_body=body
             )
         except Exception as exc:
-            logger.warning("OpenSanctions match unavailable for name=%s: %s", name, exc)
+            logger.warning("OpenSanctions match unavailable (name=%s): %s", name, type(exc).__name__)
             return []
 
         entries: list[SanctionEntry] = []
@@ -188,7 +188,7 @@ class OpenSanctionsClient:
         try:
             data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}")
         except Exception as exc:
-            logger.warning("OpenSanctions relationships unavailable for id=%s: %s", entity_id, exc)
+            logger.warning("OpenSanctions relationships unavailable (id=%s): %s", entity_id, type(exc).__name__)
             return []
 
         relationships: list[dict[str, Any]] = []
@@ -384,8 +384,8 @@ class OFACClient:
         # Download SDN main list
         try:
             sdn_text = await fetch_text(OFAC_SDN_CSV_URL, timeout=60.0)
-        except Exception:
-            logger.exception("Failed to download OFAC SDN CSV")
+        except Exception as exc:
+            logger.warning("Failed to download OFAC SDN CSV: %s", exc)
             self._sdn_entries = []
             self._alt_names = {}
             self._addresses = {}
@@ -793,12 +793,14 @@ class SanctionsClient:
         """Check whether *entity_name* is sanctioned on any list."""
         result = await self.search(entity_name)
 
-        # Consider high-confidence matches (score >= 0.7) as positive hits
-        strong_matches = [m for m in result.matches if (m.score or 0) >= 0.7]
+        # Consider only high-confidence matches (score >= 0.85) as positive hits.
+        # Lower thresholds produce false positives from OFAC fuzzy matching
+        # (e.g., "SHINING PATH" matching "Intel Corporation" at 0.5).
+        strong_matches = [m for m in result.matches if (m.score or 0) >= 0.85]
 
         # Also try the match endpoint for more precise matching
         match_results = await self.opensanctions.match_entity(entity_name)
-        strong_match_entries = [m for m in match_results if (m.score or 0) >= 0.7]
+        strong_match_entries = [m for m in match_results if (m.score or 0) >= 0.85]
 
         all_strong = {e.id: e for e in strong_matches}
         for e in strong_match_entries:

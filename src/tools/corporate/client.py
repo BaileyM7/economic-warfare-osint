@@ -243,7 +243,7 @@ async def gleif_get_direct_parent(lei: str) -> OwnershipLink | None:
             headers=_GLEIF_HEADERS,
         )
     except Exception as exc:
-        logger.warning("GLEIF direct parent lookup failed for %s: %s", lei, exc)
+        logger.debug("GLEIF direct parent not found for %s", lei)
         set_cached({}, cache_ns, lei=lei)
         return None
 
@@ -289,7 +289,7 @@ async def gleif_get_ultimate_parent(lei: str) -> OwnershipLink | None:
             headers=_GLEIF_HEADERS,
         )
     except Exception as exc:
-        logger.warning("GLEIF ultimate parent lookup failed for %s: %s", lei, exc)
+        logger.debug("GLEIF ultimate parent not found for %s", lei)
         set_cached({}, cache_ns, lei=lei)
         return None
 

@@ -17,13 +17,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+import logging
+
 from src.common.config import config
 from src.fusion.renderer import render_entity_graph
 from src.orchestrator.main import Orchestrator
 from src.orchestrator.tool_registry import ToolRegistry
-from src.sanctions_impact import run_sanctions_impact
-from src.tools.corporate.server import get_beneficial_owners, get_corporate_tree
+from src.sanctions_impact import run_sanctions_impact, SANCTIONS_COMPARABLES
+from src.tools.corporate.client import gleif_search_lei, gleif_get_direct_parent, gleif_get_ultimate_parent
 from src.tools.geopolitical.client import refresh_acled_token
+from src.tools.sanctions.client import OFACClient
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Economic Warfare OSINT",
@@ -221,10 +226,14 @@ def _lei_resolve_node_id(lei_map: dict[str, str], ref: str | None) -> str | None
     return None
 
 
-def _build_graph_data(tree: dict, owners: dict, query: str) -> tuple[list, list]:
-    """Extract vis.js nodes and edges from CorporateTree and BeneficialOwnerResult dicts."""
+async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
+    """Build entity graph from GLEIF (corporate structure), OFAC (sanctions network),
+    and sanctions comparables (sector peers).
+
+    Returns (nodes, edges) in vis.js format.
+    """
     nodes: dict[str, dict] = {}
-    edges: dict[str, dict] = {}  # keyed by "from→to→label" to deduplicate
+    edges: dict[str, dict] = {}
 
     def add_node(nid: str, name: str, etype: str, country: str | None = None) -> None:
         if nid and name and nid not in nodes:
@@ -240,141 +249,115 @@ def _build_graph_data(tree: dict, owners: dict, query: str) -> tuple[list, list]
     def slug(s: str) -> str:
         return s.lower().replace(" ", "_").replace(",", "").replace(".", "")[:64]
 
-    # ── Corporate tree ────────────────────────────────────────────────────────
-    tree_data = tree.get("data", {}) if isinstance(tree, dict) else {}
-    if tree_data:
-        entity_name = tree_data.get("entity_name") or query
-        main_id = slug(entity_name)
-        add_node(main_id, entity_name, "company")
+    # ── 1. GLEIF corporate structure ──────────────────────────────────────
+    lei_records = await gleif_search_lei(query)
+    main_id = slug(query)
+    add_node(main_id, query, "company")
 
-        # LEI records → company nodes; build lei→id map for ownership links
-        lei_map: dict[str, str] = {}
-        for rec in (tree_data.get("lei_records") or []):
-            lei_raw = (rec.get("lei") or "").strip()
-            name = (rec.get("legal_name") or "").strip()
-            c_lei = _canonical_lei(lei_raw)
-            nid = c_lei or (lei_raw if lei_raw else "")
-            if not nid and not name:
-                continue
-            disp = name or (f"LEI {nid}" if nid else "Entity")
-            if not nid:
-                nid = slug(disp)
-            for alias in {a for a in (c_lei, lei_raw, nid) if a}:
-                lei_map[alias] = nid
-            add_node(nid, disp, "company", rec.get("country"))
+    lei_map: dict[str, str] = {}  # LEI → node id
 
-        def _ensure_lei_endpoint(raw_ref: str) -> str | None:
-            """Add a minimal company node for an LEI referenced only on a relationship."""
-            raw = str(raw_ref or "").strip()
-            if not raw:
-                return None
-            hit = _lei_resolve_node_id(lei_map, raw)
-            if hit is not None:
-                return hit
-            c = _canonical_lei(raw)
-            nid = c or raw[:64]
-            for alias in {a for a in (raw, c, nid) if a}:
-                lei_map[alias] = nid
-            add_node(nid, f"LEI {c}" if c else _truncate(raw, 40), "company")
-            return nid
+    for rec in lei_records:
+        lei = rec.lei
+        name = rec.legal_name
+        country = rec.country
+        c_lei = _canonical_lei(lei)
+        nid = c_lei or slug(name)
+        lei_map[lei] = nid
+        if c_lei:
+            lei_map[c_lei] = nid
+        add_node(nid, name, "company", country)
+        # Connect to query root if not the same
+        if nid != main_id:
+            add_edge(main_id, nid, "subsidiary", dashes=False)
 
-        # Ownership links → edges (GLEIF may use bare LEIs or JSON:API href ids)
-        for link in (tree_data.get("ownership_links") or []):
-            raw_p = str(link.get("parent_id", "") or "")
-            raw_c = str(link.get("child_id", "") or "")
-            pid = _lei_resolve_node_id(lei_map, raw_p)
-            cid = _lei_resolve_node_id(lei_map, raw_c)
-            if pid is None and raw_p:
-                pid = _ensure_lei_endpoint(raw_p)
-            if cid is None and raw_c:
-                cid = _ensure_lei_endpoint(raw_c)
-            rel = link.get("relationship_type", "subsidiary_of")
-            if pid and cid:
-                add_edge(cid, pid, rel)
-            elif pid and main_id:
-                # child is the queried entity itself (lookup missed child LEI)
-                add_edge(main_id, pid, rel)
+    # Fetch parent relationships for each LEI
+    parent_tasks = []
+    for rec in lei_records[:5]:  # limit to avoid slowness
+        parent_tasks.append(gleif_get_direct_parent(rec.lei))
+        parent_tasks.append(gleif_get_ultimate_parent(rec.lei))
 
-        # OpenCorporates companies with officers
-        for comp in (tree_data.get("companies") or []):
-            cname = comp.get("name", "")
-            if not cname:
-                continue
-            cid = slug(cname)
-            add_node(cid, cname, "company", comp.get("jurisdiction"))
-            add_edge(cid, main_id, "search result", dashes=True)
+    parent_results = await asyncio.gather(*parent_tasks, return_exceptions=True)
+    for result in parent_results:
+        if isinstance(result, Exception) or result is None:
+            continue
+        parent_lei = result.parent_id
+        child_lei = result.child_id
+        rel_type = result.relationship_type or "parent"
 
-            for officer in (comp.get("officers") or []):
-                oname = officer.get("name", "")
-                if not oname:
-                    continue
-                oid = slug(oname)
-                add_node(oid, oname, "person")
-                add_edge(oid, cid, officer.get("role", "officer"))
+        # Resolve or create parent node
+        parent_nid = lei_map.get(parent_lei) or lei_map.get(_canonical_lei(parent_lei))
+        child_nid = lei_map.get(child_lei) or lei_map.get(_canonical_lei(child_lei))
 
-    # ── Beneficial owners ────────────────────────────────────────────────────
-    owners_data = owners.get("data", {}) if isinstance(owners, dict) else {}
-    if owners_data:
-        entity_name = owners_data.get("entity_name") or query
-        main_id = slug(entity_name)
-        add_node(main_id, entity_name, "company")
+        if parent_lei and not parent_nid:
+            parent_nid = _canonical_lei(parent_lei) or slug(parent_lei)
+            lei_map[parent_lei] = parent_nid
+            add_node(parent_nid, f"Parent ({parent_lei[:12]}…)", "company")
 
-        for officer in (owners_data.get("officers") or []):
-            oname = officer.get("name", "")
-            if not oname:
-                continue
-            oid = slug(oname)
-            add_node(oid, oname, "person")
-            add_edge(oid, main_id, officer.get("role", "officer"))
+        if parent_nid and child_nid:
+            add_edge(child_nid, parent_nid, rel_type)
+        elif parent_nid and main_id:
+            add_edge(main_id, parent_nid, rel_type)
 
-        for entity in (owners_data.get("offshore_connections") or []):
-            ename = entity.get("name", "")
-            if not ename:
-                continue
-            eid = slug(ename)
-            add_node(eid, ename, "company", entity.get("jurisdiction"))
-            add_edge(main_id, eid, "offshore connection")
+    # ── 2. OFAC sanctions network ─────────────────────────────────────────
+    try:
+        ofac = OFACClient()
+        ofac_results = await ofac.search(query)
+        # Only include high-confidence OFAC matches (score >= 0.85)
+        strong_ofac = [e for e in ofac_results if (e.score or 0) >= 0.85]
+        for entry in strong_ofac[:10]:
+            eid = f"ofac_{slug(entry.name)}"
+            add_node(eid, entry.name, "sanctions_list")
+            add_edge(main_id, eid, "OFAC SDN", dashes=True)
 
-    # When GLEIF returns many hits but no ownership/OC relationships, avoid N isolates.
-    tree_tail = tree.get("data", {}) if isinstance(tree, dict) else {}
-    if tree_tail and not edges:
-        root = slug(tree_tail.get("entity_name") or query)
-        for rec in (tree_tail.get("lei_records") or [])[:15]:
-            lei_raw = (rec.get("lei") or "").strip()
-            name = (rec.get("legal_name") or "").strip()
-            hit_id = _canonical_lei(lei_raw) or (slug(name) if name else "")
-            if hit_id and root in nodes and hit_id in nodes and hit_id != root:
-                add_edge(root, hit_id, "GLEIF match", dashes=True)
+            # Parse "Linked To:" from remarks to build sanctions network
+            if entry.remarks and "Linked To:" in entry.remarks:
+                import re as _re
+                links = _re.findall(r"Linked To:\s*([^;.]+)", entry.remarks)
+                for linked_name in links[:3]:
+                    linked_name = linked_name.strip().rstrip(".")
+                    if linked_name:
+                        lid = f"linked_{slug(linked_name)}"
+                        add_node(lid, linked_name, "sanctions_list")
+                        add_edge(eid, lid, "linked to")
+    except Exception as exc:
+        logger.warning("OFAC graph lookup failed: %s", type(exc).__name__)
+
+    # ── 3. Sector comparable peers ────────────────────────────────────────
+    sector_id = f"sector_{slug(query)}"
+    add_node(sector_id, "Sanctioned Peers", "sector")
+    add_edge(main_id, sector_id, "sector analysis")
+
+    for comp in SANCTIONS_COMPARABLES[:8]:
+        comp_id = f"comp_{slug(comp['name'])}"
+        add_node(comp_id, f"{comp['name']} ({comp['ticker']})", "company")
+        add_edge(sector_id, comp_id, "comparable")
 
     return list(nodes.values()), list(edges.values())
 
 
 @app.post("/api/entity-graph")
 async def entity_graph_endpoint(req: EntityGraphRequest):
-    """Build vis.js entity graph from corporate tool data."""
+    """Build vis.js entity graph from GLEIF + OFAC + sector comparables."""
     query = req.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     try:
-        tree, owners = await asyncio.wait_for(
-            asyncio.gather(
-                get_corporate_tree(query),
-                get_beneficial_owners(query),
-                return_exceptions=True,
-            ),
+        graph_nodes, graph_edges = await asyncio.wait_for(
+            _build_entity_graph(query),
             timeout=20.0,
-        )
-        graph_nodes, graph_edges = _build_graph_data(
-            tree if not isinstance(tree, BaseException) else {},
-            owners if not isinstance(owners, BaseException) else {},
-            query,
         )
         return JSONResponse(content={
             "nodes": graph_nodes,
             "edges": graph_edges,
             "meta": {"query": query, "node_count": len(graph_nodes), "edge_count": len(graph_edges)},
         })
+    except asyncio.TimeoutError:
+        return JSONResponse(content={
+            "nodes": [], "edges": [],
+            "meta": {"query": query, "node_count": 0, "edge_count": 0, "note": "Data sources timed out"},
+        })
     except Exception as e:
+        logger.exception("Entity graph error for query=%s", query)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -551,7 +534,6 @@ def _read_index_html() -> str:
     </div>
   </div>
 
-  <!-- Entity Relationship Graph — commented out, returning later
   <div id="graphSection" class="graph-section">
     <div class="graph-section-header">Entity Relationship Graph</div>
     <div class="graph-legend">
@@ -567,14 +549,13 @@ def _read_index_html() -> str:
     </div>
     <div class="graph-stats" id="graphStats"></div>
   </div>
-  -->
 
 </div>
 
 <script>
 let impactChart = null;
 let lastData = null;
-// let visNetwork = null;
+let visNetwork = null;
 
 // Known company name → ticker map for natural language input
 const KNOWN_MAP = {
@@ -631,11 +612,11 @@ function clearAll() {
   document.getElementById('queryInput').value = '';
   if (impactChart) { impactChart.destroy(); impactChart = null; }
   lastData = null;
-  // document.getElementById('graphSection').classList.remove('active');
-  // document.getElementById('graphEmpty').style.display = 'block';
-  // document.getElementById('graphEmpty').textContent = 'Loading entity graph...';
-  // document.getElementById('graphStats').textContent = '';
-  // if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
+  document.getElementById('graphSection').classList.remove('active');
+  document.getElementById('graphEmpty').style.display = 'block';
+  document.getElementById('graphEmpty').textContent = 'Loading entity graph...';
+  document.getElementById('graphStats').textContent = '';
+  if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
 }
 
 async function loadEntityGraph(query) {
@@ -738,7 +719,7 @@ async function startAnalysis(tickerOverride) {
     document.getElementById('progressSpinner').style.display = 'none';
 
     renderResults(data);
-    // loadEntityGraph(ticker);  // fire-and-forget, appears below the fold
+    loadEntityGraph(ticker);  // fire-and-forget, appears below the fold
   } catch (e) {
     addProgress('Error: ' + e.message, 'error');
     document.getElementById('progressSpinner').style.display = 'none';

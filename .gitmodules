@@ -1,0 +1,4 @@
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/deveshkumars/economicgamingv1.git
+	branch = demo_stock_price_3

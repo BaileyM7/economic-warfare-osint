@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from ...common.cache import get_cached, set_cached
@@ -18,15 +19,25 @@ _CACHE_TTL = 3600
 async def search_csl(query: str, limit: int = 25) -> list[dict[str, Any]]:
     """Search the Trade.gov Consolidated Screening List.
 
-    Covers: OFAC SDN/SSI, BIS Entity List, BIS Denied Persons,
-    State Dept AECA/ITAR, UN Security Council, and more.
+    NOTE: The Trade.gov gateway API was retired and now requires a
+    subscription key.  Until a key is configured, this returns an empty
+    list so the rest of the pipeline continues without noise.
     """
+    api_key = os.environ.get("TRADE_GOV_API_KEY")
+    if not api_key:
+        logger.debug("Trade.gov CSL disabled (no TRADE_GOV_API_KEY)")
+        return []
+
     cached = get_cached(_CACHE_NS, action="search", q=query, limit=limit)
     if cached is not None:
         return cached
 
     try:
-        data = await fetch_json(CSL_BASE_URL, params={"q": query, "limit": limit})
+        data = await fetch_json(
+            CSL_BASE_URL,
+            params={"q": query, "limit": limit},
+            headers={"subscription-key": api_key},
+        )
     except Exception as exc:
         logger.warning("Trade.gov CSL unavailable for query=%s: %s", query, exc)
         return []
