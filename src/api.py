@@ -551,7 +551,7 @@ def _read_index_html() -> str:
     </div>
   </div>
 
-  <!-- Entity Relationship Graph — loads below the fold after analysis -->
+  <!-- Entity Relationship Graph — commented out, returning later
   <div id="graphSection" class="graph-section">
     <div class="graph-section-header">Entity Relationship Graph</div>
     <div class="graph-legend">
@@ -567,13 +567,14 @@ def _read_index_html() -> str:
     </div>
     <div class="graph-stats" id="graphStats"></div>
   </div>
+  -->
 
 </div>
 
 <script>
 let impactChart = null;
 let lastData = null;
-let visNetwork = null;
+// let visNetwork = null;
 
 // Known company name → ticker map for natural language input
 const KNOWN_MAP = {
@@ -630,11 +631,11 @@ function clearAll() {
   document.getElementById('queryInput').value = '';
   if (impactChart) { impactChart.destroy(); impactChart = null; }
   lastData = null;
-  document.getElementById('graphSection').classList.remove('active');
-  document.getElementById('graphEmpty').style.display = 'block';
-  document.getElementById('graphEmpty').textContent = 'Loading entity graph...';
-  document.getElementById('graphStats').textContent = '';
-  if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
+  // document.getElementById('graphSection').classList.remove('active');
+  // document.getElementById('graphEmpty').style.display = 'block';
+  // document.getElementById('graphEmpty').textContent = 'Loading entity graph...';
+  // document.getElementById('graphStats').textContent = '';
+  // if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
 }
 
 async function loadEntityGraph(query) {
@@ -737,7 +738,7 @@ async function startAnalysis(tickerOverride) {
     document.getElementById('progressSpinner').style.display = 'none';
 
     renderResults(data);
-    loadEntityGraph(ticker);  // fire-and-forget, appears below the fold
+    // loadEntityGraph(ticker);  // fire-and-forget, appears below the fold
   } catch (e) {
     addProgress('Error: ' + e.message, 'error');
     document.getElementById('progressSpinner').style.display = 'none';
