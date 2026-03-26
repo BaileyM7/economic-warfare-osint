@@ -25,6 +25,7 @@ class Config:
     comtrade_api_key: str = field(default_factory=lambda: os.getenv("COMTRADE_API_KEY", ""))
     acled_api_key: str = field(default_factory=lambda: os.getenv("ACLED_API_KEY", ""))
     acled_email: str = field(default_factory=lambda: os.getenv("ACLED_EMAIL", ""))
+    acled_refresh_token: str = field(default_factory=lambda: os.getenv("REFRESH_TOKEN", ""))
     opencorporates_api_key: str = field(default_factory=lambda: os.getenv("OPENCORPORATES_API_KEY", ""))
 
     # No key needed
