@@ -173,19 +173,20 @@ async def gdelt_bilateral_search(
 # ---------------------------------------------------------------------------
 
 ACLED_BASE = "https://api.acleddata.com/acled/read"
-ACLED_TOKEN_URL = "https://acleddata.com/oauth/token"
+ACLED_TOKEN_URL = "https://acleddata.com/user/login?_format=json"
 
 # Cache TTL: 1 hour for ACLED (daily updates)
 ACLED_CACHE_TTL = 3600
 
 
 async def refresh_acled_token() -> bool:
-    """Exchange the refresh token for a new ACLED access token.
+    """Login to ACLED and retrieve a fresh API token.
 
-    Updates config.acled_api_key in place. Returns True on success.
+    POSTs credentials to the ACLED login endpoint and updates
+    config.acled_api_key in place. Returns True on success.
     """
-    if not config.acled_refresh_token:
-        logger.warning("ACLED refresh token not configured; skipping token refresh")
+    if not config.acled_email or not config.acled_password:
+        logger.warning("ACLED credentials not configured; skipping token refresh")
         return False
 
     import httpx
@@ -193,21 +194,22 @@ async def refresh_acled_token() -> bool:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 ACLED_TOKEN_URL,
-                data={
-                    "refresh_token": config.acled_refresh_token,
-                    "grant_type": "refresh_token",
-                    "client_id": "acled",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                json={"name": config.acled_email, "pass": config.acled_password},
+                headers={"Content-Type": "application/json"},
             )
             resp.raise_for_status()
             data = resp.json()
-        new_token = data.get("access_token") or data.get("token")
+        new_token = (
+            data.get("access_token")
+            or data.get("token")
+            or data.get("api_key")
+            or data.get("csrf_token")
+        )
         if not new_token:
-            logger.error("ACLED token refresh returned no access_token: %s", data)
+            logger.error("ACLED login returned no token. Response keys: %s", list(data.keys()))
             return False
         config.acled_api_key = new_token
-        logger.info("ACLED access token refreshed successfully")
+        logger.info("ACLED token refreshed via login successfully")
         return True
     except Exception as exc:
         logger.error("ACLED token refresh failed: %s", exc)

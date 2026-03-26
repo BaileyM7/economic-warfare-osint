@@ -23,7 +23,7 @@ from src.orchestrator.main import Orchestrator
 from src.orchestrator.tool_registry import ToolRegistry
 from src.sanctions_impact import run_sanctions_impact
 from src.tools.corporate.server import get_beneficial_owners, get_corporate_tree
-# from src.tools.geopolitical.client import refresh_acled_token
+from src.tools.geopolitical.client import refresh_acled_token
 
 app = FastAPI(
     title="Economic Warfare OSINT",
@@ -45,7 +45,7 @@ _browser_opened = False
 @app.on_event("startup")
 async def _startup() -> None:
     global _browser_opened
-    # await refresh_acled_token()
+    await refresh_acled_token()
     if not _browser_opened:
         _browser_opened = True
         webbrowser.open("http://localhost:8000")
