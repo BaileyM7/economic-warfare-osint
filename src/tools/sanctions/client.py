@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from src.common.cache import get_cached, set_cached
+from src.common.config import config
 from src.common.http_client import fetch_json, fetch_text, post_json
 
 from .models import (
@@ -73,9 +74,13 @@ class OpenSanctionsClient:
             if schema:
                 params["schema"] = schema
 
+        if not config.opensanctions_api_key:
+            return []
+
+        headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
         try:
             data = await fetch_json(
-                f"{OPENSANCTIONS_BASE}/search/default", params=params
+                f"{OPENSANCTIONS_BASE}/search/default", params=params, headers=headers
             )
         except Exception as exc:
             logger.warning("OpenSanctions search unavailable (query=%s): %s", query, type(exc).__name__)
@@ -146,9 +151,13 @@ class OpenSanctionsClient:
         if cached is not None:
             return [SanctionEntry.model_validate(e) for e in cached]
 
+        if not config.opensanctions_api_key:
+            return []
+
+        headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
         try:
             data = await post_json(
-                f"{OPENSANCTIONS_BASE}/match/default", json_body=body
+                f"{OPENSANCTIONS_BASE}/match/default", json_body=body, headers=headers
             )
         except Exception as exc:
             logger.warning("OpenSanctions match unavailable (name=%s): %s", name, type(exc).__name__)

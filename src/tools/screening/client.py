@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from ...common.cache import get_cached, set_cached
+from ...common.config import config
 from ...common.http_client import fetch_json
 
 logger = logging.getLogger(__name__)
@@ -19,12 +19,10 @@ _CACHE_TTL = 3600
 async def search_csl(query: str, limit: int = 25) -> list[dict[str, Any]]:
     """Search the Trade.gov Consolidated Screening List.
 
-    NOTE: The Trade.gov gateway API was retired and now requires a
-    subscription key.  Until a key is configured, this returns an empty
-    list so the rest of the pipeline continues without noise.
+    NOTE: The Trade.gov gateway API now requires a subscription key.
+    Returns empty list silently if TRADE_GOV_API_KEY is not configured.
     """
-    api_key = os.environ.get("TRADE_GOV_API_KEY")
-    if not api_key:
+    if not config.trade_gov_api_key:
         logger.debug("Trade.gov CSL disabled (no TRADE_GOV_API_KEY)")
         return []
 
@@ -36,7 +34,7 @@ async def search_csl(query: str, limit: int = 25) -> list[dict[str, Any]]:
         data = await fetch_json(
             CSL_BASE_URL,
             params={"q": query, "limit": limit},
-            headers={"subscription-key": api_key},
+            headers={"subscription-key": config.trade_gov_api_key},
         )
     except Exception as exc:
         logger.warning("Trade.gov CSL unavailable for query=%s: %s", query, exc)

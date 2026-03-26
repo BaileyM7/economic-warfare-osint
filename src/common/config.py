@@ -23,6 +23,8 @@ class Config:
     # Free-tier API keys (some sources need registration)
     fred_api_key: str = field(default_factory=lambda: os.getenv("FRED_API_KEY", ""))
     comtrade_api_key: str = field(default_factory=lambda: os.getenv("COMTRADE_API_KEY", ""))
+    opensanctions_api_key: str = field(default_factory=lambda: os.getenv("OPENSANCTIONS_API_KEY", ""))
+    trade_gov_api_key: str = field(default_factory=lambda: os.getenv("TRADE_GOV_API_KEY", ""))
     acled_api_key: str = field(default_factory=lambda: os.getenv("ACLED_API_KEY", ""))
     acled_email: str = field(default_factory=lambda: os.getenv("ACLED_EMAIL", ""))
     acled_password: str = field(default_factory=lambda: os.getenv("ACLED_PASSWORD", ""))
