@@ -173,7 +173,7 @@ async def gdelt_bilateral_search(
 # ---------------------------------------------------------------------------
 
 ACLED_BASE = "https://api.acleddata.com/acled/read"
-ACLED_TOKEN_URL = "https://developer.acleddata.com/oauth/token"
+ACLED_TOKEN_URL = "https://acleddata.com/oauth/token"
 
 # Cache TTL: 1 hour for ACLED (daily updates)
 ACLED_CACHE_TTL = 3600
