@@ -21,12 +21,20 @@ import logging
 
 from src.common.config import config
 from src.fusion.renderer import render_entity_graph
+from src.orchestrator.entity_resolver import resolve_entity_type
 from src.orchestrator.main import Orchestrator
 from src.orchestrator.tool_registry import ToolRegistry
 from src.sanctions_impact import run_sanctions_impact, SANCTIONS_COMPARABLES
-from src.tools.corporate.client import gleif_search_lei, gleif_get_direct_parent, gleif_get_ultimate_parent
-from src.tools.geopolitical.client import refresh_acled_token
-from src.tools.sanctions.client import OFACClient
+from src.tools.corporate.client import (
+    gleif_search_lei,
+    gleif_get_direct_parent,
+    gleif_get_ultimate_parent,
+    oc_search_officers,
+    icij_search,
+)
+from src.tools.geopolitical.client import refresh_acled_token, gdelt_doc_search
+from src.tools.sanctions.client import OFACClient, OpenSanctionsClient
+from src.tools.vessels.client import vessel_find, vessel_by_mmsi, vessel_by_imo, vessel_history
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,18 @@ class SanctionsImpactRequest(BaseModel):
 
 class EntityGraphRequest(BaseModel):
     query: str
+
+
+class PersonProfileRequest(BaseModel):
+    name: str
+
+
+class VesselTrackRequest(BaseModel):
+    query: str  # vessel name, IMO, or MMSI
+
+
+class SectorAnalysisRequest(BaseModel):
+    sector: str
 
 
 class AnalyzeRequest(BaseModel):
@@ -361,6 +381,410 @@ async def entity_graph_endpoint(req: EntityGraphRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Entity type resolver ---
+
+@app.post("/api/resolve-entity")
+async def resolve_entity(req: AnalyzeRequest):
+    """Classify a free-text query into company | person | sector | vessel."""
+    query = req.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    resolution = await resolve_entity_type(query)
+    return {
+        "entity_type": resolution.entity_type,
+        "entity_name": resolution.entity_name,
+        "confidence": resolution.confidence,
+        "reasoning": resolution.reasoning,
+    }
+
+
+# --- Person Profile endpoint ---
+
+@app.post("/api/person-profile")
+async def person_profile(req: PersonProfileRequest):
+    """Build an insider-threat style profile for a named individual.
+
+    Aggregates: OpenSanctions (person schema) · OFAC SDN · corporate
+    affiliations (OpenCorporates officers) · ICIJ offshore connections ·
+    GDELT recent news events.
+    """
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+
+    try:
+        # Run all lookups concurrently
+        os_client = OpenSanctionsClient()
+        ofac_client = OFACClient()
+
+        sanctions_task = asyncio.create_task(
+            os_client.search_entities(name, limit=10, entity_type="person")
+        )
+        ofac_task = asyncio.create_task(ofac_client.search(name))
+        officers_task = asyncio.create_task(oc_search_officers(name))
+        icij_task = asyncio.create_task(icij_search(name, entity_type="officer"))
+        gdelt_task = asyncio.create_task(gdelt_doc_search(name, days=30))
+
+        (
+            sanctions_hits,
+            ofac_hits,
+            officer_records,
+            icij_hits,
+            gdelt_events,
+        ) = await asyncio.gather(
+            sanctions_task, ofac_task, officers_task, icij_task, gdelt_task,
+            return_exceptions=True,
+        )
+
+        def _safe(result, default):
+            return default if isinstance(result, Exception) else result
+
+        sanctions_hits = _safe(sanctions_hits, [])
+        ofac_hits = _safe(ofac_hits, [])
+        officer_records = _safe(officer_records, [])
+        icij_hits = _safe(icij_hits, [])
+        gdelt_events = _safe(gdelt_events, {})
+
+        # Build sanctions summary
+        is_sanctioned = bool(
+            [e for e in sanctions_hits if (e.score or 0) >= 0.7]
+            or [e for e in ofac_hits if (e.score or 0) >= 0.7]
+        )
+        sanction_programs: list[str] = []
+        for e in ofac_hits:
+            if (e.score or 0) >= 0.7 and e.programs:
+                sanction_programs.extend(e.programs)
+        sanction_programs = list(set(sanction_programs))[:5]
+
+        # Best match for bio data
+        best_match = next(
+            (e for e in sanctions_hits if (e.score or 0) >= 0.7),
+            sanctions_hits[0] if sanctions_hits else None,
+        )
+        aliases = best_match.aliases if best_match else []
+        # Nationality/DOB may appear in identifiers or remarks
+        nationality = (best_match.identifiers.get("nationality") or
+                       best_match.identifiers.get("citizenship")) if best_match else None
+        dob = best_match.identifiers.get("dob") if best_match else None
+
+        # Corporate affiliations — officer_records are Officer objects
+        affiliations = []
+        for off in (officer_records or [])[:12]:
+            is_active = off.end_date is None if hasattr(off, "end_date") else True
+            affiliations.append({
+                "company": off.name,
+                "role": off.role,
+                "nationality": off.nationality or "",
+                "active": is_active,
+            })
+
+        # ICIJ connections
+        offshore = []
+        for h in (icij_hits or [])[:5]:
+            offshore.append({
+                "entity": h.name,
+                "dataset": h.source_dataset or "",
+                "jurisdiction": h.jurisdiction or "",
+            })
+
+        # Recent events from GDELT (list[GdeltEvent])
+        recent_events = []
+        if isinstance(gdelt_events, list):
+            for ev in gdelt_events[:8]:
+                recent_events.append({
+                    "title": ev.event_id[:80] if hasattr(ev, "event_id") else str(ev),
+                    "date": ev.date.isoformat() if hasattr(ev, "date") and ev.date else "",
+                    "source": ev.source_url if hasattr(ev, "source_url") else "",
+                    "tone": ev.avg_tone if hasattr(ev, "avg_tone") else None,
+                })
+
+        # Build person-centric vis.js graph
+        nodes: dict[str, dict] = {}
+        edges: dict[str, dict] = {}
+
+        def p_slug(s: str) -> str:
+            return s.lower().replace(" ", "_").replace(",", "")[:60]
+
+        person_id = f"person_{p_slug(name)}"
+        nodes[person_id] = _node(person_id, name, "person")
+
+        for e in [e for e in sanctions_hits if (e.score or 0) >= 0.6][:6]:
+            eid = f"sanc_{p_slug(e.name)}"
+            nodes[eid] = _node(eid, e.name, "sanctions_list")
+            key = f"{person_id}→{eid}"
+            edges[key] = {"from": person_id, "to": eid, "label": "OFAC/OS match",
+                          "arrows": "to", "dashes": True}
+
+        for aff in affiliations[:8]:
+            cid = f"co_{p_slug(aff['company'])}"
+            nodes[cid] = _node(cid, aff["company"], "company")
+            key = f"{person_id}→{cid}"
+            edges[key] = {"from": person_id, "to": cid,
+                          "label": aff.get("role", "officer"),
+                          "arrows": "to", "dashes": False}
+
+        for off in offshore[:4]:
+            oid = f"offshore_{p_slug(off['entity'])}"
+            nodes[oid] = _node(oid, off["entity"], "theme",
+                               off.get("jurisdiction"))
+            key = f"{person_id}→{oid}"
+            edges[key] = {"from": person_id, "to": oid,
+                          "label": "offshore", "arrows": "to", "dashes": True}
+
+        return JSONResponse(content={
+            "name": name,
+            "is_sanctioned": is_sanctioned,
+            "sanction_programs": sanction_programs,
+            "aliases": aliases[:6],
+            "nationality": nationality,
+            "dob": str(dob) if dob else None,
+            "affiliations": affiliations,
+            "offshore_connections": offshore,
+            "recent_events": recent_events,
+            "graph": {
+                "nodes": list(nodes.values()),
+                "edges": list(edges.values()),
+            },
+            "sources": ["OpenSanctions", "OFAC SDN", "OpenCorporates", "ICIJ Offshore Leaks", "GDELT"],
+        })
+
+    except Exception as e:
+        logger.exception("person_profile error for name=%s", name)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Vessel Track endpoint ---
+
+@app.post("/api/vessel-track")
+async def vessel_track(req: VesselTrackRequest):
+    """Build a vessel intelligence profile: AIS position, route, ownership, sanctions."""
+    query = req.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    try:
+        # Determine if query looks like MMSI (9 digits), IMO (7 digits or IMO+7digits), or name
+        digits_only = query.replace(" ", "").replace("-", "")
+        vessel_detail = None
+        history = []
+
+        if digits_only.isdigit() and len(digits_only) == 9:
+            # Could be MMSI
+            vessel_detail = await vessel_by_mmsi(digits_only)
+            if vessel_detail:
+                history = await vessel_history(digits_only, days=14)
+        elif digits_only.upper().startswith("IMO") or (digits_only.isdigit() and len(digits_only) == 7):
+            imo = digits_only.replace("IMO", "").replace("imo", "")
+            vessel_detail = await vessel_by_imo(imo)
+            if vessel_detail and vessel_detail.get("mmsi"):
+                history = await vessel_history(str(vessel_detail["mmsi"]), days=14)
+        else:
+            # Name search
+            results = await vessel_find(query)
+            if results:
+                vessel_detail = results[0]
+                if vessel_detail.get("mmsi"):
+                    history = await vessel_history(str(vessel_detail["mmsi"]), days=14)
+
+        if not vessel_detail:
+            vessel_detail = {"name": query, "note": "Vessel not found in AIS database"}
+
+        # OFAC sanctions check for vessel name
+        ofac_client = OFACClient()
+        vessel_name = vessel_detail.get("name", query)
+        ofac_hits = await ofac_client.search(vessel_name)
+        sanctions_hits = [e for e in ofac_hits if (e.score or 0) >= 0.75]
+        is_sanctioned = bool(sanctions_hits)
+
+        # Build vis.js graph: vessel → flag state → operator → sanctions
+        nodes: dict[str, dict] = {}
+        edges: dict[str, dict] = {}
+
+        def v_slug(s: str) -> str:
+            return s.lower().replace(" ", "_").replace("-", "")[:60]
+
+        vessel_id = f"vessel_{v_slug(vessel_name)}"
+        nodes[vessel_id] = _node(vessel_id, vessel_name, "vessel",
+                                 vessel_detail.get("flag"))
+
+        flag = vessel_detail.get("flag")
+        if flag:
+            flag_id = f"flag_{v_slug(flag)}"
+            nodes[flag_id] = _node(flag_id, f"Flag: {flag}", "government", flag)
+            edges[f"{vessel_id}→{flag_id}"] = {
+                "from": vessel_id, "to": flag_id, "label": "flagged under", "arrows": "to", "dashes": False,
+            }
+
+        for entry in sanctions_hits[:4]:
+            sid = f"sanc_{v_slug(entry.name)}"
+            nodes[sid] = _node(sid, entry.name, "sanctions_list")
+            edges[f"{vessel_id}→{sid}"] = {
+                "from": vessel_id, "to": sid, "label": "OFAC match", "arrows": "to", "dashes": True,
+            }
+
+        # Route summary from history
+        route_points = [
+            {"lat": p["latitude"], "lon": p["longitude"],
+             "speed": p.get("speed", 0), "ts": p.get("timestamp", 0)}
+            for p in history
+            if isinstance(p, dict) and "latitude" in p and "longitude" in p
+        ]
+
+        return JSONResponse(content={
+            "vessel": vessel_detail,
+            "is_sanctioned": is_sanctioned,
+            "sanctions_matches": [
+                {"name": e.name, "score": e.score, "programs": e.programs or []}
+                for e in sanctions_hits
+            ],
+            "route_history": route_points[-20:],
+            "graph": {
+                "nodes": list(nodes.values()),
+                "edges": list(edges.values()),
+            },
+            "sources": ["Datalastic AIS", "OFAC SDN"],
+        })
+
+    except Exception as e:
+        logger.exception("vessel_track error for query=%s", query)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Sector Analysis endpoint ---
+
+_SECTOR_COMPANIES: dict[str, list[dict]] = {
+    "semiconductor": [
+        {"name": "TSMC", "ticker": "TSM", "country": "TW"},
+        {"name": "Samsung Electronics", "ticker": "005930.KS", "country": "KR"},
+        {"name": "ASML", "ticker": "ASML", "country": "NL"},
+        {"name": "Nvidia", "ticker": "NVDA", "country": "US"},
+        {"name": "Intel", "ticker": "INTC", "country": "US"},
+        {"name": "SMIC", "ticker": "0981.HK", "country": "CN"},
+        {"name": "Micron", "ticker": "MU", "country": "US"},
+        {"name": "SK Hynix", "ticker": "000660.KS", "country": "KR"},
+    ],
+    "energy": [
+        {"name": "Saudi Aramco", "ticker": "2222.SR", "country": "SA"},
+        {"name": "Rosneft", "ticker": "ROSN.ME", "country": "RU"},
+        {"name": "Gazprom", "ticker": "GAZP.ME", "country": "RU"},
+        {"name": "Sinopec", "ticker": "SNP", "country": "CN"},
+        {"name": "PetroChina", "ticker": "PTR", "country": "CN"},
+        {"name": "ExxonMobil", "ticker": "XOM", "country": "US"},
+        {"name": "Shell", "ticker": "SHEL", "country": "GB"},
+    ],
+    "shipping": [
+        {"name": "COSCO Shipping", "ticker": "1919.HK", "country": "CN"},
+        {"name": "Evergreen Marine", "ticker": "2603.TW", "country": "TW"},
+        {"name": "Maersk", "ticker": "MAERSK-B.CO", "country": "DK"},
+        {"name": "China OOCL", "ticker": "0316.HK", "country": "CN"},
+        {"name": "Hapag-Lloyd", "ticker": "HLAG.DE", "country": "DE"},
+        {"name": "MSC (private)", "ticker": None, "country": "CH"},
+    ],
+    "rare earth": [
+        {"name": "China Northern Rare Earth", "ticker": "600111.SS", "country": "CN"},
+        {"name": "MP Materials", "ticker": "MP", "country": "US"},
+        {"name": "Lynas Rare Earths", "ticker": "LYC.AX", "country": "AU"},
+        {"name": "Shenghe Resources", "ticker": "600392.SS", "country": "CN"},
+    ],
+    "telecom": [
+        {"name": "Huawei (private)", "ticker": None, "country": "CN"},
+        {"name": "ZTE", "ticker": "0763.HK", "country": "CN"},
+        {"name": "Ericsson", "ticker": "ERIC", "country": "SE"},
+        {"name": "Nokia", "ticker": "NOK", "country": "FI"},
+        {"name": "China Mobile", "ticker": "0941.HK", "country": "CN"},
+    ],
+}
+
+
+def _match_sector(query: str) -> tuple[str, list[dict]]:
+    """Find the closest sector match for a query."""
+    q = query.lower()
+    for sector_key, companies in _SECTOR_COMPANIES.items():
+        if sector_key in q:
+            return sector_key, companies
+    # Fuzzy: check partial matches
+    for sector_key, companies in _SECTOR_COMPANIES.items():
+        words = sector_key.split()
+        if any(w in q for w in words):
+            return sector_key, companies
+    # Default: return semiconductor as fallback for demo
+    return list(_SECTOR_COMPANIES.keys())[0], list(_SECTOR_COMPANIES.values())[0]
+
+
+@app.post("/api/sector-analysis")
+async def sector_analysis(req: SectorAnalysisRequest):
+    """Sector-level analysis: key players, sanctions exposure, trade dependency."""
+    sector = req.sector.strip()
+    if not sector:
+        raise HTTPException(status_code=400, detail="Sector cannot be empty")
+
+    try:
+        sector_key, companies = _match_sector(sector)
+
+        # Check OFAC status for top companies in parallel
+        ofac_client = OFACClient()
+        sanction_tasks = [ofac_client.search(co["name"]) for co in companies]
+        sanction_results = await asyncio.gather(*sanction_tasks, return_exceptions=True)
+
+        company_profiles = []
+        for co, result in zip(companies, sanction_results):
+            hits = result if not isinstance(result, Exception) else []
+            high_conf = [e for e in hits if (e.score or 0) >= 0.75] if hits else []
+            company_profiles.append({
+                "name": co["name"],
+                "ticker": co.get("ticker"),
+                "country": co.get("country"),
+                "is_sanctioned": bool(high_conf),
+                "sanction_names": [e.name for e in high_conf[:2]],
+            })
+
+        sanctioned_count = sum(1 for c in company_profiles if c["is_sanctioned"])
+
+        # Build sector vis.js graph
+        nodes: dict[str, dict] = {}
+        edges: dict[str, dict] = {}
+
+        def s_slug(s: str) -> str:
+            return s.lower().replace(" ", "_").replace("(", "").replace(")", "")[:60]
+
+        sector_id = f"sector_{s_slug(sector_key)}"
+        nodes[sector_id] = _node(sector_id, sector_key.title() + " Sector", "sector")
+
+        for co in company_profiles:
+            cid = f"co_{s_slug(co['name'])}"
+            etype = "sanctions_list" if co["is_sanctioned"] else "company"
+            nodes[cid] = _node(cid, co["name"], etype, co.get("country"))
+            edges[f"{sector_id}→{cid}"] = {
+                "from": sector_id, "to": cid,
+                "label": "key player", "arrows": "to", "dashes": False,
+            }
+            if co["is_sanctioned"]:
+                for sn in co["sanction_names"][:1]:
+                    sid = f"sanc_{s_slug(sn)}"
+                    nodes[sid] = _node(sid, sn, "sanctions_list")
+                    edges[f"{cid}→{sid}"] = {
+                        "from": cid, "to": sid, "label": "OFAC listed",
+                        "arrows": "to", "dashes": True,
+                    }
+
+        return JSONResponse(content={
+            "sector": sector,
+            "sector_key": sector_key,
+            "company_count": len(company_profiles),
+            "sanctioned_count": sanctioned_count,
+            "companies": company_profiles,
+            "graph": {
+                "nodes": list(nodes.values()),
+                "edges": list(edges.values()),
+            },
+            "sources": ["OFAC SDN", "OpenSanctions"],
+        })
+
+    except Exception as e:
+        logger.exception("sector_analysis error for sector=%s", sector)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- Background analysis runner (commented out for demo) ---
 # async def _run_analysis(analysis_id: str, query: str) -> None:
 #     """Run the full analysis pipeline, updating status as we go."""
@@ -470,6 +894,62 @@ def _read_index_html() -> str:
   .graph-empty { position: absolute; top: 50%; left: 50%;
     transform: translate(-50%, -50%); color: #484f58; font-size: 14px; text-align: center; }
   .graph-stats { font-size: 11px; color: #484f58; text-align: center; padding: 4px 0; }
+
+  /* Entity type badge */
+  .entity-type-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
+    border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.6px; margin-left: 12px; }
+  .entity-type-badge.company  { background: rgba(74,144,217,0.15); color: #4A90D9; border: 1px solid rgba(74,144,217,0.3); }
+  .entity-type-badge.person   { background: rgba(123,104,238,0.15); color: #7B68EE; border: 1px solid rgba(123,104,238,0.3); }
+  .entity-type-badge.vessel   { background: rgba(46,139,87,0.15); color: #2E8B57; border: 1px solid rgba(46,139,87,0.3); }
+  .entity-type-badge.sector   { background: rgba(63,185,80,0.15); color: #3FB950; border: 1px solid rgba(63,185,80,0.3); }
+
+  /* Person profile */
+  .person-header { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 24px; }
+  .person-avatar { width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #7B68EE 0%, #4A90D9 100%);
+    display: flex; align-items: center; justify-content: center; font-size: 28px; flex-shrink: 0; }
+  .person-meta { flex: 1; }
+  .person-name { font-size: 22px; font-weight: 600; color: #e6edf3; margin-bottom: 4px; }
+  .person-sub  { font-size: 13px; color: #8b949e; }
+  .person-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 900px) { .person-grid { grid-template-columns: 1fr; } }
+  .affiliations-list { list-style: none; }
+  .affiliations-list li { padding: 8px 0; border-bottom: 1px solid #21262d; font-size: 13px;
+    display: flex; justify-content: space-between; align-items: center; }
+  .affiliations-list li:last-child { border-bottom: none; }
+  .role-badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: #21262d; color: #8b949e; }
+  .events-list { list-style: none; }
+  .events-list li { padding: 8px 0; border-bottom: 1px solid #21262d; font-size: 12px; color: #c9d1d9; }
+  .events-list li:last-child { border-bottom: none; }
+  .event-date { font-size: 11px; color: #484f58; margin-bottom: 2px; }
+  .event-tone { font-size: 10px; padding: 1px 5px; border-radius: 8px; margin-left: 6px; }
+  .event-tone.negative { background: rgba(248,81,73,0.15); color: #f85149; }
+  .event-tone.positive { background: rgba(63,185,80,0.15); color: #3fb950; }
+
+  /* Vessel profile */
+  .vessel-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 900px) { .vessel-grid { grid-template-columns: 1fr 1fr; } }
+  .vessel-stat { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px; text-align: center; }
+  .vessel-stat .v-label { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .vessel-stat .v-value { font-size: 18px; font-weight: 600; color: #e6edf3; margin-top: 4px; }
+  .route-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .route-table th { background: #21262d; color: #8b949e; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.5px; padding: 6px 10px; text-align: left; }
+  .route-table td { padding: 6px 10px; border-bottom: 1px solid #21262d; color: #c9d1d9; font-family: monospace; }
+
+  /* Sector panel */
+  .sector-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .sector-icon { font-size: 32px; }
+  .sector-title { font-size: 22px; font-weight: 600; color: #e6edf3; }
+  .sector-sub { font-size: 13px; color: #8b949e; margin-top: 2px; }
+  .sector-companies { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }
+  .sector-company-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px;
+    cursor: pointer; transition: border-color 0.15s; }
+  .sector-company-card:hover { border-color: #58a6ff; }
+  .sector-company-card.sanctioned { border-color: rgba(248,81,73,0.4); background: rgba(248,81,73,0.05); }
+  .sector-company-card .sc-name { font-size: 14px; font-weight: 500; color: #e6edf3; margin-bottom: 4px; }
+  .sector-company-card .sc-ticker { font-size: 12px; color: #58a6ff; font-family: monospace; }
+  .sector-company-card .sc-country { font-size: 11px; color: #484f58; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -487,6 +967,7 @@ def _read_index_html() -> str:
       <button class="btn btn-primary" id="analyzeBtn" onclick="startAnalysis()">Analyze Impact</button>
       <button class="btn btn-secondary" onclick="clearAll()">Clear</button>
       <span id="healthBadge"></span>
+      <span id="entityTypeBadge" style="display:none;" class="entity-type-badge"></span>
     </div>
     <div class="examples">
       <span class="example-chip" data-ticker="BABA" onclick="runExample(this)">Sanction Alibaba (BABA)</span>
@@ -550,12 +1031,169 @@ def _read_index_html() -> str:
     <div class="graph-stats" id="graphStats"></div>
   </div>
 
+  <!-- ── Person Profile Panel ── -->
+  <div id="personPanel" style="display:none; margin-top:32px;">
+    <div class="graph-section-header">Person Intelligence Profile</div>
+    <div class="person-header">
+      <div class="person-avatar" id="personAvatar">👤</div>
+      <div class="person-meta">
+        <div class="person-name" id="personName">—</div>
+        <div class="person-sub" id="personSub">—</div>
+        <div style="margin-top:8px;" id="personSanctionsBadge"></div>
+      </div>
+    </div>
+    <div class="person-grid">
+      <div class="info-card">
+        <h3>Corporate Affiliations</h3>
+        <ul class="affiliations-list" id="affiliationsList"><li style="color:#484f58">Loading...</li></ul>
+      </div>
+      <div class="info-card">
+        <h3>Recent News Events (GDELT)</h3>
+        <ul class="events-list" id="eventsList"><li style="color:#484f58">Loading...</li></ul>
+      </div>
+    </div>
+    <div id="personGraphSection" class="graph-section active">
+      <div class="graph-section-header">Network Graph</div>
+      <div class="graph-legend">
+        <span class="legend-item"><span class="legend-dot" style="background:#7B68EE"></span>Person</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#4A90D9"></span>Company</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Sanctions</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#F0883E"></span>Offshore</span>
+      </div>
+      <div class="graph-container" id="personGraphContainer">
+        <div class="graph-empty" id="personGraphEmpty">Loading network...</div>
+      </div>
+      <div class="graph-stats" id="personGraphStats"></div>
+    </div>
+    <div class="source-note">Sources: OpenSanctions · OFAC SDN · OpenCorporates · ICIJ Offshore Leaks · GDELT</div>
+  </div>
+
+  <!-- ── Vessel Track Panel ── -->
+  <div id="vesselPanel" style="display:none; margin-top:32px;">
+    <div class="graph-section-header">Vessel Intelligence Profile</div>
+    <div class="vessel-grid" id="vesselStats"></div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
+      <div class="info-card">
+        <h3>Sanctions Status</h3>
+        <div id="vesselSanctionsInfo" style="margin-top:8px;"></div>
+      </div>
+      <div class="info-card">
+        <h3>Recent AIS Track (last 14 days)</h3>
+        <div style="overflow-x:auto;">
+          <table class="route-table">
+            <thead><tr><th>Lat</th><th>Lon</th><th>Speed</th></tr></thead>
+            <tbody id="routeTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div id="vesselGraphSection" class="graph-section active">
+      <div class="graph-section-header">Ownership &amp; Sanctions Network</div>
+      <div class="graph-legend">
+        <span class="legend-item"><span class="legend-dot" style="background:#2E8B57"></span>Vessel</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#DC143C"></span>Flag State</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Sanctions</span>
+      </div>
+      <div class="graph-container" id="vesselGraphContainer">
+        <div class="graph-empty" id="vesselGraphEmpty">Loading network...</div>
+      </div>
+    </div>
+    <div class="source-note">Sources: Datalastic AIS · OFAC SDN</div>
+  </div>
+
+  <!-- ── Sector Analysis Panel ── -->
+  <div id="sectorPanel" style="display:none; margin-top:32px;">
+    <div class="graph-section-header">Sector Intelligence</div>
+    <div class="sector-header">
+      <div class="sector-icon">🏭</div>
+      <div>
+        <div class="sector-title" id="sectorTitle">—</div>
+        <div class="sector-sub" id="sectorSub">—</div>
+      </div>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px;">
+      <div class="info-card" style="text-align:center;">
+        <h3>Key Players</h3>
+        <div class="value" id="sectorCompanyCount">—</div>
+      </div>
+      <div class="info-card" style="text-align:center;">
+        <h3>Sanctioned Entities</h3>
+        <div class="value" id="sectorSanctionCount" style="color:#f85149;">—</div>
+      </div>
+      <div class="info-card" style="text-align:center;">
+        <h3>Sanction Coverage</h3>
+        <div class="value" id="sectorCoverage">—</div>
+      </div>
+    </div>
+    <div class="info-card" style="margin-bottom:24px;">
+      <h3>Key Players</h3>
+      <div class="sector-companies" id="sectorCompanies"></div>
+    </div>
+    <div id="sectorGraphSection" class="graph-section active">
+      <div class="graph-section-header">Sector Network</div>
+      <div class="graph-legend">
+        <span class="legend-item"><span class="legend-dot" style="background:#3FB950"></span>Sector</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#4A90D9"></span>Company</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Sanctioned</span>
+      </div>
+      <div class="graph-container" id="sectorGraphContainer">
+        <div class="graph-empty" id="sectorGraphEmpty">Loading sector graph...</div>
+      </div>
+      <div class="graph-stats" id="sectorGraphStats"></div>
+    </div>
+    <div class="source-note">Sources: OFAC SDN · OpenSanctions</div>
+  </div>
+
 </div>
 
 <script>
 let impactChart = null;
 let lastData = null;
 let visNetwork = null;
+let personNetwork = null;
+let vesselNetwork = null;
+let sectorNetwork = null;
+
+const VIS_OPTS = {
+  physics: {
+    solver: 'repulsion',
+    repulsion: { nodeDistance: 180, centralGravity: 0.15, springLength: 200, springConstant: 0.04, damping: 0.09 },
+    stabilization: { iterations: 300 },
+  },
+  nodes: {
+    shape: 'dot', size: 18,
+    font: { color: '#c9d1d9', size: 12, strokeWidth: 3, strokeColor: '#0d1117' },
+    borderWidth: 2,
+    color: { border: '#30363d', highlight: { border: '#58a6ff' }, hover: { border: '#58a6ff' } },
+  },
+  edges: {
+    font: { color: '#8b949e', size: 10, align: 'middle', strokeWidth: 2, strokeColor: '#0d1117' },
+    color: { color: '#58a6ff', highlight: '#ffffff', opacity: 0.6 },
+    width: 2,
+    smooth: { type: 'continuous' },
+    arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+  },
+  interaction: { hover: true, tooltipDelay: 150 },
+  layout: { randomSeed: 42 },
+};
+
+function renderVisGraph(containerId, emptyId, statsId, nodes, edges, networkRef) {
+  const container = document.getElementById(containerId);
+  const emptyEl   = document.getElementById(emptyId);
+  const statsEl   = document.getElementById(statsId);
+  if (!nodes || nodes.length === 0) {
+    if (emptyEl) { emptyEl.style.display = 'block'; emptyEl.textContent = 'No entity relationships found'; }
+    return null;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+  const net = new vis.Network(container, {
+    nodes: new vis.DataSet(nodes),
+    edges: new vis.DataSet(edges),
+  }, VIS_OPTS);
+  net.once('stabilized', () => net.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }));
+  if (statsEl) statsEl.textContent = `${nodes.length} entities · ${edges.length} relationships`;
+  return net;
+}
 
 // Known company name → ticker map for natural language input
 const KNOWN_MAP = {
@@ -617,6 +1255,16 @@ function clearAll() {
   document.getElementById('graphEmpty').textContent = 'Loading entity graph...';
   document.getElementById('graphStats').textContent = '';
   if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
+  if (personNetwork) { personNetwork.destroy(); personNetwork = null; }
+  if (vesselNetwork) { vesselNetwork.destroy(); vesselNetwork = null; }
+  if (sectorNetwork) { sectorNetwork.destroy(); sectorNetwork = null; }
+  document.getElementById('personPanel').style.display = 'none';
+  document.getElementById('vesselPanel').style.display = 'none';
+  document.getElementById('sectorPanel').style.display = 'none';
+  const badge = document.getElementById('entityTypeBadge');
+  badge.style.display = 'none';
+  badge.textContent = '';
+  badge.className = 'entity-type-badge';
 }
 
 async function loadEntityGraph(query) {
@@ -679,52 +1327,290 @@ async function startAnalysis(tickerOverride) {
   const raw = document.getElementById('queryInput').value.trim();
   if (!raw && !tickerOverride) return;
 
-  const ticker = tickerOverride || extractTicker(raw);
-  if (!ticker) return;
-
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = true;
+  // Reset panels without wiping the input
   document.getElementById('resultsPanel').style.display = 'none';
+  document.getElementById('progressPanel').classList.remove('active');
+  document.getElementById('progressLog').innerHTML = '';
   if (impactChart) { impactChart.destroy(); impactChart = null; }
+  lastData = null;
+  document.getElementById('graphSection').classList.remove('active');
+  if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
+  if (personNetwork) { personNetwork.destroy(); personNetwork = null; }
+  if (vesselNetwork) { vesselNetwork.destroy(); vesselNetwork = null; }
+  if (sectorNetwork) { sectorNetwork.destroy(); sectorNetwork = null; }
+  document.getElementById('personPanel').style.display = 'none';
+  document.getElementById('vesselPanel').style.display = 'none';
+  document.getElementById('sectorPanel').style.display = 'none';
+  const _badge = document.getElementById('entityTypeBadge');
+  _badge.style.display = 'none'; _badge.className = 'entity-type-badge';
 
   const panel = document.getElementById('progressPanel');
   panel.classList.add('active');
   document.getElementById('progressLog').innerHTML = '';
   document.getElementById('progressSpinner').style.display = 'inline-block';
 
-  addProgress('Resolving ticker: ' + ticker, 'step');
+  try {
+    // Step 1: Resolve entity type
+    addProgress('Classifying entity type...', 'step');
+    let entityType = 'company';
+    let entityName = tickerOverride || raw;
+
+    if (!tickerOverride) {
+      try {
+        const resolveResp = await fetch('/api/resolve-entity', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: raw }),
+        });
+        if (resolveResp.ok) {
+          const resolution = await resolveResp.json();
+          entityType = resolution.entity_type;
+          entityName = resolution.entity_name;
+          addProgress('Detected: ' + entityType.toUpperCase() + ' — ' + entityName, 'step');
+        }
+      } catch(e) {
+        addProgress('Entity resolution failed, defaulting to company', 'step');
+      }
+    }
+
+    // Show entity type badge
+    const badge = document.getElementById('entityTypeBadge');
+    const icons = { company: '🏢', person: '👤', vessel: '🚢', sector: '🏭' };
+    badge.textContent = (icons[entityType] || '') + ' ' + entityType;
+    badge.className = 'entity-type-badge ' + entityType;
+    badge.style.display = 'inline-flex';
+
+    // Step 2: Route to entity-specific handler
+    if (entityType === 'person') {
+      await runPersonAnalysis(entityName);
+    } else if (entityType === 'vessel') {
+      await runVesselAnalysis(entityName);
+    } else if (entityType === 'sector') {
+      await runSectorAnalysis(entityName);
+    } else {
+      // company — existing flow
+      const ticker = tickerOverride || extractTicker(raw);
+      await runCompanyAnalysis(ticker, entityName);
+    }
+
+  } catch (e) {
+    addProgress('Error: ' + e.message, 'error');
+  }
+
+  document.getElementById('progressSpinner').style.display = 'none';
+  btn.disabled = false;
+}
+
+// ── Company (existing flow) ──────────────────────────────────────────────────
+async function runCompanyAnalysis(ticker, entityName) {
   addProgress('Checking sanctions status (OFAC, OpenSanctions, Trade.gov CSL)...', 'step');
   addProgress('Fetching historical comparable data...', 'step');
 
-  try {
-    const resp = await fetch('/api/sanctions-impact', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker }),
-    });
+  const resp = await fetch('/api/sanctions-impact', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticker }),
+  });
 
-    if (!resp.ok) {
-      const err = await resp.json();
-      addProgress('Error: ' + (err.detail || 'Request failed'), 'error');
-      btn.disabled = false;
-      document.getElementById('progressSpinner').style.display = 'none';
-      return;
-    }
-
-    const data = await resp.json();
-    lastData = data;
-    addProgress('Found ' + data.metadata.comparable_count + ' comparable sanctions cases', 'step');
-    addProgress('Computing projection with confidence interval...', 'step');
-    addProgress('Done!', 'done');
-    document.getElementById('progressSpinner').style.display = 'none';
-
-    renderResults(data);
-    loadEntityGraph(ticker);  // fire-and-forget, appears below the fold
-  } catch (e) {
-    addProgress('Error: ' + e.message, 'error');
-    document.getElementById('progressSpinner').style.display = 'none';
+  if (!resp.ok) {
+    const err = await resp.json();
+    addProgress('Error: ' + (err.detail || 'Request failed'), 'error');
+    return;
   }
-  btn.disabled = false;
+
+  const data = await resp.json();
+  lastData = data;
+  addProgress('Found ' + data.metadata.comparable_count + ' comparable sanctions cases', 'step');
+  addProgress('Computing projection with confidence interval...', 'step');
+  addProgress('Done!', 'done');
+  document.getElementById('progressSpinner').style.display = 'none';
+
+  renderResults(data);
+  loadEntityGraph(ticker || entityName);
+}
+
+// ── Person (insider-threat style) ────────────────────────────────────────────
+async function runPersonAnalysis(name) {
+  addProgress('Searching OFAC SDN + OpenSanctions (person schema)...', 'step');
+  addProgress('Looking up corporate affiliations (OpenCorporates)...', 'step');
+  addProgress('Pulling GDELT news events...', 'step');
+
+  const resp = await fetch('/api/person-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!resp.ok) { addProgress('Error fetching person profile', 'error'); return; }
+
+  const data = await resp.json();
+  addProgress('Done!', 'done');
+  document.getElementById('progressSpinner').style.display = 'none';
+
+  renderPersonProfile(data);
+}
+
+function renderPersonProfile(data) {
+  document.getElementById('personPanel').style.display = 'block';
+
+  document.getElementById('personName').textContent = data.name;
+  const sub = [
+    data.nationality ? '🌍 ' + data.nationality : null,
+    data.dob ? '🎂 DOB: ' + data.dob : null,
+    data.aliases && data.aliases.length ? 'AKA: ' + data.aliases.slice(0,3).join(', ') : null,
+  ].filter(Boolean).join('   ·   ') || 'No biographical data';
+  document.getElementById('personSub').textContent = sub;
+
+  const isSanctioned = data.is_sanctioned;
+  document.getElementById('personSanctionsBadge').innerHTML = isSanctioned
+    ? '<span class="sanctions-badge sanctioned">🚨 SANCTIONED</span>' +
+      (data.sanction_programs.length ? ' <span style="font-size:11px;color:#8b949e">' + data.sanction_programs.join(', ') + '</span>' : '')
+    : '<span class="sanctions-badge clear">✓ No Active Sanctions</span>';
+
+  // Affiliations
+  const affList = document.getElementById('affiliationsList');
+  if (data.affiliations && data.affiliations.length) {
+    affList.innerHTML = data.affiliations.map(a =>
+      '<li>' +
+      '<span>' + a.company + '</span>' +
+      '<span><span class="role-badge">' + (a.role || 'Officer') + '</span>' +
+      (a.active === false ? ' <span style="font-size:10px;color:#484f58">(inactive)</span>' : '') +
+      '</span></li>'
+    ).join('');
+  } else {
+    affList.innerHTML = '<li style="color:#484f58">No corporate affiliations found</li>';
+  }
+
+  // Events
+  const evList = document.getElementById('eventsList');
+  if (data.recent_events && data.recent_events.length) {
+    evList.innerHTML = data.recent_events.map(ev => {
+      const tone = parseFloat(ev.tone);
+      const toneClass = isNaN(tone) ? '' : (tone < 0 ? 'negative' : 'positive');
+      const toneLabel = isNaN(tone) ? '' : '<span class="event-tone ' + toneClass + '">' + (tone >= 0 ? '+' : '') + tone.toFixed(1) + '</span>';
+      const url = ev.source ? '<a href="' + ev.source + '" target="_blank" style="color:#58a6ff;text-decoration:none;">↗</a>' : '';
+      return '<li><div class="event-date">' + (ev.date || '').replace('T',' ').slice(0,16) + toneLabel + ' ' + url + '</div>' +
+             (ev.title || ev.source || '').slice(0, 100) + '</li>';
+    }).join('');
+  } else {
+    evList.innerHTML = '<li style="color:#484f58">No recent news events found</li>';
+  }
+
+  // Graph
+  const g = data.graph || {};
+  personNetwork = renderVisGraph('personGraphContainer', 'personGraphEmpty', 'personGraphStats',
+    g.nodes, g.edges, personNetwork);
+}
+
+// ── Vessel ───────────────────────────────────────────────────────────────────
+async function runVesselAnalysis(query) {
+  addProgress('Querying Datalastic AIS for vessel position...', 'step');
+  addProgress('Checking OFAC SDN for vessel sanctions...', 'step');
+
+  const resp = await fetch('/api/vessel-track', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  if (!resp.ok) { addProgress('Error fetching vessel data', 'error'); return; }
+
+  const data = await resp.json();
+  addProgress('Done!', 'done');
+  document.getElementById('progressSpinner').style.display = 'none';
+
+  renderVesselProfile(data);
+}
+
+function renderVesselProfile(data) {
+  document.getElementById('vesselPanel').style.display = 'block';
+  const v = data.vessel || {};
+
+  const stats = [
+    { label: 'Vessel Name', value: v.name || '—' },
+    { label: 'IMO', value: v.imo || '—' },
+    { label: 'MMSI', value: v.mmsi || '—' },
+    { label: 'Flag', value: v.flag || '—' },
+    { label: 'Type', value: v.vessel_type || '—' },
+    { label: 'DWT', value: v.deadweight ? v.deadweight.toLocaleString() + ' t' : '—' },
+    { label: 'Speed', value: v.speed != null ? v.speed + ' kn' : '—' },
+    { label: 'Destination', value: v.destination || '—' },
+    { label: 'Status', value: v.status || '—' },
+  ];
+  document.getElementById('vesselStats').innerHTML = stats.map(s =>
+    '<div class="vessel-stat"><div class="v-label">' + s.label + '</div><div class="v-value">' + s.value + '</div></div>'
+  ).join('');
+
+  // Sanctions
+  const sEl = document.getElementById('vesselSanctionsInfo');
+  if (data.is_sanctioned) {
+    sEl.innerHTML = '<span class="sanctions-badge sanctioned">🚨 OFAC LISTED</span>' +
+      '<ul style="margin-top:8px;list-style:none;">' +
+      (data.sanctions_matches || []).slice(0,3).map(m =>
+        '<li style="font-size:12px;color:#f85149;padding:4px 0;">' + m.name + ' (score: ' + (m.score || 0).toFixed(2) + ')</li>'
+      ).join('') + '</ul>';
+  } else {
+    sEl.innerHTML = '<span class="sanctions-badge clear">✓ No OFAC Vessel Match</span>';
+  }
+
+  // Route history table (last 8 points)
+  const tbody = document.getElementById('routeTableBody');
+  const pts = (data.route_history || []).slice(-8);
+  tbody.innerHTML = pts.length
+    ? pts.map(p => '<tr><td>' + (p.lat || '—') + '</td><td>' + (p.lon || '—') + '</td><td>' + (p.speed != null ? p.speed + ' kn' : '—') + '</td></tr>').join('')
+    : '<tr><td colspan="3" style="color:#484f58">No AIS track data available</td></tr>';
+
+  // Graph
+  const g = data.graph || {};
+  vesselNetwork = renderVisGraph('vesselGraphContainer', 'vesselGraphEmpty', null,
+    g.nodes, g.edges, vesselNetwork);
+}
+
+// ── Sector ───────────────────────────────────────────────────────────────────
+async function runSectorAnalysis(sector) {
+  addProgress('Identifying key players in ' + sector + ' sector...', 'step');
+  addProgress('Checking OFAC sanctions exposure...', 'step');
+
+  const resp = await fetch('/api/sector-analysis', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sector }),
+  });
+  if (!resp.ok) { addProgress('Error fetching sector data', 'error'); return; }
+
+  const data = await resp.json();
+  addProgress('Done!', 'done');
+  document.getElementById('progressSpinner').style.display = 'none';
+
+  renderSectorProfile(data);
+}
+
+function renderSectorProfile(data) {
+  document.getElementById('sectorPanel').style.display = 'block';
+
+  document.getElementById('sectorTitle').textContent = (data.sector_key || data.sector || '').toUpperCase() + ' SECTOR';
+  document.getElementById('sectorSub').textContent = (data.company_count || 0) + ' key players tracked';
+  document.getElementById('sectorCompanyCount').textContent = data.company_count || '—';
+  document.getElementById('sectorSanctionCount').textContent = data.sanctioned_count || '0';
+  const pct = data.company_count ? Math.round(data.sanctioned_count / data.company_count * 100) : 0;
+  document.getElementById('sectorCoverage').textContent = pct + '%';
+
+  const companiesEl = document.getElementById('sectorCompanies');
+  companiesEl.innerHTML = (data.companies || []).map(co => {
+    const sanctClass = co.is_sanctioned ? ' sanctioned' : '';
+    const ticker = co.ticker ? '<div class="sc-ticker">' + co.ticker + '</div>' : '';
+    const sanctLabel = co.is_sanctioned ? '<div style="font-size:10px;color:#f85149;margin-top:4px;">⚠ OFAC Listed</div>' : '';
+    return '<div class="sector-company-card' + sanctClass + '">' +
+      '<div class="sc-name">' + co.name + '</div>' +
+      ticker +
+      '<div class="sc-country">' + (co.country || '') + '</div>' +
+      sanctLabel + '</div>';
+  }).join('');
+
+  // Graph
+  const g = data.graph || {};
+  sectorNetwork = renderVisGraph('sectorGraphContainer', 'sectorGraphEmpty', 'sectorGraphStats',
+    g.nodes, g.edges, sectorNetwork);
 }
 
 function addProgress(msg, type) {
