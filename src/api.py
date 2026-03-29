@@ -7,11 +7,14 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import uuid
 import webbrowser
+from datetime import date
 from typing import Any
 
+import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -33,10 +36,63 @@ from src.tools.corporate.client import (
     icij_search,
 )
 from src.tools.geopolitical.client import refresh_acled_token, gdelt_doc_search
+from src.tools.geopolitical.server import get_bilateral_tensions
 from src.tools.sanctions.client import OFACClient, OpenSanctionsClient
+from src.tools.trade.server import get_supply_chain_exposure
 from src.tools.vessels.client import vessel_find, vessel_by_mmsi, vessel_by_imo, vessel_history
 
 logger = logging.getLogger(__name__)
+
+_anthropic_client: anthropic.AsyncAnthropic | None = None
+
+
+def _ofac_hit_matches_company_label(company_name: str, entry: Any) -> bool:
+    """Require a significant token from *company_name* to appear as a whole token in the OFAC row.
+
+    This filters substring false positives (e.g. "intel" matching "intelligence",
+    "samsung" matching "SAMSUN", short ticker tokens matching unrelated words).
+    """
+    tokens = [t for t in re.findall(r"[a-z0-9]+", company_name.lower()) if len(t) >= 2]
+    if not tokens:
+        return False
+    significant = [t for t in tokens if len(t) >= 4] or tokens
+    rows: list[str] = [getattr(entry, "name", "") or ""]
+    aliases = getattr(entry, "aliases", None) or []
+    rows.extend(str(a) for a in aliases if a)
+    for text in rows:
+        row_tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+        for t in significant:
+            if t in row_tokens:
+                return True
+    return False
+
+
+def _get_anthropic_client() -> anthropic.AsyncAnthropic | None:
+    global _anthropic_client
+    if _anthropic_client is None and config.anthropic_api_key:
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    return _anthropic_client
+
+
+async def _generate_narrative(prompt: str) -> str:
+    """Generate a 3–5 sentence analyst narrative. Returns '' on any failure."""
+    client = _get_anthropic_client()
+    if not client:
+        return ""
+    try:
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=config.model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=15.0,
+        )
+        return response.content[0].text.strip()
+    except Exception as exc:
+        logger.warning("narrative generation failed: %s", exc)
+        return ""
+
 
 app = FastAPI(
     title="Economic Warfare OSINT",
@@ -64,7 +120,7 @@ async def _startup() -> None:
         webbrowser.open("http://localhost:8000")
 
 
-# --- In-memory state (commented out — orchestrator disabled for demo) ---
+# --- In-memory state for async orchestrator analyses ---
 _analyses: dict[str, dict[str, Any]] = {}
 
 
@@ -135,17 +191,20 @@ async def list_tools():
 
 
 async def _run_analysis(analysis_id: str, query: str) -> None:
-    _analyses[analysis_id]["progress"].append("Starting orchestrator analysis")
+    def on_progress(msg: str) -> None:
+        _analyses[analysis_id]["progress"].append(msg)
+
+    on_progress("Starting analysis pipeline...")
     try:
         orchestrator = Orchestrator()
-        assessment = await orchestrator.analyze(query)
+        assessment = await orchestrator.analyze(query, progress_callback=on_progress)
         _analyses[analysis_id]["result"] = assessment.model_dump(mode="json")
         _analyses[analysis_id]["status"] = "completed"
-        _analyses[analysis_id]["progress"].append("Analysis complete")
+        on_progress("Done.")
     except Exception as e:
         _analyses[analysis_id]["status"] = "failed"
         _analyses[analysis_id]["error"] = str(e)
-        _analyses[analysis_id]["progress"].append(f"Error: {e}")
+        on_progress(f"Error: {e}")
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
@@ -198,6 +257,37 @@ async def sanctions_impact(req: SanctionsImpactRequest):
 
     try:
         result = await run_sanctions_impact(ticker)
+
+        # Build narrative prompt from result data
+        target = result.get("target", {})
+        summary = result.get("projection", {}).get("summary", {})
+        comp_count = result.get("metadata", {}).get("comparable_count", 0)
+        is_sanctioned = target.get("sanctions_status", {}).get("is_sanctioned", False)
+        programs = target.get("sanctions_status", {}).get("programs", [])
+        compact = {
+            "name": target.get("name", ticker),
+            "ticker": ticker,
+            "sector": target.get("sector"),
+            "country": target.get("country"),
+            "is_sanctioned": is_sanctioned,
+            "sanction_programs": programs,
+            "pre_event_decline_pct": summary.get("pre_event_decline"),
+            "day_30_post_pct": summary.get("day_30_post"),
+            "day_90_post_pct": summary.get("day_90_post"),
+            "max_drawdown_pct": summary.get("max_drawdown"),
+        }
+        prompt = (
+            f"You are an economic warfare analyst. Given the following data about "
+            f"{compact['name']} ({ticker}), write a 3-5 sentence risk narrative covering: "
+            f"(1) current sanctions status, (2) likely stock price trajectory based on "
+            f"comparable cases, (3) key supply chain or investor exposure that constitutes "
+            f"friendly fire risk.\n"
+            f"Data: {json.dumps(compact)}\n"
+            f"Confidence qualifier: {comp_count} comparable cases used, data as of "
+            f"{date.today().isoformat()}."
+        )
+        narrative = await _generate_narrative(prompt)
+        result["narrative"] = narrative
         return JSONResponse(content=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -420,7 +510,8 @@ async def person_profile(req: PersonProfileRequest):
         sanctions_task = asyncio.create_task(
             os_client.search_entities(name, limit=10, entity_type="person")
         )
-        ofac_task = asyncio.create_task(ofac_client.search(name))
+        ofac_task = asyncio.create_task(ofac_client.search(name, entity_type="person"))
+        os_match_task = asyncio.create_task(os_client.match_entity(name, entity_type="person"))
         officers_task = asyncio.create_task(oc_search_officers(name))
         icij_task = asyncio.create_task(icij_search(name, entity_type="officer"))
         gdelt_task = asyncio.create_task(gdelt_doc_search(name, days=30))
@@ -428,11 +519,12 @@ async def person_profile(req: PersonProfileRequest):
         (
             sanctions_hits,
             ofac_hits,
+            os_match_hits,
             officer_records,
             icij_hits,
             gdelt_events,
         ) = await asyncio.gather(
-            sanctions_task, ofac_task, officers_task, icij_task, gdelt_task,
+            sanctions_task, ofac_task, os_match_task, officers_task, icij_task, gdelt_task,
             return_exceptions=True,
         )
 
@@ -441,24 +533,38 @@ async def person_profile(req: PersonProfileRequest):
 
         sanctions_hits = _safe(sanctions_hits, [])
         ofac_hits = _safe(ofac_hits, [])
+        os_match_hits = _safe(os_match_hits, [])
         officer_records = _safe(officer_records, [])
         icij_hits = _safe(icij_hits, [])
         gdelt_events = _safe(gdelt_events, {})
 
+        # Merge OpenSanctions search + match hits and keep strongest entries per ID.
+        merged_os: dict[str, Any] = {}
+        for entry in [*(sanctions_hits or []), *(os_match_hits or [])]:
+          if not getattr(entry, "id", None):
+            continue
+          existing = merged_os.get(entry.id)
+          if existing is None or (entry.score or 0) > (existing.score or 0):
+            merged_os[entry.id] = entry
+        sanctions_hits = list(merged_os.values())
+
         # Build sanctions summary
         is_sanctioned = bool(
-            [e for e in sanctions_hits if (e.score or 0) >= 0.7]
-            or [e for e in ofac_hits if (e.score or 0) >= 0.7]
+          [e for e in sanctions_hits if (e.score or 0) >= 0.6]
+          or [e for e in ofac_hits if (e.score or 0) >= 0.7]
         )
         sanction_programs: list[str] = []
         for e in ofac_hits:
             if (e.score or 0) >= 0.7 and e.programs:
                 sanction_programs.extend(e.programs)
+        for e in sanctions_hits:
+          if (e.score or 0) >= 0.6 and e.programs:
+            sanction_programs.extend(e.programs)
         sanction_programs = list(set(sanction_programs))[:5]
 
         # Best match for bio data
         best_match = next(
-            (e for e in sanctions_hits if (e.score or 0) >= 0.7),
+          (e for e in sanctions_hits if (e.score or 0) >= 0.6),
             sanctions_hits[0] if sanctions_hits else None,
         )
         aliases = best_match.aliases if best_match else []
@@ -515,6 +621,19 @@ async def person_profile(req: PersonProfileRequest):
             edges[key] = {"from": person_id, "to": eid, "label": "OFAC/OS match",
                           "arrows": "to", "dashes": True}
 
+        # OFAC-only rows (OpenSanctions may be empty without API key)
+        for e in [e for e in ofac_hits if (e.score or 0) >= 0.7][:6]:
+            slug = getattr(e, "id", None) or p_slug(e.name)
+            eid = f"ofac_{p_slug(str(slug))}"
+            if eid in nodes:
+                continue
+            nodes[eid] = _node(eid, e.name, "sanctions_list")
+            key = f"{person_id}→{eid}"
+            edges[key] = {
+                "from": person_id, "to": eid, "label": "OFAC SDN",
+                "arrows": "to", "dashes": True,
+            }
+
         for aff in affiliations[:8]:
             cid = f"co_{p_slug(aff['company'])}"
             nodes[cid] = _node(cid, aff["company"], "company")
@@ -531,6 +650,38 @@ async def person_profile(req: PersonProfileRequest):
             edges[key] = {"from": person_id, "to": oid,
                           "label": "offshore", "arrows": "to", "dashes": True}
 
+        # Start narrative generation concurrently with graph finalization
+        compact = {
+            "name": name,
+            "is_sanctioned": is_sanctioned,
+            "sanction_programs": sanction_programs,
+            "nationality": nationality,
+            "affiliation_count": len(affiliations),
+            "affiliations_preview": [
+                {"company": a["company"], "role": a["role"]} for a in affiliations[:4]
+            ],
+            "offshore_connection_count": len(offshore),
+            "recent_event_count": len(recent_events),
+            "sources_searched": ["OpenSanctions", "OFAC SDN", "OpenCorporates",
+                                  "ICIJ Offshore Leaks", "GDELT"],
+        }
+        person_prompt = (
+            f"You are an economic warfare analyst writing a due diligence summary for {name}. "
+            f"Sources searched: OpenSanctions, OFAC SDN, OpenCorporates (corporate affiliations), "
+            f"ICIJ Offshore Leaks, GDELT (recent news). Data as of {date.today().isoformat()}.\n"
+            f"Findings: {json.dumps(compact)}\n"
+            f"Write 3-5 sentences characterizing this individual's risk profile. "
+            f"If no derogatory findings were found, state that clearly and note what the "
+            f"clean profile means analytically."
+        )
+        narrative_task = asyncio.create_task(_generate_narrative(person_prompt))
+
+        graph_result = {
+            "nodes": list(nodes.values()),
+            "edges": list(edges.values()),
+        }
+        narrative = await narrative_task
+
         return JSONResponse(content={
             "name": name,
             "is_sanctioned": is_sanctioned,
@@ -541,10 +692,8 @@ async def person_profile(req: PersonProfileRequest):
             "affiliations": affiliations,
             "offshore_connections": offshore,
             "recent_events": recent_events,
-            "graph": {
-                "nodes": list(nodes.values()),
-                "edges": list(edges.values()),
-            },
+            "graph": graph_result,
+            "narrative": narrative,
             "sources": ["OpenSanctions", "OFAC SDN", "OpenCorporates", "ICIJ Offshore Leaks", "GDELT"],
         })
 
@@ -592,8 +741,17 @@ async def vessel_track(req: VesselTrackRequest):
         # OFAC sanctions check for vessel name
         ofac_client = OFACClient()
         vessel_name = vessel_detail.get("name", query)
-        ofac_hits = await ofac_client.search(vessel_name)
+        # Restrict to SDN rows typed as *vessel* to avoid name collisions on person/org "Lana"-like strings.
+        ofac_hits = await ofac_client.search(vessel_name, entity_type="vessel")
         sanctions_hits = [e for e in ofac_hits if (e.score or 0) >= 0.75]
+        # If the hull is not an SDN vessel row, check listed owner (e.g. oligarch yachts).
+        if not sanctions_hits and vessel_detail.get("owner"):
+            owner_hits = await ofac_client.search(
+                str(vessel_detail["owner"]), entity_type="person"
+            )
+            sanctions_hits = [
+                e for e in owner_hits if (e.score or 0) >= 0.75
+            ][:6]
         is_sanctioned = bool(sanctions_hits)
 
         # Build vis.js graph: vessel → flag state → operator → sanctions
@@ -630,6 +788,35 @@ async def vessel_track(req: VesselTrackRequest):
             if isinstance(p, dict) and "latitude" in p and "longitude" in p
         ]
 
+        # Start narrative generation concurrently with graph finalization
+        compact = {
+            "name": vessel_name,
+            "imo": vessel_detail.get("imo"),
+            "flag": vessel_detail.get("flag"),
+            "vessel_type": vessel_detail.get("vessel_type"),
+            "owner": vessel_detail.get("owner"),
+            "is_sanctioned": is_sanctioned,
+            "sanction_programs": [
+                p for e in sanctions_hits for p in (e.programs or [])
+            ][:5],
+            "route_point_count": len(route_points),
+            "has_live_ais": bool(route_points),
+        }
+        vessel_prompt = (
+            f"You are a maritime intelligence analyst. Given the following vessel intelligence "
+            f"for {vessel_name}, write 3-5 sentences characterizing the risk profile: "
+            f"sanctions status, flag-of-convenience indicators, ownership opacity, and any "
+            f"dark shipping patterns evident from route history.\n"
+            f"Data: {json.dumps(compact)}"
+        )
+        narrative_task = asyncio.create_task(_generate_narrative(vessel_prompt))
+
+        graph_result = {
+            "nodes": list(nodes.values()),
+            "edges": list(edges.values()),
+        }
+        narrative = await narrative_task
+
         return JSONResponse(content={
             "vessel": vessel_detail,
             "is_sanctioned": is_sanctioned,
@@ -638,10 +825,8 @@ async def vessel_track(req: VesselTrackRequest):
                 for e in sanctions_hits
             ],
             "route_history": route_points[-20:],
-            "graph": {
-                "nodes": list(nodes.values()),
-                "edges": list(edges.values()),
-            },
+            "graph": graph_result,
+            "narrative": narrative,
             "sources": ["Datalastic AIS", "OFAC SDN"],
         })
 
@@ -693,22 +878,236 @@ _SECTOR_COMPANIES: dict[str, list[dict]] = {
         {"name": "Nokia", "ticker": "NOK", "country": "FI"},
         {"name": "China Mobile", "ticker": "0941.HK", "country": "CN"},
     ],
+    "defense_aerospace": [
+        {"name": "Lockheed Martin", "ticker": "LMT", "country": "US"},
+        {"name": "RTX (Raytheon)", "ticker": "RTX", "country": "US"},
+        {"name": "Northrop Grumman", "ticker": "NOC", "country": "US"},
+        {"name": "L3Harris Technologies", "ticker": "LHX", "country": "US"},
+        {"name": "BAE Systems", "ticker": "BAESY", "country": "GB"},
+        {"name": "Leonardo", "ticker": "FINMY", "country": "IT"},
+        {"name": "Thales", "ticker": "THLEF", "country": "FR"},
+        {"name": "AVIC (private)", "ticker": None, "country": "CN"},
+    ],
+    "aircraft_mro": [
+        {"name": "AAR Corp", "ticker": "AIR", "country": "US"},
+        {"name": "Heico Corporation", "ticker": "HEI", "country": "US"},
+        {"name": "TransDigm Group", "ticker": "TDG", "country": "US"},
+        {"name": "StandardAero (private)", "ticker": None, "country": "US"},
+        {"name": "Lufthansa Technik (private)", "ticker": None, "country": "DE"},
+        {"name": "ST Engineering", "ticker": "S63.SI", "country": "SG"},
+        {"name": "HAECO", "ticker": "0044.HK", "country": "HK"},
+        {"name": "VSMPO-AVISMA (titanium supplier)", "ticker": None, "country": "RU"},
+    ],
+    "critical_minerals": [
+        {"name": "MP Materials", "ticker": "MP", "country": "US"},
+        {"name": "Lynas Rare Earths", "ticker": "LYC.AX", "country": "AU"},
+        {"name": "Albemarle", "ticker": "ALB", "country": "US"},
+        {"name": "Ganfeng Lithium", "ticker": "1772.HK", "country": "CN"},
+        {"name": "China Northern Rare Earth", "ticker": "600111.SS", "country": "CN"},
+        {"name": "Pilbara Minerals", "ticker": "PLS.AX", "country": "AU"},
+    ],
+    "dual_use_tech": [
+        {"name": "DJI (private)", "ticker": None, "country": "CN"},
+        {"name": "Hikvision", "ticker": "002415.SZ", "country": "CN"},
+        {"name": "Dahua Technology", "ticker": "002236.SZ", "country": "CN"},
+        {"name": "SenseTime", "ticker": "0020.HK", "country": "CN"},
+        {"name": "Megvii (private)", "ticker": None, "country": "CN"},
+    ],
+    "port_logistics": [
+        {"name": "COSCO Shipping Ports", "ticker": "1199.HK", "country": "CN"},
+        {"name": "Hutchison Ports (private)", "ticker": None, "country": "HK"},
+        {"name": "DP World (private)", "ticker": None, "country": "AE"},
+        {"name": "PSA International (private)", "ticker": None, "country": "SG"},
+        {"name": "ICTSI", "ticker": "ICT.PS", "country": "PH"},
+    ],
+    "financial": [
+        {"name": "Sberbank", "ticker": "SBRCY", "country": "RU"},
+        {"name": "VTB Bank", "ticker": "VTBR.ME", "country": "RU"},
+        {"name": "Bank of China", "ticker": "3988.HK", "country": "CN"},
+        {"name": "HSBC", "ticker": "HSBC", "country": "GB"},
+        {"name": "Standard Chartered", "ticker": "SCBFF", "country": "GB"},
+    ],
+    "space_satellite": [
+        {"name": "Planet Labs", "ticker": "PL", "country": "US"},
+        {"name": "Maxar Technologies (private)", "ticker": None, "country": "US"},
+        {"name": "Iridium", "ticker": "IRDM", "country": "US"},
+        {"name": "Spire Global", "ticker": "SPIR", "country": "US"},
+        {"name": "CASC (private)", "ticker": None, "country": "CN"},
+    ],
+}
+
+# Aliases for sector matching — maps query terms to registry keys
+_SECTOR_ALIASES: dict[str, str] = {
+    "mro": "aircraft_mro",
+    "aviation maintenance": "aircraft_mro",
+    "aircraft repair": "aircraft_mro",
+    "aircraft mro": "aircraft_mro",
+    "aviation mro": "aircraft_mro",
+    "defense": "defense_aerospace",
+    "defence": "defense_aerospace",
+    "aerospace": "defense_aerospace",
+    "defense primes": "defense_aerospace",
+    "rare earth": "critical_minerals",
+    "rare earths": "critical_minerals",
+    "lithium": "critical_minerals",
+    "cobalt": "critical_minerals",
+    "critical mineral": "critical_minerals",
+    "port": "port_logistics",
+    "ports": "port_logistics",
+    "logistics": "port_logistics",
+    "shipping infrastructure": "port_logistics",
+    "banking": "financial",
+    "finance": "financial",
+    "correspondent banking": "financial",
+    "surveillance tech": "dual_use_tech",
+    "surveillance": "dual_use_tech",
+    "dual use": "dual_use_tech",
+    "satellite": "space_satellite",
+    "space": "space_satellite",
+    "commercial space": "space_satellite",
+    "chips": "semiconductor",
+    "chip": "semiconductor",
+    "semis": "semiconductor",
+    "oil": "energy",
+    "gas": "energy",
+    "oil and gas": "energy",
 }
 
 
 def _match_sector(query: str) -> tuple[str, list[dict]]:
-    """Find the closest sector match for a query."""
-    q = query.lower()
+    """Find a sector from registry/aliases; no LLM, no generic fallback."""
+    q = query.lower().strip()
+
+    # 1. Exact key match
+    if q in _SECTOR_COMPANIES:
+        return q, _SECTOR_COMPANIES[q]
+
+    # 2. Alias lookup
+    if q in _SECTOR_ALIASES:
+        key = _SECTOR_ALIASES[q]
+        return key, _SECTOR_COMPANIES[key]
+
+    # 3. Substring match against aliases
+    for alias, key in _SECTOR_ALIASES.items():
+        if alias in q or q in alias:
+            return key, _SECTOR_COMPANIES[key]
+
+    # 4. Substring match against registry keys
     for sector_key, companies in _SECTOR_COMPANIES.items():
-        if sector_key in q:
+        if sector_key in q or q in sector_key:
             return sector_key, companies
-    # Fuzzy: check partial matches
+
+    # 5. Word-level partial match against registry keys
     for sector_key, companies in _SECTOR_COMPANIES.items():
-        words = sector_key.split()
-        if any(w in q for w in words):
+        words = sector_key.replace("_", " ").split()
+        if any(w in q for w in words if len(w) > 3):
             return sector_key, companies
-    # Default: return semiconductor as fallback for demo
-    return list(_SECTOR_COMPANIES.keys())[0], list(_SECTOR_COMPANIES.values())[0]
+
+    return "", []
+
+
+def _clean_ticker_value(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    s = str(raw).strip().upper()
+    if not s or s in {"NONE", "NULL", "N/A", "PRIVATE", "-"}:
+        return None
+    return s
+
+
+async def _llm_match_sector_key(query: str) -> str:
+    """Use the configured LLM to map free text to a known sector key or 'unknown'."""
+    client = _get_anthropic_client()
+    if not client:
+        return "unknown"
+
+    keys = sorted(_SECTOR_COMPANIES.keys())
+    prompt = (
+        "Classify the sector phrase into ONE known key or 'unknown'. "
+        "Return JSON only with schema {\"sector_key\": \"...\"}.\n"
+        f"Known keys: {keys}\n"
+        f"Input: {query}\n"
+        "Rules: if confidence is low, return unknown."
+    )
+    response = await asyncio.wait_for(
+        client.messages.create(
+            model=config.model,
+            max_tokens=120,
+            messages=[{"role": "user", "content": prompt}],
+        ),
+        timeout=10.0,
+    )
+    text = response.content[0].text
+    payload = json.loads(_extract_json(text))
+    key = str(payload.get("sector_key", "unknown")).strip().lower()
+    return key if key in _SECTOR_COMPANIES else "unknown"
+
+
+async def _llm_generate_sector_companies(query: str) -> list[dict[str, Any]]:
+    """Generate a lightweight temporary company list for unknown sectors."""
+    client = _get_anthropic_client()
+    if not client:
+        return []
+
+    prompt = (
+        "Generate 8 representative companies for the requested sector. "
+        "Return JSON only as an array of objects with keys: name, ticker, country.\n"
+        "Ticker should be null when private/unknown. Country should be 2-letter code when possible.\n"
+        f"Sector query: {query}"
+    )
+    response = await asyncio.wait_for(
+        client.messages.create(
+            model=config.model,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        ),
+        timeout=12.0,
+    )
+    text = response.content[0].text
+    rows = json.loads(_extract_json(text))
+    if not isinstance(rows, list):
+        return []
+
+    companies: list[dict[str, Any]] = []
+    for row in rows[:8]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "")).strip()
+        if not name:
+            continue
+        companies.append(
+            {
+                "name": name,
+                "ticker": _clean_ticker_value(row.get("ticker")),
+                "country": str(row.get("country", "")).strip().upper()[:2] or None,
+            }
+        )
+    return companies
+
+
+async def _resolve_sector(query: str) -> tuple[str, list[dict[str, Any]]]:
+    """Resolve sector with deterministic matching first, then LLM fallback."""
+    key, companies = _match_sector(query)
+    if key and companies:
+        return key, companies
+
+    try:
+        llm_key = await _llm_match_sector_key(query)
+    except Exception as exc:
+        logger.warning("LLM sector key match failed for query=%r: %s", query, exc)
+        llm_key = "unknown"
+
+    if llm_key != "unknown":
+        return llm_key, _SECTOR_COMPANIES[llm_key]
+
+    try:
+        dynamic_companies = await _llm_generate_sector_companies(query)
+    except Exception as exc:
+        logger.warning("LLM dynamic sector company generation failed for query=%r: %s", query, exc)
+        dynamic_companies = []
+
+    dynamic_key = query.lower().strip().replace(" ", "_")[:40] or "unknown"
+    return dynamic_key, dynamic_companies
 
 
 @app.post("/api/sector-analysis")
@@ -719,7 +1118,15 @@ async def sector_analysis(req: SectorAnalysisRequest):
         raise HTTPException(status_code=400, detail="Sector cannot be empty")
 
     try:
-        sector_key, companies = _match_sector(sector)
+        sector_key, companies = await _resolve_sector(sector)
+        if not companies:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Could not resolve sector to a supported registry key and failed "
+                    "to generate a dynamic company set. Try a more specific sector phrase."
+                ),
+            )
 
         # Check OFAC status for top companies in parallel
         ofac_client = OFACClient()
@@ -729,7 +1136,11 @@ async def sector_analysis(req: SectorAnalysisRequest):
         company_profiles = []
         for co, result in zip(companies, sanction_results):
             hits = result if not isinstance(result, Exception) else []
-            high_conf = [e for e in hits if (e.score or 0) >= 0.75] if hits else []
+            high_conf = [
+                e
+                for e in hits
+                if (e.score or 0) >= 0.75 and _ofac_hit_matches_company_label(co["name"], e)
+            ] if hits else []
             company_profiles.append({
                 "name": co["name"],
                 "ticker": co.get("ticker"),
@@ -739,6 +1150,56 @@ async def sector_analysis(req: SectorAnalysisRequest):
             })
 
         sanctioned_count = sum(1 for c in company_profiles if c["is_sanctioned"])
+
+        # Optional enrichment for defense/aviation-style sectors.
+        supply_chain_exposures: list[dict[str, Any]] = []
+        geopolitical_tensions: list[dict[str, Any]] = []
+
+        sector_hint = f"{sector_key} {sector}".lower()
+        if any(k in sector_hint for k in ("aircraft", "mro", "defense", "aerospace")):
+          commodity_specs = [
+            ("titanium", "810890"),
+            ("carbon_fiber", "681510"),
+            ("rare_earth_magnets", "850511"),
+          ]
+          supply_tasks = [
+            get_supply_chain_exposure(country="USA", commodity_code=code)
+            for _name, code in commodity_specs
+          ]
+          tension_tasks = [
+            get_bilateral_tensions("United States", "China", days=180),
+            get_bilateral_tensions("United States", "Russia", days=180),
+          ]
+          supply_results, tension_results = await asyncio.gather(
+            asyncio.gather(*supply_tasks, return_exceptions=True),
+            asyncio.gather(*tension_tasks, return_exceptions=True),
+          )
+
+          for (label, code), result in zip(commodity_specs, supply_results):
+            if isinstance(result, Exception):
+              continue
+            payload = result.get("data", result)
+            supply_chain_exposures.append(
+              {
+                "label": label,
+                "commodity_code": code,
+                "import_share_pct": payload.get("import_share_pct", 0.0),
+                "top_suppliers": payload.get("top_suppliers", [])[:5],
+              }
+            )
+
+          for pair, result in zip(("US-China", "US-Russia"), tension_results):
+            if isinstance(result, Exception):
+              continue
+            payload = result.get("data", result)
+            geopolitical_tensions.append(
+              {
+                "pair": pair,
+                "event_count": payload.get("event_count", 0),
+                "tension_level": payload.get("tension_level", "unknown"),
+                "avg_tone": payload.get("avg_tone"),
+              }
+            )
 
         # Build sector vis.js graph
         nodes: dict[str, dict] = {}
@@ -767,16 +1228,47 @@ async def sector_analysis(req: SectorAnalysisRequest):
                         "arrows": "to", "dashes": True,
                     }
 
+        # Start narrative generation concurrently with graph finalization
+        compact = {
+            "sector": sector_key,
+            "company_count": len(company_profiles),
+            "sanctioned_count": sanctioned_count,
+            "sanctioned_entities": [
+                {"name": c["name"], "country": c["country"]}
+                for c in company_profiles if c["is_sanctioned"]
+            ],
+            "key_players": [
+                {"name": c["name"], "country": c["country"], "ticker": c["ticker"]}
+                for c in company_profiles[:6]
+            ],
+              "supply_chain_exposure_count": len(supply_chain_exposures),
+              "geopolitical_tension_pairs": geopolitical_tensions,
+        }
+        sector_prompt = (
+            f"You are an economic warfare analyst. Given the following data on the "
+            f"{sector_key.replace('_', ' ')} sector, write 3-5 sentences identifying the "
+            f"most significant risk vectors: entity sanctions exposure, supply chain "
+            f"concentration, geopolitical exposure, and regulatory trajectory.\n"
+            f"Data: {json.dumps(compact)}"
+        )
+        narrative_task = asyncio.create_task(_generate_narrative(sector_prompt))
+
+        graph_result = {
+            "nodes": list(nodes.values()),
+            "edges": list(edges.values()),
+        }
+        narrative = await narrative_task
+
         return JSONResponse(content={
             "sector": sector,
             "sector_key": sector_key,
             "company_count": len(company_profiles),
             "sanctioned_count": sanctioned_count,
             "companies": company_profiles,
-            "graph": {
-                "nodes": list(nodes.values()),
-                "edges": list(edges.values()),
-            },
+            "graph": graph_result,
+            "narrative": narrative,
+            "supply_chain_exposures": supply_chain_exposures,
+            "geopolitical_tensions": geopolitical_tensions,
             "sources": ["OFAC SDN", "OpenSanctions"],
         })
 
@@ -785,10 +1277,9 @@ async def sector_analysis(req: SectorAnalysisRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- Background analysis runner (commented out for demo) ---
-# async def _run_analysis(analysis_id: str, query: str) -> None:
-#     """Run the full analysis pipeline, updating status as we go."""
-#     ... (preserved in git history)
+# --- Legacy note ---
+# A previous revision had the async analysis runner disabled in this section.
+# The active implementation now lives near the /api/analyze endpoints above.
 
 
 # --- Inline frontend ---
@@ -876,6 +1367,7 @@ def _read_index_html() -> str:
   .proj-card .proj-label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
   .proj-card .proj-value { font-size: 22px; font-weight: 600; margin-top: 4px; }
   .proj-card .proj-range { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .proj-card .proj-note { font-size: 11px; color: #6e7681; margin-top: 4px; font-style: italic; }
   .proj-value.negative { color: #f85149; }
   .proj-value.positive { color: #3fb950; }
 
@@ -964,7 +1456,8 @@ def _read_index_html() -> str:
   <div class="query-box">
     <input type="text" id="queryInput" placeholder="What happens if we sanction...? (enter a company name or stock ticker)" />
     <div class="btn-row">
-      <button class="btn btn-primary" id="analyzeBtn" onclick="startAnalysis()">Analyze Impact</button>
+      <button class="btn btn-primary" id="analyzeBtn" onclick="startAnalysis()">Analyze</button>
+      <button class="btn btn-secondary" id="deepAnalyzeBtn" onclick="startDeepAnalysis()" style="border-color:#58a6ff;color:#58a6ff;">Deep Analysis</button>
       <button class="btn btn-secondary" onclick="clearAll()">Clear</button>
       <span id="healthBadge"></span>
       <span id="entityTypeBadge" style="display:none;" class="entity-type-badge"></span>
@@ -976,6 +1469,24 @@ def _read_index_html() -> str:
       <span class="example-chip" data-ticker="BIDU" onclick="runExample(this)">Sanction Baidu (BIDU)</span>
       <span class="example-chip" data-ticker="0763.HK" onclick="runExample(this)">ZTE Corp (0763.HK)</span>
       <span class="example-chip" data-ticker="INTC" onclick="runExample(this)">Intel chip restrictions (INTC)</span>
+    </div>
+  </div>
+
+  <div id="orchestratorPanel" style="display:none; margin-top:32px;">
+    <div class="graph-section-header">Deep Analysis Results</div>
+    <div class="info-card" style="margin-bottom:16px;">
+      <h3>Executive Summary</h3>
+      <div id="orchestratorSummary" style="line-height:1.6; font-size:14px; color:#c9d1d9;">—</div>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+      <div class="info-card">
+        <h3>Key Findings</h3>
+        <ul id="orchestratorFindings" class="events-list"><li style="color:#484f58">No findings</li></ul>
+      </div>
+      <div class="info-card">
+        <h3>Recommendations</h3>
+        <ul id="orchestratorRecommendations" class="events-list"><li style="color:#484f58">No recommendations</li></ul>
+      </div>
     </div>
   </div>
 
@@ -1153,6 +1664,7 @@ let visNetwork = null;
 let personNetwork = null;
 let vesselNetwork = null;
 let sectorNetwork = null;
+let orchestratorProgressCursor = 0;
 
 const VIS_OPTS = {
   physics: {
@@ -1261,6 +1773,8 @@ function clearAll() {
   document.getElementById('personPanel').style.display = 'none';
   document.getElementById('vesselPanel').style.display = 'none';
   document.getElementById('sectorPanel').style.display = 'none';
+  document.getElementById('orchestratorPanel').style.display = 'none';
+  orchestratorProgressCursor = 0;
   const badge = document.getElementById('entityTypeBadge');
   badge.style.display = 'none';
   badge.textContent = '';
@@ -1343,6 +1857,9 @@ async function startAnalysis(tickerOverride) {
   document.getElementById('personPanel').style.display = 'none';
   document.getElementById('vesselPanel').style.display = 'none';
   document.getElementById('sectorPanel').style.display = 'none';
+  document.getElementById('orchestratorPanel').style.display = 'none';
+  const deepBtn = document.getElementById('deepAnalyzeBtn');
+  if (deepBtn) deepBtn.disabled = true;
   const _badge = document.getElementById('entityTypeBadge');
   _badge.style.display = 'none'; _badge.className = 'entity-type-badge';
 
@@ -1401,6 +1918,89 @@ async function startAnalysis(tickerOverride) {
 
   document.getElementById('progressSpinner').style.display = 'none';
   btn.disabled = false;
+  if (deepBtn) deepBtn.disabled = false;
+}
+
+async function startDeepAnalysis() {
+  const raw = document.getElementById('queryInput').value.trim();
+  if (!raw) return;
+
+  const analyzeBtn = document.getElementById('analyzeBtn');
+  const deepBtn = document.getElementById('deepAnalyzeBtn');
+  analyzeBtn.disabled = true;
+  deepBtn.disabled = true;
+
+  document.getElementById('resultsPanel').style.display = 'none';
+  document.getElementById('personPanel').style.display = 'none';
+  document.getElementById('vesselPanel').style.display = 'none';
+  document.getElementById('sectorPanel').style.display = 'none';
+  document.getElementById('orchestratorPanel').style.display = 'none';
+  document.getElementById('graphSection').classList.remove('active');
+  const badge = document.getElementById('entityTypeBadge');
+  badge.textContent = 'Deep Analysis';
+  badge.className = 'entity-type-badge sector';
+  badge.style.display = 'inline-flex';
+
+  const panel = document.getElementById('progressPanel');
+  panel.classList.add('active');
+  document.getElementById('progressLog').innerHTML = '';
+  document.getElementById('progressSpinner').style.display = 'inline-block';
+  orchestratorProgressCursor = 0;
+
+  try {
+    addProgress('Submitting query to orchestrator...', 'step');
+    const startResp = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: raw }),
+    });
+    if (!startResp.ok) {
+      const err = await startResp.json();
+      throw new Error(err.detail || 'Failed to start analysis');
+    }
+    const started = await startResp.json();
+    addProgress('Pipeline started: ' + started.analysis_id, 'step');
+
+    let completed = false;
+    let attempts = 0;
+    while (!completed && attempts < 180) {
+      attempts += 1;
+      await new Promise((r) => setTimeout(r, 2000));
+
+      const pollResp = await fetch('/api/analyze/' + started.analysis_id);
+      if (!pollResp.ok) {
+        throw new Error('Polling failed with HTTP ' + pollResp.status);
+      }
+      const status = await pollResp.json();
+
+      const progress = Array.isArray(status.progress) ? status.progress : [];
+      while (orchestratorProgressCursor < progress.length) {
+        const msg = String(progress[orchestratorProgressCursor] || '');
+        const kind = msg.toLowerCase().startsWith('error') ? 'error'
+          : (msg === 'Done.' || msg.toLowerCase().includes('complete') ? 'done' : 'step');
+        addProgress(msg, kind);
+        orchestratorProgressCursor += 1;
+      }
+
+      if (status.status === 'completed' && status.result) {
+        renderOrchestratorResults(status.result);
+        completed = true;
+      } else if (status.status === 'failed') {
+        throw new Error(status.error || 'Deep analysis failed');
+      }
+    }
+
+    if (!completed) {
+      throw new Error('Deep analysis timed out while waiting for completion');
+    }
+
+  } catch (e) {
+    addProgress('Error: ' + e.message, 'error');
+  } finally {
+    document.getElementById('progressSpinner').style.display = 'none';
+    analyzeBtn.disabled = false;
+    deepBtn.disabled = false;
+  }
 }
 
 // ── Company (existing flow) ──────────────────────────────────────────────────
@@ -1613,6 +2213,31 @@ function renderSectorProfile(data) {
     g.nodes, g.edges, sectorNetwork);
 }
 
+function renderOrchestratorResults(data) {
+  const panel = document.getElementById('orchestratorPanel');
+  panel.style.display = 'block';
+
+  document.getElementById('orchestratorSummary').textContent =
+    data.executive_summary || 'No executive summary returned.';
+
+  const findings = document.getElementById('orchestratorFindings');
+  const findingRows = Array.isArray(data.findings) ? data.findings : [];
+  findings.innerHTML = findingRows.length
+    ? findingRows.slice(0, 12).map((f) => {
+        const category = (f.category || 'General').toString();
+        const text = (f.finding || '').toString();
+        const conf = (f.confidence || 'LOW').toString();
+        return '<li><div class="event-date">' + category + ' · ' + conf + '</div>' + text + '</li>';
+      }).join('')
+    : '<li style="color:#484f58">No findings returned</li>';
+
+  const recs = document.getElementById('orchestratorRecommendations');
+  const recRows = Array.isArray(data.recommendations) ? data.recommendations : [];
+  recs.innerHTML = recRows.length
+    ? recRows.slice(0, 12).map((r) => '<li>' + String(r) + '</li>').join('')
+    : '<li style="color:#484f58">No recommendations returned</li>';
+}
+
 function addProgress(msg, type) {
   const log = document.getElementById('progressLog');
   const div = document.createElement('div');
@@ -1651,15 +2276,27 @@ function renderResults(data) {
   `;
 
   // Projection summary
-  document.getElementById('projectionSummary').innerHTML = ['day_30', 'day_60', 'day_90'].map(key => {
-    const expected = proj[key + '_expected'];
+  const summaryCards = [];
+  if (proj.pre_event_decline !== undefined) {
+    const cls = proj.pre_event_decline < 0 ? 'negative' : 'positive';
+    const sign = proj.pre_event_decline >= 0 ? '+' : '';
+    summaryCards.push('<div class="proj-card"><div class="proj-label">Pre-Event Decline</div><div class="proj-value ' + cls + '">' + sign + proj.pre_event_decline.toFixed(1) + '%</div><div class="proj-note">Already priced in</div></div>');
+  }
+  ['day_30', 'day_60', 'day_90'].forEach(key => {
+    const val = proj[key + '_post'];
     const range = proj[key + '_range'];
-    const label = key.replace('day_', '') + '-Day';
-    if (expected === undefined) return '<div class="proj-card"><div class="proj-label">' + label + '</div><div class="proj-value" style="color:#8b949e">N/A</div></div>';
-    const cls = expected < 0 ? 'negative' : 'positive';
-    const sign = expected >= 0 ? '+' : '';
-    return '<div class="proj-card"><div class="proj-label">' + label + ' Projection</div><div class="proj-value ' + cls + '">' + sign + expected.toFixed(1) + '%</div>' + (range ? '<div class="proj-range">' + range[0].toFixed(1) + '% to ' + range[1].toFixed(1) + '%</div>' : '') + '</div>';
-  }).join('');
+    const label = key.replace('day_', '') + '-Day Post';
+    if (val === undefined) { summaryCards.push('<div class="proj-card"><div class="proj-label">' + label + '</div><div class="proj-value" style="color:#8b949e">N/A</div></div>'); return; }
+    const cls = val < 0 ? 'negative' : 'positive';
+    const sign = val >= 0 ? '+' : '';
+    summaryCards.push('<div class="proj-card"><div class="proj-label">' + label + '</div><div class="proj-value ' + cls + '">' + sign + val.toFixed(1) + '%</div>' + (range ? '<div class="proj-range">' + range[0].toFixed(1) + '% to ' + range[1].toFixed(1) + '%</div>' : '') + '</div>');
+  });
+  if (proj.max_drawdown !== undefined) {
+    const cls = proj.max_drawdown < 0 ? 'negative' : 'positive';
+    const sign = proj.max_drawdown >= 0 ? '+' : '';
+    summaryCards.push('<div class="proj-card"><div class="proj-label">Peak-to-Trough</div><div class="proj-value ' + cls + '">' + sign + proj.max_drawdown.toFixed(1) + '%</div><div class="proj-note">Worst point, full window</div></div>');
+  }
+  document.getElementById('projectionSummary').innerHTML = summaryCards.join('');
 
   // Comparables table with toggle
   const tbody = document.querySelector('#comparablesTable tbody');

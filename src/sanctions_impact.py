@@ -31,13 +31,14 @@ CHART_COLORS = [
 # Curated reference dataset — US-accessible tickers only
 # ---------------------------------------------------------------------------
 SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
-    # --- Direct sanction/ban targets with clear negative price impact ---
+    # --- OFAC/CCMC designation or Chinese regulatory crackdown ---
     {
         "name": "ZTE Corp",
         "ticker": "0763.HK",
         "sanction_date": "2018-04-16",
         "description": "US Commerce Dept denial order — total export ban",
         "sector": "telecom",
+        "sanction_type": "ofac_ccmc",
         # 90d: -44.5%
     },
     {
@@ -46,6 +47,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2020-11-03",
         "description": "ANT Group IPO halted — regulatory crackdown begins",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 90d: -20.5%
     },
     {
@@ -54,6 +56,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-01-14",
         "description": "CCMC blacklist designation — investment ban",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 30d: -21.0%
     },
     {
@@ -62,6 +65,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-07-02",
         "description": "China cybersecurity probe — data security crackdown",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 30d: -44.8%
     },
     {
@@ -70,6 +74,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-07-24",
         "description": "China tech crackdown — antitrust & data security",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 90d: -36.3%
     },
     {
@@ -78,6 +83,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-07-24",
         "description": "China tech regulatory storm — content/data controls",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 90d: -28.5%
     },
     {
@@ -86,6 +92,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-07-24",
         "description": "Chinese ADR delisting fears — SEC/PCAOB scrutiny",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 90d: -11.3%
     },
     {
@@ -94,6 +101,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-07-24",
         "description": "China tech crackdown — e-commerce regulatory pressure",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 90d: -30.0%
     },
     {
@@ -102,6 +110,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-01-14",
         "description": "CCMC designation — AI/military-linked concerns",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 60d: -13.0%, 90d: -22.6%
     },
     {
@@ -110,6 +119,7 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2023-05-21",
         "description": "China retaliatory ban — cybersecurity review failure",
         "sector": "semiconductors",
+        "sanction_type": "retaliation",
         # 30d: -10.2%
     },
     {
@@ -118,7 +128,134 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_date": "2021-07-24",
         "description": "China Internet sector-wide sanctions/regulatory impact",
         "sector": "tech",
+        "sanction_type": "ofac_ccmc",
         # 90d: -13.1%
+    },
+    # --- US export control actions ---
+    {
+        "name": "Nvidia",
+        "ticker": "NVDA",
+        "sanction_date": "2022-10-07",
+        "description": "BIS advanced chip export rule — A100/H100 banned to China",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_designer",
+    },
+    {
+        "name": "Applied Materials",
+        "ticker": "AMAT",
+        "sanction_date": "2022-10-07",
+        "description": "BIS October 2022 rule — fab equipment export controls",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_equipment",
+    },
+    {
+        "name": "ASML",
+        "ticker": "ASML",
+        "sanction_date": "2023-01-28",
+        "description": "Dutch EUV export license revoked — US pressure on Netherlands",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_equipment",
+    },
+    {
+        "name": "Qualcomm",
+        "ticker": "QCOM",
+        "sanction_date": "2019-05-15",
+        "description": "Huawei supply ban — BIS Entity List export restriction",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_designer",
+    },
+    {
+        "name": "Lam Research",
+        "ticker": "LRCX",
+        "sanction_date": "2022-10-07",
+        "description": "BIS October 2022 rule — etch/deposition equipment export controls",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_equipment",
+    },
+    {
+        "name": "KLA Corporation",
+        "ticker": "KLAC",
+        "sanction_date": "2022-10-07",
+        "description": "BIS October 2022 rule — process control equipment export controls",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_equipment",
+    },
+    {
+        "name": "Marvell Technology",
+        "ticker": "MRVL",
+        "sanction_date": "2022-10-07",
+        "description": "BIS October 2022 rule — networking/storage chip China revenue exposure",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_designer",
+    },
+    {
+        "name": "Western Digital",
+        "ticker": "WDC",
+        "sanction_date": "2022-10-07",
+        "description": "BIS October 2022 rule — NAND/HDD China supply chain exposure",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_designer",
+    },
+    {
+        "name": "Intel",
+        "ticker": "INTC",
+        "sanction_date": "2023-10-17",
+        "description": "BIS advanced chip rule tightened — Gaudi AI chip China ban",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_designer",
+    },
+    # --- BIS penalty ---
+    {
+        "name": "Seagate",
+        "ticker": "STX",
+        "sanction_date": "2023-04-19",
+        "description": "BIS $300M fine for Huawei HDD sales in violation of export rules",
+        "sector": "semiconductors",
+        "sanction_type": "bis_penalty",
+    },
+    # --- Sectoral energy sanctions ---
+    {
+        "name": "Gazprom ADR",
+        "ticker": "OGZPY",
+        "sanction_date": "2022-02-24",
+        "description": "EU/US sectoral energy sanctions — Russia Ukraine invasion",
+        "sector": "energy",
+        "sanction_type": "sectoral",
+    },
+    # --- SWIFT exclusion ---
+    {
+        "name": "Sberbank ADR",
+        "ticker": "SBRCY",
+        "sanction_date": "2022-02-24",
+        "description": "SWIFT exclusion — Russia financial sector sanctions",
+        "sector": "finance",
+        "sanction_type": "swift_cutoff",
+    },
+    {
+        "name": "VTB Bank",
+        "ticker": "VTBR.ME",
+        "sanction_date": "2022-02-24",
+        "description": "SWIFT exclusion + OFAC SDN — Russia financial sector sanctions",
+        "sector": "finance",
+        "sanction_type": "swift_cutoff",
+    },
+    # --- OFAC/CCMC additions ---
+    {
+        "name": "NetEase",
+        "ticker": "NTES",
+        "sanction_date": "2021-07-24",
+        "description": "China tech crackdown — gaming/content regulatory pressure",
+        "sector": "tech",
+        "sanction_type": "ofac_ccmc",
     },
 ]
 
@@ -284,6 +421,8 @@ async def _fetch_comparable_curve(
         "sanction_date": sanction_date_str,
         "description": comp["description"],
         "sector": comp.get("sector", ""),
+        "sanction_type": comp.get("sanction_type", ""),
+        "industry": comp.get("industry", ""),
         "color": color,
         "curve": [{"day": d, "pct": p} for d, p in trading_days],
     }
@@ -291,10 +430,31 @@ async def _fetch_comparable_curve(
 
 async def get_comparable_curves(
     sector_filter: str | None = None,
+    sanction_type: str | None = None,
+    industry_filter: str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch normalized price curves for all comparable sanctions cases."""
     comparables = SANCTIONS_COMPARABLES
 
+    # Filter by sanction_type first (most specific)
+    if sanction_type:
+        type_filtered = [
+            c for c in comparables
+            if c.get("sanction_type", "") == sanction_type
+        ]
+        if len(type_filtered) >= 3:
+            comparables = type_filtered
+
+    # Sub-filter by industry within the sanction_type subset
+    if industry_filter:
+        industry_filtered = [
+            c for c in comparables
+            if c.get("industry", "") == industry_filter
+        ]
+        if len(industry_filtered) >= 3:
+            comparables = industry_filtered
+
+    # Then filter by sector within the remaining subset
     if sector_filter:
         related_sectors = SECTOR_GROUPS.get(sector_filter.lower(), [sector_filter.lower()])
         sector_filtered = [
@@ -324,23 +484,26 @@ def compute_projection(
     comparable_curves: list[dict[str, Any]],
     target_current_price: float,
 ) -> dict[str, Any]:
-    """Compute mean projection + confidence band from comparable curves."""
+    """Compute mean projection + confidence band from comparable curves.
+
+    Summary includes both pre-event decline (anticipatory selloff) and
+    post-announcement trajectory, so anticipated vs. surprise events read correctly.
+    """
     if not comparable_curves or not target_current_price:
         return {"mean": [], "upper": [], "lower": [], "summary": {}}
 
-    day_values: dict[int, list[float]] = {}
+    # Collect values for all days (pre and post)
+    all_day_values: dict[int, list[float]] = {}
     for curve_data in comparable_curves:
         for point in curve_data["curve"]:
-            day = point["day"]
-            if day >= 0:
-                day_values.setdefault(day, []).append(point["pct"])
+            all_day_values.setdefault(point["day"], []).append(point["pct"])
 
     mean_curve = []
     upper_band = []
     lower_band = []
 
-    for day in sorted(day_values.keys()):
-        values = day_values[day]
+    for day in sorted(all_day_values.keys()):
+        values = all_day_values[day]
         if len(values) < 2:
             continue
 
@@ -368,18 +531,41 @@ def compute_projection(
             "price": round(lower_price, 2),
         })
 
-    summary: dict[str, Any] = {}
-    for label, target_day in [("day_30", 30), ("day_60", 60), ("day_90", 90)]:
-        mean_pts = [p for p in mean_curve if p["day"] == target_day]
-        upper_pts = [p for p in upper_band if p["day"] == target_day]
-        lower_pts = [p for p in lower_band if p["day"] == target_day]
-        if mean_pts and upper_pts and lower_pts:
-            summary[f"{label}_expected"] = mean_pts[0]["pct"]
-            summary[f"{label}_range"] = [lower_pts[0]["pct"], upper_pts[0]["pct"]]
+    # --- Summary ---
+    pre_pcts = [p["pct"] for p in mean_curve if p["day"] < 0]
+    post_pcts_by_day = {p["day"]: p["pct"] for p in mean_curve if p["day"] >= 0}
 
-    if mean_curve:
-        all_mean_pcts = [p["pct"] for p in mean_curve]
-        summary["max_drawdown_expected"] = round(min(all_mean_pcts), 2)
+    summary: dict[str, Any] = {}
+
+    # Pre-event: drop from pre-event peak down to announcement day (day 0 = 0%).
+    # Positive pre_pcts = stock was higher before event (anticipated selloff into day 0).
+    # pre_event_decline is negative: -(peak above day-0) = how much was priced in already.
+    if pre_pcts:
+        pre_event_peak = max(pre_pcts)  # how high stock was relative to day-0 price
+        summary["pre_event_decline"] = round(-pre_event_peak, 2)  # negative = already priced in
+
+    # Post-announcement trajectory at 30 / 60 / 90 days
+    for label, target_day in [("day_30", 30), ("day_60", 60), ("day_90", 90)]:
+        # Find nearest available day at or after target
+        candidates = [d for d in post_pcts_by_day if d <= target_day]
+        if candidates:
+            nearest = max(candidates)
+            summary[f"{label}_post"] = post_pcts_by_day[nearest]
+            # Range from bands
+            upper_pts = {p["day"]: p["pct"] for p in upper_band if p["day"] >= 0}
+            lower_pts = {p["day"]: p["pct"] for p in lower_band if p["day"] >= 0}
+            u_candidates = [d for d in upper_pts if d <= target_day]
+            l_candidates = [d for d in lower_pts if d <= target_day]
+            if u_candidates and l_candidates:
+                summary[f"{label}_range"] = [
+                    round(lower_pts[max(l_candidates)], 2),
+                    round(upper_pts[max(u_candidates)], 2),
+                ]
+
+    # Peak-to-trough across the full window
+    all_mean_pcts = [p["pct"] for p in mean_curve]
+    if all_mean_pcts:
+        summary["max_drawdown"] = round(min(all_mean_pcts), 2)
 
     return {
         "mean": mean_curve,
@@ -413,9 +599,64 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
     }
     mapped_sector = sector_map.get(sector, sector)
 
-    curves_task = get_comparable_curves(sector_filter=mapped_sector or None)
+    sanctions_context = await sanctions_task
 
-    sanctions_context, curves = await asyncio.gather(sanctions_task, curves_task)
+    country_raw = (target_info.get("country") or "").lower()
+
+    # Infer sanction_type from country + sector (independent of current sanctions status).
+    # This determines which reference class best represents the risk scenario for this target.
+    inferred_sanction_type: str | None = None
+
+    def _is_western(c: str) -> bool:
+        return any(k in c for k in ("united states", "netherlands", "germany", "france",
+                                    "united kingdom", "japan", "korea", "taiwan", "australia",
+                                    "canada", "israel", "sweden", "finland", "singapore"))
+
+    def _is_chinese(c: str) -> bool:
+        return "china" in c or c in ("hong kong", "hk")
+
+    def _is_russian(c: str) -> bool:
+        return "russia" in c
+
+    industry_raw = (target_info.get("industry") or "").lower()
+
+    if _is_russian(country_raw) and mapped_sector in ("finance", "financials"):
+        inferred_sanction_type = "swift_cutoff"
+    elif _is_russian(country_raw) and mapped_sector in ("energy", "metals"):
+        inferred_sanction_type = "sectoral"
+    elif _is_chinese(country_raw) and (
+        mapped_sector in ("tech", "telecom", "semiconductors", "surveillance")
+        or any(k in industry_raw for k in ("internet", "software", "e-commerce", "electronic", "semiconductor"))
+    ):
+        inferred_sanction_type = "ofac_ccmc"
+    elif _is_western(country_raw) and mapped_sector in ("semiconductors", "tech", "telecom"):
+        inferred_sanction_type = "us_export_control"
+
+    # If the target is already sanctioned under a known program, that overrides the above
+    programs = [p.upper() for p in sanctions_context.get("programs", [])]
+    csl_sources = [m.get("source", "").lower() for m in sanctions_context.get("csl_matches", [])]
+    if any("entity list" in s or "bis" in s for s in csl_sources):
+        inferred_sanction_type = "us_export_control"
+    elif any(p in programs for p in ["UKRAINE-EO13661", "RUSSIA-EO14024", "IRAN", "CUBA", "DPRK", "SYRIA"]):
+        inferred_sanction_type = "sectoral"
+    elif any("swift" in p.lower() for p in programs):
+        inferred_sanction_type = "swift_cutoff"
+
+    # Infer industry sub-type for us_export_control to differentiate chip designers vs equipment makers
+    inferred_industry: str | None = None
+    if inferred_sanction_type == "us_export_control":
+        _EQUIPMENT_KEYWORDS = ("equipment", "materials", "systems", "instruments", "photonics", "laser")
+        _DESIGNER_KEYWORDS = ("semiconductor", "computing", "microelectronics", "fabless", "integrated circuit")
+        if any(k in industry_raw for k in _EQUIPMENT_KEYWORDS):
+            inferred_industry = "chip_equipment"
+        elif any(k in industry_raw for k in _DESIGNER_KEYWORDS) or mapped_sector == "semiconductors":
+            inferred_industry = "chip_designer"
+
+    curves = await get_comparable_curves(
+        sector_filter=mapped_sector or None,
+        sanction_type=inferred_sanction_type,
+        industry_filter=inferred_industry,
+    )
 
     current_price = target_info.get("current_price") or 0
     projection = compute_projection(curves, current_price)

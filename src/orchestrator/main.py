@@ -21,7 +21,12 @@ from src.common.types import (
     ScenarioType,
     SourceReference,
 )
-from src.orchestrator.prompts import DECOMPOSITION_PROMPT, SYNTHESIS_PROMPT, SYSTEM_PROMPT
+from src.orchestrator.prompts import (
+    DECOMPOSITION_PROMPT,
+    SYNTHESIS_PROMPT,
+    SYNTHESIS_SYSTEM_SUPPLEMENT,
+    SYSTEM_PROMPT,
+)
 from src.orchestrator.tool_registry import ToolRegistry
 
 
@@ -41,31 +46,33 @@ class Orchestrator:
         self.model = config.model
         self.tool_registry = ToolRegistry()
 
-    async def analyze(self, query: str) -> ImpactAssessment:
+    async def analyze(self, query: str, progress_callback=None) -> ImpactAssessment:
         """Run the full analysis pipeline for an analyst's question."""
-        print(f"\n{'='*60}")
-        print(f"QUERY: {query}")
-        print(f"{'='*60}\n")
+        from typing import Callable
+
+        def _emit(msg: str) -> None:
+            print(msg)
+            if progress_callback:
+                progress_callback(msg)
+
+        _emit(f"Query received: {query[:120]}")
 
         # Step 1: Decompose the question into a research plan
-        print("[1/4] Decomposing question into research plan...")
+        _emit("[1/4] Decomposing question into research plan...")
         plan = await self._decompose(query)
-        print(f"  Research plan: {len(plan)} steps")
+        _emit(f"[1/4] Research plan: {len(plan)} step(s) identified")
 
         # Step 2: Execute the research plan
-        print("[2/4] Executing research plan...")
-        tool_results = await self._execute_plan(plan)
-        print(f"  Collected {len(tool_results)} tool results")
+        _emit("[2/4] Executing research plan...")
+        tool_results = await self._execute_plan(plan, _emit)
+        _emit(f"[2/4] Collected results from {len(tool_results)} research step(s)")
 
         # Step 3: Synthesize results
-        print("[3/4] Synthesizing findings...")
+        _emit("[3/4] Synthesizing findings with Claude...")
         assessment = await self._synthesize(query, tool_results)
 
-        # Step 4: Format output
-        print("[4/4] Formatting output...")
-        print(f"\n{'='*60}")
-        print("ANALYSIS COMPLETE")
-        print(f"{'='*60}\n")
+        # Step 4: Done
+        _emit("[4/4] Analysis complete.")
 
         return assessment
 
@@ -73,7 +80,7 @@ class Orchestrator:
         """Use Claude to decompose the question into a research plan."""
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=2000,
+            max_tokens=3000,
             system=SYSTEM_PROMPT,
             messages=[
                 {
@@ -93,10 +100,15 @@ class Orchestrator:
             plan = self._fallback_plan(query)
         return plan
 
-    async def _execute_plan(self, plan: list[dict[str, Any]]) -> dict[str, Any]:
+    async def _execute_plan(self, plan: list[dict[str, Any]], emit=None) -> dict[str, Any]:
         """Execute the research plan, running independent steps in parallel."""
         results: dict[str, Any] = {}
         completed_steps: set[int] = set()
+
+        def _log(msg: str) -> None:
+            print(msg)
+            if emit:
+                emit(msg)
 
         # Group steps by dependency level for parallel execution
         while len(completed_steps) < len(plan):
@@ -114,6 +126,10 @@ class Orchestrator:
                 # Avoid infinite loop if dependencies can't be resolved
                 break
 
+            for step in ready:
+                desc = step.get("description", f"step {step.get('step', '?')}")
+                _log(f"  Running: {desc}")
+
             # Execute ready steps in parallel
             tasks = [self._execute_step(step, results) for step in ready]
             step_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -126,10 +142,10 @@ class Orchestrator:
                         "error": str(result),
                         "description": step.get("description", ""),
                     }
-                    print(f"  Step {step_num} failed: {result}")
+                    _log(f"  Step {step_num} failed: {result}")
                 else:
                     results[f"step_{step_num}"] = result
-                    print(f"  Step {step_num} complete: {step.get('description', '')}")
+                    _log(f"  Step {step_num} done: {step.get('description', '')}")
 
         return results
 
@@ -141,8 +157,21 @@ class Orchestrator:
         tools = step.get("tools", [])
 
         for tool_call in tools:
-            tool_name = tool_call if isinstance(tool_call, str) else tool_call.get("tool", "")
-            params = {} if isinstance(tool_call, str) else tool_call.get("params", {})
+            if isinstance(tool_call, str):
+                # Handle Python-style call strings: "get_stock_profile('SMCI')"
+                tool_name, params = _parse_string_tool_call(tool_call)
+            else:
+                # LLM may use "tool"/"params" or "name"/"parameters" interchangeably
+                tool_name = (
+                    tool_call.get("tool")
+                    or tool_call.get("name")
+                    or ""
+                )
+                params = (
+                    tool_call.get("params")
+                    or tool_call.get("parameters")
+                    or {}
+                )
 
             try:
                 result = await self.tool_registry.call_tool(tool_name, params)
@@ -165,10 +194,11 @@ class Orchestrator:
         if len(results_text) > 50000:
             results_text = results_text[:50000] + "\n... [truncated]"
 
+        synthesis_system = SYSTEM_PROMPT + SYNTHESIS_SYSTEM_SUPPLEMENT
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=4000,
-            system=SYSTEM_PROMPT,
+            max_tokens=8192,
+            system=synthesis_system,
             messages=[
                 {
                     "role": "user",
@@ -250,6 +280,44 @@ class Orchestrator:
                 "depends_on": [],
             },
         ]
+
+
+def _parse_string_tool_call(call_str: str) -> tuple[str, dict[str, Any]]:
+    """Parse a Python-style tool call string like 'get_stock_profile(\"SMCI\")' into (name, params).
+
+    Returns (tool_name, {}) if parsing fails, leaving the error to be caught by call_tool.
+    """
+    import re
+
+    call_str = call_str.strip()
+    m = re.match(r'^(\w+)\s*\((.*)\)\s*$', call_str, re.DOTALL)
+    if not m:
+        return call_str, {}
+
+    tool_name = m.group(1)
+    args_str = m.group(2).strip()
+    if not args_str:
+        return tool_name, {}
+
+    params: dict[str, Any] = {}
+
+    # Try to find keyword args first: key='value' or key="value" or key=123
+    kw_matches = re.findall(r'(\w+)\s*=\s*(?:"([^"]*?)"|\'([^\']*?)\'|(\d+))', args_str)
+    if kw_matches:
+        for kw_match in kw_matches:
+            key = kw_match[0]
+            # Take first non-empty capture group as the value
+            val: Any = next((v for v in kw_match[1:] if v != ''), '')
+            params[key] = int(val) if val.isdigit() else val
+    else:
+        # Positional args only — try to extract string values
+        pos_vals = re.findall(r'"([^"]*?)"|\'([^\']*?)\'|(\d+)', args_str)
+        positional = [next(v for v in grp if v != '') for grp in pos_vals]
+        # Map positional args to common parameter names based on typical tool signatures
+        if len(positional) >= 1:
+            params["query"] = positional[0]
+
+    return tool_name, params
 
 
 def _extract_json(text: str) -> str:

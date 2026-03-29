@@ -137,8 +137,10 @@ class ToolRegistry:
                 return result.model_dump(mode="json")
             return result
         except TypeError as e:
-            # Parameter mismatch — try with just the query/name param
-            for key in ("query", "entity_name", "country", "ticker"):
+            # Parameter mismatch — try common positional arg patterns
+            # LLM often uses "company", "name", "entity", "symbol" instead of "ticker"/"query"
+            for key in ("query", "entity_name", "ticker", "country", "name",
+                        "company", "entity", "symbol", "commodity_code"):
                 if key in params:
                     try:
                         result = await fn(params[key])
@@ -147,6 +149,16 @@ class ToolRegistry:
                         return result
                     except Exception:
                         continue
+            # Last resort: try passing first value as positional arg
+            if params:
+                first_val = next(iter(params.values()))
+                try:
+                    result = await fn(first_val)
+                    if hasattr(result, "model_dump"):
+                        return result.model_dump(mode="json")
+                    return result
+                except Exception:
+                    pass
             return {"error": f"Tool call failed: {e}"}
 
     def list_tools(self) -> list[str]:

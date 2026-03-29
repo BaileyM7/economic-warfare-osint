@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -58,7 +59,7 @@ class OpenSanctionsClient:
         """
         cache_params = {"q": query, "limit": limit, "entity_type": entity_type}
         cached = get_cached(_CACHE_NS_OPENSANCTIONS, action="search", **cache_params)
-        if cached is not None:
+        if cached is not None and len(cached) > 0:
             return [SanctionEntry.model_validate(e) for e in cached]
 
         params: dict[str, Any] = {"q": query, "limit": limit}
@@ -74,27 +75,22 @@ class OpenSanctionsClient:
             if schema:
                 params["schema"] = schema
 
-        if not config.opensanctions_api_key:
-            return []
-
-        headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
         try:
-            data = await fetch_json(
-                f"{OPENSANCTIONS_BASE}/search/default", params=params, headers=headers
-            )
+            data = await self._search_request(params)
         except Exception as exc:
             logger.warning("OpenSanctions search unavailable (query=%s): %s", query, type(exc).__name__)
             return []
 
         entries = self._parse_search_results(data)
 
-        set_cached(
-            [e.model_dump(mode="json") for e in entries],
-            _CACHE_NS_OPENSANCTIONS,
-            ttl=_CACHE_TTL_SEARCH,
-            action="search",
-            **cache_params,
-        )
+        if entries:
+            set_cached(
+                [e.model_dump(mode="json") for e in entries],
+                _CACHE_NS_OPENSANCTIONS,
+                ttl=_CACHE_TTL_SEARCH,
+                action="search",
+                **cache_params,
+            )
         return entries
 
     async def get_entity(self, entity_id: str) -> SanctionEntry | None:
@@ -148,36 +144,54 @@ class OpenSanctionsClient:
 
         cache_params = {"name": name, "schema": schema}
         cached = get_cached(_CACHE_NS_OPENSANCTIONS, action="match", **cache_params)
-        if cached is not None:
+        if cached is not None and len(cached) > 0:
             return [SanctionEntry.model_validate(e) for e in cached]
 
-        if not config.opensanctions_api_key:
-            return []
-
-        headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
-        try:
-            data = await post_json(
-                f"{OPENSANCTIONS_BASE}/match/default", json_body=body, headers=headers
-            )
-        except Exception as exc:
-            logger.warning("OpenSanctions match unavailable (name=%s): %s", name, type(exc).__name__)
-            return []
-
         entries: list[SanctionEntry] = []
-        for result in data.get("results", []):
-            entry = self._parse_entity(result)
-            if entry:
-                entry.score = result.get("score")
-                entries.append(entry)
+        if config.opensanctions_api_key:
+            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
+            try:
+                data = await post_json(
+                    f"{OPENSANCTIONS_BASE}/match/default", json_body=body, headers=headers
+                )
+                for result in data.get("results", []):
+                    entry = self._parse_entity(result)
+                    if entry:
+                        entry.score = result.get("score")
+                        entries.append(entry)
+            except Exception as exc:
+                logger.warning("OpenSanctions match unavailable (name=%s): %s", name, type(exc).__name__)
 
-        set_cached(
-            [e.model_dump(mode="json") for e in entries],
-            _CACHE_NS_OPENSANCTIONS,
-            ttl=_CACHE_TTL_SEARCH,
-            action="match",
-            **cache_params,
-        )
+        # Public fallback when API key is not set or match endpoint fails.
+        if not entries:
+            entries = await self.search_entities(name, limit=10, entity_type=entity_type)
+            for idx, entry in enumerate(entries):
+                if entry.score is None:
+                    # Keep fallback scores deterministic and descending.
+                    entry.score = max(0.4, 0.8 - (idx * 0.05))
+
+        if entries:
+            set_cached(
+                [e.model_dump(mode="json") for e in entries],
+                _CACHE_NS_OPENSANCTIONS,
+                ttl=_CACHE_TTL_SEARCH,
+                action="match",
+                **cache_params,
+            )
         return entries
+
+    async def _search_request(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Use authenticated search when key is available, otherwise public search."""
+        if config.opensanctions_api_key:
+            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
+            return await fetch_json(
+                f"{OPENSANCTIONS_BASE}/search/default", params=params, headers=headers
+            )
+
+        public_params = dict(params)
+        return await fetch_json(
+            f"{OPENSANCTIONS_BASE}/entities/_search", params=public_params
+        )
 
     async def get_entity_relationships(
         self,
@@ -500,7 +514,9 @@ class OFACClient:
         assert self._sdn_entries is not None
 
         query_lower = query.lower()
-        query_tokens = set(query_lower.split())
+        # Tokenize using word characters to avoid punctuation mismatches like
+        # "VEKSELBERG," vs "Vekselberg".
+        query_tokens = set(re.findall(r"[a-z0-9]+", query_lower))
         results: list[SanctionEntry] = []
 
         type_filter = ""
@@ -655,7 +671,7 @@ class OFACClient:
             return 0.9
 
         # Token overlap
-        name_tokens = set(name_lower.split())
+        name_tokens = set(re.findall(r"[a-z0-9]+", name_lower))
         if not query_tokens:
             return 0.0
         overlap = query_tokens & name_tokens
