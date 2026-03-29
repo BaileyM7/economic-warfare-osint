@@ -1,6 +1,8 @@
 # Environment
 .env
 .env.local
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -9,6 +11,14 @@ __pycache__/
 dist/
 build/
 .venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+pip-wheel-metadata/
 
 # Cache
 data/cache/
@@ -16,6 +26,7 @@ data/cache/
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 
 # Logs
@@ -24,3 +35,4 @@ data/cache/
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
