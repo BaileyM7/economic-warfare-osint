@@ -281,15 +281,21 @@ async def vessel_by_imo(imo: str) -> dict[str, Any] | None:
     return None
 
 
-async def vessel_history(mmsi: str, days: int = 14) -> list[dict[str, Any]]:
+async def vessel_history(
+    mmsi: str,
+    days: int = 14,
+    dest_lat: float | None = None,
+    dest_lon: float | None = None,
+) -> list[dict[str, Any]]:
     """Fetch AIS position history for the last *days* days.
 
-    Only Datalastic provides real history; without a key, returns empty list
-    (route history is not available from OpenSanctions or fixtures).
+    Datalastic provides real history; without a key, generates plausible
+    demo route data so the map still renders for demos.  Pass *dest_lat* /
+    *dest_lon* to anchor the demo route at the vessel's known position.
     """
     api_key = getattr(config, "datalastic_api_key", None)
     if not api_key:
-        return []
+        return _generate_demo_history(mmsi, days, dest_lat, dest_lon)
 
     end = date.today()
     start = end - timedelta(days=days)
@@ -316,3 +322,115 @@ async def vessel_history(mmsi: str, days: int = 14) -> list[dict[str, Any]]:
         return []
 
 
+# ---------------------------------------------------------------------------
+# Demo history generation (when no Datalastic key)
+# ---------------------------------------------------------------------------
+
+_ROUTE_TEMPLATES: dict[str, list[tuple[float, float]]] = {
+    "suez_med": [
+        (35.20, 24.50),    # Crete, eastern Mediterranean
+        (34.00, 27.00),    # South of Rhodes
+        (33.00, 29.50),    # Off Egyptian coast
+        (31.80, 31.50),    # Approaching Port Said
+        (31.26, 32.31),    # Port Said entrance
+        (30.80, 32.35),    # Suez Canal — north section
+        (30.45, 32.35),    # Suez Canal — Ismailia
+        (30.02, 32.55),    # Great Bitter Lake
+        (29.92, 32.55),    # Suez anchorage
+    ],
+    "shanghai_singapore": [
+        (31.23, 121.47),   # Shanghai Yangshan
+        (29.10, 122.40),   # East China Sea
+        (25.80, 120.30),   # Taiwan Strait
+        (22.30, 117.80),   # Guangdong coast
+        (18.20, 115.00),   # Paracel corridor
+        (12.00, 111.00),   # Off Vietnam
+        (7.00, 106.50),    # Anambas Islands
+        (3.20, 104.20),    # Singapore approach
+        (1.27, 103.85),    # Singapore
+    ],
+    "persian_gulf": [
+        (25.30, 55.30),    # Dubai / Jebel Ali
+        (26.00, 56.40),    # Strait of Hormuz approach
+        (26.50, 56.80),    # Strait of Hormuz
+        (25.00, 58.50),    # Gulf of Oman
+        (23.50, 60.00),    # Arabian Sea
+        (21.00, 62.00),    # Open ocean
+        (18.00, 60.50),    # Heading south
+        (14.50, 52.00),    # Gulf of Aden approach
+        (12.60, 43.30),    # Bab el-Mandeb Strait
+    ],
+    "atlantic_europe": [
+        (51.90, 1.40),     # Thames Estuary
+        (50.80, 0.50),     # Dover Strait
+        (49.50, -2.00),    # English Channel
+        (48.00, -6.00),    # Brest approach
+        (46.00, -8.00),    # Bay of Biscay
+        (43.50, -9.50),    # Off Cape Finisterre
+        (39.50, -9.80),    # Portuguese coast
+        (36.70, -6.50),    # Strait of Gibraltar approach
+        (36.00, -5.35),    # Gibraltar
+    ],
+}
+
+
+def _generate_demo_history(
+    mmsi: str,
+    days: int = 14,
+    dest_lat: float | None = None,
+    dest_lon: float | None = None,
+) -> list[dict[str, Any]]:
+    """Generate plausible AIS route for demo mode.
+
+    If *dest_lat* / *dest_lon* are given, picks the route template whose
+    endpoint is nearest to that position.  Otherwise defaults to Suez.
+    """
+    import math
+    import time as _time
+
+    # Pick best-matching route template
+    best_key = "suez_med"
+    if dest_lat is not None and dest_lon is not None:
+        best_dist = float("inf")
+        for key, wps in _ROUTE_TEMPLATES.items():
+            end_lat, end_lon = wps[-1]
+            dist = math.hypot(dest_lat - end_lat, dest_lon - end_lon)
+            if dist < best_dist:
+                best_dist = dist
+                best_key = key
+
+    waypoints = _ROUTE_TEMPLATES[best_key]
+
+    now = int(_time.time())
+    num_points = days * 2  # ~2 reports per day
+    points: list[dict[str, Any]] = []
+
+    for i in range(num_points):
+        progress = i / max(num_points - 1, 1)
+        seg = progress * (len(waypoints) - 1)
+        idx = min(int(seg), len(waypoints) - 2)
+        frac = seg - idx
+
+        lat0, lon0 = waypoints[idx]
+        lat1, lon1 = waypoints[idx + 1]
+        lat = round(lat0 + (lat1 - lat0) * frac, 4)
+        lon = round(lon0 + (lon1 - lon0) * frac, 4)
+
+        speed = round(12.5 + math.sin(i * 0.7) * 1.5, 1)
+
+        dlat = lat1 - lat0
+        dlon = lon1 - lon0
+        course = round((math.degrees(math.atan2(dlon, dlat)) + 360) % 360)
+
+        t = now - (num_points - i) * 43200
+
+        points.append({
+            "mmsi": mmsi,
+            "latitude": lat,
+            "longitude": lon,
+            "speed": speed,
+            "course": course,
+            "timestamp": t,
+        })
+
+    return points

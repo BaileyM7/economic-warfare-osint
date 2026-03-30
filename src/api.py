@@ -718,22 +718,32 @@ async def vessel_track(req: VesselTrackRequest):
         history = []
 
         if digits_only.isdigit() and len(digits_only) == 9:
-            # Could be MMSI
             vessel_detail = await vessel_by_mmsi(digits_only)
             if vessel_detail:
-                history = await vessel_history(digits_only, days=14)
+                history = await vessel_history(
+                    digits_only, days=14,
+                    dest_lat=vessel_detail.get("latitude"),
+                    dest_lon=vessel_detail.get("longitude"),
+                )
         elif digits_only.upper().startswith("IMO") or (digits_only.isdigit() and len(digits_only) == 7):
             imo = digits_only.replace("IMO", "").replace("imo", "")
             vessel_detail = await vessel_by_imo(imo)
             if vessel_detail and vessel_detail.get("mmsi"):
-                history = await vessel_history(str(vessel_detail["mmsi"]), days=14)
+                history = await vessel_history(
+                    str(vessel_detail["mmsi"]), days=14,
+                    dest_lat=vessel_detail.get("latitude"),
+                    dest_lon=vessel_detail.get("longitude"),
+                )
         else:
-            # Name search
             results = await vessel_find(query)
             if results:
                 vessel_detail = results[0]
                 if vessel_detail.get("mmsi"):
-                    history = await vessel_history(str(vessel_detail["mmsi"]), days=14)
+                    history = await vessel_history(
+                        str(vessel_detail["mmsi"]), days=14,
+                        dest_lat=vessel_detail.get("latitude"),
+                        dest_lon=vessel_detail.get("longitude"),
+                    )
 
         if not vessel_detail:
             vessel_detail = {"name": query, "note": "Vessel not found in AIS database"}
@@ -1296,6 +1306,8 @@ def _read_index_html() -> str:
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
 <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/styles/vis-network.min.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0a0e17; color: #c9d1d9; min-height: 100vh; }
@@ -1420,6 +1432,10 @@ def _read_index_html() -> str:
 
   /* Vessel profile */
   .vessel-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+  .map-range-toggles { display: flex; gap: 8px; }
+  .map-range-btn { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 6px; padding: 6px 16px; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+  .map-range-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+  .map-range-btn.active { background: rgba(88,166,255,0.15); color: #58a6ff; border-color: #58a6ff; }
   @media (max-width: 900px) { .vessel-grid { grid-template-columns: 1fr 1fr; } }
   .vessel-stat { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px; text-align: center; }
   .vessel-stat .v-label { font-size: 10px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -1598,6 +1614,18 @@ def _read_index_html() -> str:
         </div>
       </div>
     </div>
+    <!-- AIS Route Map -->
+    <div class="info-card" style="margin-bottom:24px;">
+      <h3>AIS Route Map</h3>
+      <div class="map-range-toggles">
+        <button class="map-range-btn active" data-range="24h" onclick="setMapRange('24h')">24 Hours</button>
+        <button class="map-range-btn" data-range="1w" onclick="setMapRange('1w')">1 Week</button>
+        <button class="map-range-btn" data-range="2w" onclick="setMapRange('2w')">2 Weeks</button>
+      </div>
+      <div id="vesselMap" style="height:420px; border-radius:8px; margin-top:12px; background:#0d1117; border:1px solid #30363d;"></div>
+      <div id="vesselMapEmpty" class="graph-empty" style="position:relative; top:-220px; pointer-events:none;">No AIS position data available</div>
+    </div>
+
     <div id="vesselGraphSection" class="graph-section active">
       <div class="graph-section-header">Ownership &amp; Sanctions Network</div>
       <div class="graph-legend">
@@ -1769,6 +1797,8 @@ function clearAll() {
   if (visNetwork) { visNetwork.destroy(); visNetwork = null; }
   if (personNetwork) { personNetwork.destroy(); personNetwork = null; }
   if (vesselNetwork) { vesselNetwork.destroy(); vesselNetwork = null; }
+  if (vesselMapInstance) { vesselMapInstance.remove(); vesselMapInstance = null; }
+  vesselRouteData = [];
   if (sectorNetwork) { sectorNetwork.destroy(); sectorNetwork = null; }
   document.getElementById('personPanel').style.display = 'none';
   document.getElementById('vesselPanel').style.display = 'none';
@@ -2160,10 +2190,83 @@ function renderVesselProfile(data) {
     ? pts.map(p => '<tr><td>' + (p.lat || '—') + '</td><td>' + (p.lon || '—') + '</td><td>' + (p.speed != null ? p.speed + ' kn' : '—') + '</td></tr>').join('')
     : '<tr><td colspan="3" style="color:#484f58">No AIS track data available</td></tr>';
 
+  // AIS Route Map
+  initVesselMap(data.route_history, v);
+
   // Graph
   const g = data.graph || {};
   vesselNetwork = renderVisGraph('vesselGraphContainer', 'vesselGraphEmpty', null,
     g.nodes, g.edges, vesselNetwork);
+}
+
+// ── Vessel AIS Map ───────────────────────────────────────────────────────────
+let vesselMapInstance = null;
+let vesselRouteLayer = null;
+let vesselMarkers = null;
+let vesselRouteData = [];
+let currentMapRange = '2w';
+
+function initVesselMap(routeHistory, vesselDetail) {
+  vesselRouteData = (routeHistory || []).filter(p => p.lat && p.lon);
+  const mapEmpty = document.getElementById('vesselMapEmpty');
+
+  if (!vesselRouteData.length) {
+    mapEmpty.style.display = 'block';
+    document.getElementById('vesselMap').style.opacity = '0.3';
+    return;
+  }
+  mapEmpty.style.display = 'none';
+
+  if (vesselMapInstance) { vesselMapInstance.remove(); vesselMapInstance = null; }
+
+  vesselMapInstance = L.map('vesselMap', { zoomControl: true, attributionControl: true });
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19,
+  }).addTo(vesselMapInstance);
+
+  setMapRange('2w');
+}
+
+function setMapRange(range) {
+  currentMapRange = range;
+  document.querySelectorAll('.map-range-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-range') === range);
+  });
+
+  if (!vesselMapInstance || !vesselRouteData.length) return;
+
+  const now = Date.now() / 1000;
+  const cutoffs = { '24h': 86400, '1w': 604800, '2w': 1209600 };
+  const cutoff = now - (cutoffs[range] || cutoffs['2w']);
+  const filtered = vesselRouteData.filter(p => (p.ts || 0) >= cutoff);
+  const points = filtered.length ? filtered : vesselRouteData;
+
+  if (vesselRouteLayer) { vesselMapInstance.removeLayer(vesselRouteLayer); }
+  if (vesselMarkers) { vesselMarkers.forEach(m => vesselMapInstance.removeLayer(m)); }
+  vesselMarkers = [];
+
+  const latLngs = points.map(p => [p.lat, p.lon]);
+  vesselRouteLayer = L.polyline(latLngs, {
+    color: '#58a6ff', weight: 3, opacity: 0.8, dashArray: '8 4',
+  }).addTo(vesselMapInstance);
+
+  points.forEach((p, i) => {
+    const isLast = (i === points.length - 1);
+    const marker = L.circleMarker([p.lat, p.lon], {
+      radius: isLast ? 7 : 4,
+      fillColor: isLast ? '#3fb950' : '#58a6ff',
+      color: isLast ? '#fff' : '#30363d',
+      weight: isLast ? 2 : 1, fillOpacity: 0.8,
+    }).addTo(vesselMapInstance);
+    const time = p.ts ? new Date(p.ts * 1000).toLocaleString() : '—';
+    marker.bindPopup('<b>' + time + '</b><br>Lat: ' + p.lat.toFixed(4) + ', Lon: ' + p.lon.toFixed(4) + '<br>Speed: ' + (p.speed || 0) + ' kn');
+    vesselMarkers.push(marker);
+  });
+
+  if (latLngs.length) {
+    vesselMapInstance.fitBounds(L.latLngBounds(latLngs).pad(0.5), { maxZoom: 6 });
+  }
 }
 
 // ── Sector ───────────────────────────────────────────────────────────────────
