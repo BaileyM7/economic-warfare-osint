@@ -52,7 +52,7 @@ All paid sources (Sayari, Kharon, Refinitiv, Bloomberg, FactSet, Kpler) are subs
 - All tools are independently testable without the orchestrator
 
 ## Commands
-- `uv run uvicorn src.api:app --reload --host 0.0.0.0 --port 8000` — start web server (primary)
+- `uvicorn src.api:app --reload --host 0.0.0.0 --port 8000` — start web server (primary)
 - `uv run python -m src.orchestrator.main "your question here"` — CLI mode
 - `uv run --extra dev pytest` — run tests
 - `uv run python -m src.tools.<name>.server` — run individual MCP tool server

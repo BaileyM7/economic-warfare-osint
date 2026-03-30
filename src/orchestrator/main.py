@@ -197,7 +197,7 @@ class Orchestrator:
         synthesis_system = SYSTEM_PROMPT + SYNTHESIS_SYSTEM_SUPPLEMENT
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=8192,
+            max_tokens=16000,
             system=synthesis_system,
             messages=[
                 {
@@ -216,7 +216,8 @@ class Orchestrator:
 
         try:
             data = json.loads(json_str)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"[synthesize] JSON parse failed ({e}); response length={len(text)}. Using fallback.")
             # Fallback: wrap raw text in assessment
             data = {
                 "scenario_type": scenario_type,
@@ -331,8 +332,14 @@ def _extract_json(text: str) -> str:
         start = text.index("```") + 3
         end = text.index("```", start)
         return text[start:end].strip()
-    # Try to find raw JSON (array or object)
-    for char, end_char in [("[", "]"), ("{", "}")]:
+    # Try to find raw JSON (array or object) — prefer whichever container opens first
+    bracket_pos = text.find("[")
+    brace_pos = text.find("{")
+    if brace_pos != -1 and (bracket_pos == -1 or brace_pos < bracket_pos):
+        order = [("{", "}"), ("[", "]")]
+    else:
+        order = [("[", "]"), ("{", "}")]
+    for char, end_char in order:
         if char in text:
             start = text.index(char)
             # Find the matching closing bracket
