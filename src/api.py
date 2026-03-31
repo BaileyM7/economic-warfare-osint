@@ -976,6 +976,7 @@ _SECTOR_ALIASES: dict[str, str] = {
     "oil": "energy",
     "gas": "energy",
     "oil and gas": "energy",
+    "maritime": "shipping",
 }
 
 
