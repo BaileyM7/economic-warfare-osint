@@ -20,19 +20,28 @@ You are an entity classifier for an economic warfare OSINT system.
 Given a user query, identify the PRIMARY entity being asked about and classify it.
 
 Entity types:
-- "company"  = publicly traded corp, private company, state-owned enterprise, conglomerate, org
-- "person"   = named individual — oligarch, official, executive, sanctioned person, general, minister
-- "sector"   = industry sector or commodity group (semiconductors, energy, rare earths, shipping, pharma)
-- "vessel"   = ship, tanker, cargo vessel — vessel names, IMO numbers (9-digit), MMSI (9-digit)
+- "company"     = a single publicly traded corp, private company, state-owned enterprise, or org
+- "person"      = a named individual — oligarch, official, executive, sanctioned person, minister
+- "sector"      = an industry sector or commodity group (semiconductors, energy, rare earths, shipping, pharma)
+- "vessel"      = a ship, tanker, or cargo vessel — identified by name, IMO number (7 digits), or MMSI (9 digits)
+- "orchestrator"= a complex analytical question involving multiple entities, relationships, hypotheticals, \
+or supply-chain/geopolitical analysis that cannot be answered by looking up a single entity
 
-Also extract the canonical entity name or identifier from the query.
+Use "orchestrator" only when the query genuinely requires cross-domain reasoning across multiple entities \
+(e.g. "What is the relationship between Gazprom and Shell?", "Map the supply chain exposure of the EU \
+semiconductor sector"). Do NOT use "orchestrator" for single-entity questions framed as hypotheticals \
+(e.g. "What if we sanction TSMC?" → this is a company query about TSMC).
+
+Extract the canonical entity name or identifier from the query. For vessels, return only the vessel \
+name or numeric identifier — strip command words like "track"/"find"/"show me", articles like "the"/"a", \
+and type words like "vessel"/"ship"/"tanker". For orchestrator queries, set entity_name to the full query.
 
 Default to "company" if the entity is ambiguous.
 
 Query: {query}
 
 Respond with JSON only, no markdown fences:
-{{"entity_type": "company|person|sector|vessel", "entity_name": "...", "confidence": 0.0, "reasoning": "one sentence"}}"""
+{{"entity_type": "company|person|sector|vessel|orchestrator", "entity_name": "...", "confidence": 0.0, "reasoning": "one sentence"}}"""
 
 
 @dataclass
@@ -43,62 +52,8 @@ class EntityResolution:
     reasoning: str
 
 
-import re
-
-# Fast pattern matching — skips Claude for obvious cases
-_VESSEL_KEYWORDS = re.compile(
-    r"\b(track vessel|vessel|ship|tanker|cargo|bulk carrier|container ship|"
-    r"IMO\s*\d{7}|MMSI\s*\d{9}|MV |MT |MY )\b", re.IGNORECASE
-)
-_PERSON_KEYWORDS = re.compile(
-    r"\b(oligarch|sanctioned person|minister|general|admiral|president|"
-    r"who is|profile of|insider threat)\b", re.IGNORECASE
-)
-_SECTOR_KEYWORDS = re.compile(
-    r"\b(sector|industry|semiconductor|energy sector|rare earth|"
-    r"shipping industry|defense sector|pharma sector)\b", re.IGNORECASE
-)
-
-
-def _fast_resolve(query: str) -> EntityResolution | None:
-    """Tier 0: instant pattern-based resolution for obvious queries."""
-    q = query.strip()
-
-    if _VESSEL_KEYWORDS.search(q):
-        # Strip the keyword prefix to get the vessel name
-        name = re.sub(
-            r"^(track\s+vessel|track|vessel)\s+", "", q, flags=re.IGNORECASE
-        ).strip() or q
-        return EntityResolution("vessel", name, 0.95, "Vessel keyword detected")
-
-    if _PERSON_KEYWORDS.search(q):
-        name = re.sub(
-            r"^(who is|profile of)\s+", "", q, flags=re.IGNORECASE
-        ).strip() or q
-        return EntityResolution("person", name, 0.90, "Person keyword detected")
-
-    if _SECTOR_KEYWORDS.search(q):
-        return EntityResolution("sector", q, 0.90, "Sector keyword detected")
-
-    # Check for IMO/MMSI numeric patterns
-    imo_match = re.search(r"\bIMO\s*(\d{7})\b", q, re.IGNORECASE)
-    if imo_match:
-        return EntityResolution("vessel", imo_match.group(0), 0.95, "IMO number detected")
-    mmsi_match = re.match(r"^\d{9}$", q.strip())
-    if mmsi_match:
-        return EntityResolution("vessel", q.strip(), 0.95, "MMSI number detected")
-
-    return None
-
-
 async def resolve_entity_type(query: str) -> EntityResolution:
-    """Resolve entity type: fast pattern match first, then Claude for ambiguous cases."""
-    # Tier 0: instant pattern match
-    fast = _fast_resolve(query)
-    if fast:
-        return fast
-
-    # Tier 1: Claude classification
+    """Classify the query entity type and extract the canonical name using Claude."""
     client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
 
     response = await client.messages.create(
@@ -120,7 +75,7 @@ async def resolve_entity_type(query: str) -> EntityResolution:
     try:
         data = json.loads(text)
         entity_type = data.get("entity_type", "company")
-        if entity_type not in ("company", "person", "sector", "vessel"):
+        if entity_type not in ("company", "person", "sector", "vessel", "orchestrator"):
             entity_type = "company"
         return EntityResolution(
             entity_type=entity_type,

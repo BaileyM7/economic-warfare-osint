@@ -737,7 +737,9 @@ async def vessel_track(req: VesselTrackRequest):
             if vessel_detail and vessel_detail.get("mmsi"):
                 history = await vessel_history(str(vessel_detail["mmsi"]), days=30)
         else:
-            results = await vessel_find(query)
+            resolution = await resolve_entity_type(query)
+            vessel_name = resolution.entity_name
+            results = await vessel_find(vessel_name)
             if results:
                 vessel_detail = results[0]
                 mmsi = vessel_detail.get("mmsi")
@@ -1935,7 +1937,14 @@ async function startAnalysis(tickerOverride) {
     badge.style.display = 'inline-flex';
 
     // Step 2: Route to entity-specific handler
-    if (entityType === 'person') {
+    if (entityType === 'orchestrator') {
+      // Hand off to deep analysis pipeline — manages its own UI state
+      document.getElementById('progressSpinner').style.display = 'none';
+      btn.disabled = false;
+      if (deepBtn) deepBtn.disabled = false;
+      await startDeepAnalysis();
+      return;
+    } else if (entityType === 'person') {
       await runPersonAnalysis(entityName);
     } else if (entityType === 'vessel') {
       await runVesselAnalysis(entityName);
