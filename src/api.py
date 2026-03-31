@@ -720,30 +720,25 @@ async def vessel_track(req: VesselTrackRequest):
         if digits_only.isdigit() and len(digits_only) == 9:
             vessel_detail = await vessel_by_mmsi(digits_only)
             if vessel_detail:
-                history = await vessel_history(
-                    digits_only, days=14,
-                    dest_lat=vessel_detail.get("latitude"),
-                    dest_lon=vessel_detail.get("longitude"),
-                )
+                history = await vessel_history(digits_only, days=30)
         elif digits_only.upper().startswith("IMO") or (digits_only.isdigit() and len(digits_only) == 7):
             imo = digits_only.replace("IMO", "").replace("imo", "")
             vessel_detail = await vessel_by_imo(imo)
             if vessel_detail and vessel_detail.get("mmsi"):
-                history = await vessel_history(
-                    str(vessel_detail["mmsi"]), days=14,
-                    dest_lat=vessel_detail.get("latitude"),
-                    dest_lon=vessel_detail.get("longitude"),
-                )
+                history = await vessel_history(str(vessel_detail["mmsi"]), days=30)
         else:
             results = await vessel_find(query)
             if results:
                 vessel_detail = results[0]
-                if vessel_detail.get("mmsi"):
-                    history = await vessel_history(
-                        str(vessel_detail["mmsi"]), days=14,
-                        dest_lat=vessel_detail.get("latitude"),
-                        dest_lon=vessel_detail.get("longitude"),
+                mmsi = vessel_detail.get("mmsi")
+                if mmsi:
+                    # Fetch full detail (includes current position) + history in parallel
+                    full_detail, history = await asyncio.gather(
+                        vessel_by_mmsi(str(mmsi)),
+                        vessel_history(str(mmsi), days=30),
                     )
+                    if full_detail:
+                        vessel_detail = full_detail
 
         if not vessel_detail:
             vessel_detail = {"name": query, "note": "Vessel not found in AIS database"}
@@ -834,7 +829,7 @@ async def vessel_track(req: VesselTrackRequest):
                 {"name": e.name, "score": e.score, "programs": e.programs or []}
                 for e in sanctions_hits
             ],
-            "route_history": route_points[-20:],
+            "route_history": route_points,
             "graph": graph_result,
             "narrative": narrative,
             "sources": ["Datalastic AIS", "OFAC SDN"],
@@ -1618,9 +1613,9 @@ def _read_index_html() -> str:
     <div class="info-card" style="margin-bottom:24px;">
       <h3>AIS Route Map</h3>
       <div class="map-range-toggles">
-        <button class="map-range-btn active" data-range="24h" onclick="setMapRange('24h')">24 Hours</button>
+        <button class="map-range-btn" data-range="24h" onclick="setMapRange('24h')">24 Hours</button>
         <button class="map-range-btn" data-range="1w" onclick="setMapRange('1w')">1 Week</button>
-        <button class="map-range-btn" data-range="2w" onclick="setMapRange('2w')">2 Weeks</button>
+        <button class="map-range-btn active" data-range="1m" onclick="setMapRange('1m')">1 Month</button>
       </div>
       <div id="vesselMap" style="height:420px; border-radius:8px; margin-top:12px; background:#0d1117; border:1px solid #30363d;"></div>
       <div id="vesselMapEmpty" class="graph-empty" style="position:relative; top:-220px; pointer-events:none;">No AIS position data available</div>
@@ -2185,7 +2180,7 @@ function renderVesselProfile(data) {
 
   // Route history table (last 8 points)
   const tbody = document.getElementById('routeTableBody');
-  const pts = (data.route_history || []).slice(-8);
+  const pts = (data.route_history || []).slice(-12);
   tbody.innerHTML = pts.length
     ? pts.map(p => '<tr><td>' + (p.lat || '—') + '</td><td>' + (p.lon || '—') + '</td><td>' + (p.speed != null ? p.speed + ' kn' : '—') + '</td></tr>').join('')
     : '<tr><td colspan="3" style="color:#484f58">No AIS track data available</td></tr>';
@@ -2204,7 +2199,7 @@ let vesselMapInstance = null;
 let vesselRouteLayer = null;
 let vesselMarkers = null;
 let vesselRouteData = [];
-let currentMapRange = '2w';
+let currentMapRange = '1m';
 
 function initVesselMap(routeHistory, vesselDetail) {
   vesselRouteData = (routeHistory || []).filter(p => p.lat && p.lon);
@@ -2225,7 +2220,38 @@ function initVesselMap(routeHistory, vesselDetail) {
     attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19,
   }).addTo(vesselMapInstance);
 
-  setMapRange('2w');
+  // Detect actual data span and build adaptive toggles
+  const now = Date.now() / 1000;
+  const timestamps = vesselRouteData.map(p => p.ts || 0).filter(t => t > 0);
+  const oldest = Math.min(...timestamps);
+  const spanSec = now - oldest;
+  const spanHours = Math.round(spanSec / 3600);
+
+  function fmtSpan(sec) {
+    const h = Math.round(sec / 3600);
+    if (h < 1) return Math.round(sec / 60) + 'min';
+    if (h < 48) return h + 'h';
+    return Math.round(h / 24) + 'd';
+  }
+
+  // Build toggles: last ⅓, last ⅔, all — labeled with actual time spans
+  const toggleContainer = document.querySelector('.map-range-toggles');
+  const t1 = Math.round(spanSec / 3);
+  const t2 = Math.round(spanSec * 2 / 3);
+  toggleContainer.innerHTML =
+    '<button class="map-range-btn" data-range="recent" onclick="setMapRange(&quot;recent&quot;)">Last ' + fmtSpan(t1) + '</button>' +
+    '<button class="map-range-btn" data-range="half" onclick="setMapRange(&quot;half&quot;)">Last ' + fmtSpan(t2) + '</button>' +
+    '<button class="map-range-btn active" data-range="all" onclick="setMapRange(&quot;all&quot;)">All (' + fmtSpan(spanSec) + ')</button>';
+
+  // Show data cadence info
+  if (timestamps.length >= 2) {
+    const avgGap = spanSec / (timestamps.length - 1);
+    const cadence = avgGap < 3600 ? Math.round(avgGap / 60) + 'min intervals' : fmtSpan(avgGap) + ' intervals';
+    toggleContainer.innerHTML += '<span style="color:#484f58; font-size:11px; margin-left:12px; align-self:center;">' +
+      timestamps.length + ' positions · ' + cadence + '</span>';
+  }
+
+  setMapRange('all');
 }
 
 function setMapRange(range) {
@@ -2237,10 +2263,26 @@ function setMapRange(range) {
   if (!vesselMapInstance || !vesselRouteData.length) return;
 
   const now = Date.now() / 1000;
-  const cutoffs = { '24h': 86400, '1w': 604800, '2w': 1209600 };
-  const cutoff = now - (cutoffs[range] || cutoffs['2w']);
-  const filtered = vesselRouteData.filter(p => (p.ts || 0) >= cutoff);
-  const points = filtered.length ? filtered : vesselRouteData;
+  const timestamps = vesselRouteData.map(p => p.ts || 0).filter(t => t > 0);
+  const oldest = Math.min(...timestamps);
+  const totalSpan = now - oldest;
+
+  let points;
+  if (range === 'all') {
+    points = vesselRouteData;
+  } else if (range === 'recent') {
+    const cutoff = now - totalSpan / 3;
+    points = vesselRouteData.filter(p => (p.ts || 0) >= cutoff);
+  } else if (range === 'half') {
+    const cutoff = now - (totalSpan * 2 / 3);
+    points = vesselRouteData.filter(p => (p.ts || 0) >= cutoff);
+  } else {
+    // Fixed cutoffs as fallback
+    const cutoffs = { '24h': 86400, '1w': 604800, '1m': 2592000 };
+    const cutoff = now - (cutoffs[range] || totalSpan);
+    points = vesselRouteData.filter(p => (p.ts || 0) >= cutoff);
+  }
+  if (!points.length) points = vesselRouteData;
 
   if (vesselRouteLayer) { vesselMapInstance.removeLayer(vesselRouteLayer); }
   if (vesselMarkers) { vesselMarkers.forEach(m => vesselMapInstance.removeLayer(m)); }
