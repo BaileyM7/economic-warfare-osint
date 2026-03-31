@@ -15,9 +15,12 @@ from datetime import date
 from typing import Any
 
 import anthropic
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import logging
@@ -108,6 +111,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if (_DIST / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
+
 _browser_opened = False
 
 
@@ -169,6 +176,9 @@ class AnalysisStatus(BaseModel):
 
 @app.get("/")
 async def root():
+    index = _DIST / "index.html"
+    if index.exists():
+        return FileResponse(str(index))
     return HTMLResponse(content=_read_index_html())
 
 
