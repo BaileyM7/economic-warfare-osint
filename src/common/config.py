@@ -31,6 +31,8 @@ class Config:
     acled_refresh_token: str = field(default_factory=lambda: os.getenv("REFRESH_TOKEN", ""))
     opencorporates_api_key: str = field(default_factory=lambda: os.getenv("OPENCORPORATES_API_KEY", ""))
     datalastic_api_key: str = field(default_factory=lambda: os.getenv("DATALASTIC_API_KEY", ""))
+    sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
+    sayari_client_secret: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_SECRET", ""))
 
     # No key needed
     # OFAC, OpenSanctions, GLEIF, ICIJ, GDELT, IMF, World Bank, yfinance, SEC EDGAR

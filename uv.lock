@@ -467,6 +467,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "rich" },
+    { name = "sayari" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "yfinance" },
 ]
@@ -497,6 +498,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "sayari", specifier = ">=0.1.40" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "yfinance", specifier = ">=0.2.40" },
 ]
@@ -1708,6 +1710,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6c/25/3fc9114abf979a41673ce877c08016f8e660ad6cf508c3957f537d2e9fa9/ruff-0.15.6-py3-none-win32.whl", hash = "sha256:bbf67d39832404812a2d23020dda68fee7f18ce15654e96fb1d3ad21a5fe436c", size = 10616872, upload-time = "2026-03-12T23:05:42.451Z" },
     { url = "https://files.pythonhosted.org/packages/89/7a/09ece68445ceac348df06e08bf75db72d0e8427765b96c9c0ffabc1be1d9/ruff-0.15.6-py3-none-win_amd64.whl", hash = "sha256:aee25bc84c2f1007ecb5037dff75cef00414fdf17c23f07dc13e577883dca406", size = 11787271, upload-time = "2026-03-12T23:05:20.168Z" },
     { url = "https://files.pythonhosted.org/packages/7f/d0/578c47dd68152ddddddf31cd7fc67dc30b7cdf639a86275fda821b0d9d98/ruff-0.15.6-py3-none-win_arm64.whl", hash = "sha256:c34de3dd0b0ba203be50ae70f5910b17188556630e2178fd7d79fc030eb0d837", size = 11060497, upload-time = "2026-03-12T23:05:25.968Z" },
+]
+
+[[package]]
+name = "sayari"
+version = "0.1.43"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/92/15/d10506832a6665e50cffc2033c2958eb0636a09199bd1b3b31cbd6497a86/sayari-0.1.43.tar.gz", hash = "sha256:7f051be2be0825e5cf5a9ccc6aa4269bcc1260124b6a03b854a5bcb3da4089db", size = 192292, upload-time = "2025-10-29T16:32:02.97Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/c5/5548dea0ad7bd673cf69de6db490f1856e0c729a987767f51d4ec43b638c/sayari-0.1.43-py3-none-any.whl", hash = "sha256:adcbc15b529470df91f0c4ea784766e22ff97aa12cee1c0e856a521dd7569319", size = 402155, upload-time = "2025-10-29T16:32:00.847Z" },
 ]
 
 [[package]]
