@@ -18,6 +18,14 @@ mcp = FastMCP("sanctions")
 _client = SanctionsClient()
 
 
+def _csl_source() -> SourceReference:
+    return SourceReference(
+        name="Trade.gov CSL",
+        url="https://data.trade.gov/consolidated_screening_list/v1/search",
+        accessed_at=datetime.utcnow(),
+    )
+
+
 def _opensanctions_source() -> SourceReference:
     return SourceReference(
         name="OpenSanctions",
@@ -47,7 +55,7 @@ def _determine_confidence(match_count: int, top_score: float | None) -> Confiden
 
 @mcp.tool()
 async def search_sanctions(query: str, entity_type: str = "any") -> dict:
-    """Search across OpenSanctions and OFAC SDN for sanctioned entities.
+    """Search Trade.gov Consolidated Screening List and OFAC SDN for sanctioned entities.
 
     Args:
         query: Name or identifier to search for (person, company, vessel, etc.).
@@ -67,7 +75,7 @@ async def search_sanctions(query: str, entity_type: str = "any") -> dict:
         response = ToolResponse(
             data={"query": query, "matches": [], "total_matches": 0},
             confidence=Confidence.LOW,
-            sources=[_opensanctions_source(), _ofac_source()],
+            sources=[_csl_source(), _ofac_source()],
             errors=errors,
         )
         return response.model_dump(mode="json")
@@ -78,7 +86,7 @@ async def search_sanctions(query: str, entity_type: str = "any") -> dict:
     response = ToolResponse(
         data=result.model_dump(mode="json"),
         confidence=confidence,
-        sources=[_opensanctions_source(), _ofac_source()],
+        sources=[_csl_source(), _ofac_source()],
         errors=errors,
     )
     return response.model_dump(mode="json")
@@ -110,24 +118,22 @@ async def check_sanctions_status(entity_name: str) -> dict:
                 "entries": [],
             },
             confidence=Confidence.LOW,
-            sources=[_opensanctions_source(), _ofac_source()],
+            sources=[_csl_source(), _ofac_source()],
             errors=errors,
         )
         return response.model_dump(mode="json")
 
-    # Confidence is higher when we have definitive positive or negative results
     if status.is_sanctioned and len(status.entries) >= 2:
         confidence = Confidence.HIGH
     elif status.is_sanctioned:
         confidence = Confidence.MEDIUM
     else:
-        # Absence of evidence is not evidence of absence — but it's our best info
         confidence = Confidence.MEDIUM
 
     response = ToolResponse(
         data=status.model_dump(mode="json"),
         confidence=confidence,
-        sources=[_opensanctions_source(), _ofac_source()],
+        sources=[_csl_source(), _ofac_source()],
         errors=errors,
     )
     return response.model_dump(mode="json")

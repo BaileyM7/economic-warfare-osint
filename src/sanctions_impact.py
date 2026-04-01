@@ -1,7 +1,8 @@
 """Sanctions Stock Impact Projector — core logic.
 
-Computes projected stock price impact based on historical comparable
-sanctions cases. Designed for fast, deterministic demo use (no LLM calls).
+Computes projected stock price impact based on dynamically sourced comparable
+sanctions cases. Comparable events are sourced via Claude + yfinance validation,
+with a static reference dataset as fallback (see comparable_sourcer.py).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Any
 
+from .comparable_sourcer import get_dynamic_comparables
 from .tools.market.client import YFinanceClient
 from .tools.sanctions.client import SanctionsClient
 from .tools.screening.client import search_csl
@@ -213,6 +215,15 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "sanction_type": "us_export_control",
         "industry": "chip_designer",
     },
+    {
+        "name": "SMIC",
+        "ticker": "0981.HK",
+        "sanction_date": "2020-12-18",
+        "description": "BIS Entity List — US equipment export ban to China's largest foundry",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "industry": "chip_foundry",
+    },
     # --- BIS penalty ---
     {
         "name": "Seagate",
@@ -275,6 +286,22 @@ SECTOR_GROUPS: dict[str, list[str]] = {
 PRE_DAYS = 60
 POST_DAYS = 120
 
+# Sector-appropriate benchmark ETFs for excess-return computation.
+# Using sector ETFs (rather than SPY) removes sector-wide movements that are
+# unrelated to the sanctions event (e.g. the AI boom that drove NVDA +130% after
+# Oct 2022 export controls, which was a sector-wide phenomenon, not sanctions alpha).
+_SECTOR_BENCHMARK: dict[str, str] = {
+    "semiconductors": "SOXX",
+    "tech": "QQQ",
+    "energy": "XLE",
+    "finance": "XLF",
+    "metals": "XME",
+    "telecom": "IYZ",
+    "surveillance": "QQQ",
+    "biotech": "XBI",
+}
+_DEFAULT_BENCHMARK = "SPY"
+
 
 # ---------------------------------------------------------------------------
 # Core functions
@@ -287,6 +314,7 @@ async def get_target_info(ticker: str) -> dict[str, Any]:
         yf.get_stock_profile(ticker),
         yf.get_price_data(ticker, period="1y"),
     )
+    recent_prices_30d = [hp.close for hp in price.historical[-30:]] if price.historical else []
     return {
         "ticker": ticker.upper(),
         "name": profile.name,
@@ -296,6 +324,8 @@ async def get_target_info(ticker: str) -> dict[str, Any]:
         "market_cap": profile.market_cap,
         "current_price": price.current_price,
         "change_pct": price.change_pct,
+        # Internal use only — popped in run_sanctions_impact before API response
+        "_recent_prices_30d": recent_prices_30d,
     }
 
 
@@ -343,7 +373,16 @@ async def get_sanctions_context(ticker: str, company_name: str) -> dict[str, Any
 async def _fetch_comparable_curve(
     comp: dict[str, Any], color: str
 ) -> dict[str, Any] | None:
-    """Fetch and normalize price curve for a single comparable."""
+    """Fetch market-adjusted (excess return) price curve for a single comparable.
+
+    Raw price returns are subtracted by the sector benchmark ETF return over the
+    same window. This isolates the sanctions-specific impact from broad sector
+    movements. For example: NVDA went +130% after Oct 2022 export controls, but
+    SOXX (semiconductor ETF) also rallied due to the AI boom — the excess return
+    correctly shows the sanctions headwind, not the sector tailwind.
+
+    If the benchmark fetch fails, raw returns are used as fallback.
+    """
     ticker = comp.get("ticker")
     if not ticker:
         return None
@@ -351,15 +390,20 @@ async def _fetch_comparable_curve(
     sanction_date_str = comp["sanction_date"]
     sanction_dt = datetime.strptime(sanction_date_str, "%Y-%m-%d")
 
-    # Fetch data around the actual sanction date, not relative to today
     start_dt = sanction_dt - timedelta(days=120)
     end_dt = sanction_dt + timedelta(days=240)
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str = end_dt.strftime("%Y-%m-%d")
 
+    sector = comp.get("sector", "")
+    benchmark_ticker = _SECTOR_BENCHMARK.get(sector, _DEFAULT_BENCHMARK)
+
     yf = YFinanceClient()
     try:
-        historical = await yf.get_price_history_range(ticker, start_str, end_str)
+        historical, benchmark_hist = await asyncio.gather(
+            yf.get_price_history_range(ticker, start_str, end_str),
+            yf.get_price_history_range(benchmark_ticker, start_str, end_str),
+        )
     except Exception:
         logger.warning("Failed to fetch price data for %s", ticker)
         return None
@@ -369,24 +413,25 @@ async def _fetch_comparable_curve(
                        len(historical) if historical else 0)
         return None
 
-    # Build date→price mapping
-    prices_by_date: dict[str, float] = {}
-    for hp in historical:
-        prices_by_date[hp.date] = hp.close
+    # Build date→price mappings
+    prices_by_date: dict[str, float] = {hp.date: hp.close for hp in historical}
+    benchmark_by_date: dict[str, float] = {hp.date: hp.close for hp in (benchmark_hist or [])}
 
-    # Find sanction-date price (or nearest prior trading day)
-    sanction_price: float | None = None
-    for offset in range(0, 10):
-        check_date = (sanction_dt - timedelta(days=offset)).strftime("%Y-%m-%d")
-        if check_date in prices_by_date:
-            sanction_price = prices_by_date[check_date]
-            break
+    def _event_price(price_map: dict[str, float]) -> float | None:
+        for off in range(0, 10):
+            d = (sanction_dt - timedelta(days=off)).strftime("%Y-%m-%d")
+            if d in price_map:
+                return price_map[d]
+        return None
 
+    sanction_price = _event_price(prices_by_date)
     if sanction_price is None or sanction_price == 0:
         logger.warning("No sanction-date price for %s", ticker)
         return None
 
-    # Build sorted list of (date_obj, price)
+    benchmark_event_price = _event_price(benchmark_by_date)
+
+    # Build sorted (date_obj, stock_price) list
     dated_prices = []
     for date_str, price in prices_by_date.items():
         try:
@@ -396,21 +441,33 @@ async def _fetch_comparable_curve(
             continue
     dated_prices.sort(key=lambda x: x[0])
 
-    # Find the trading-day index of the sanction date (or nearest)
-    trading_days: list[tuple[int, float]] = []
+    # Find sanction-date trading-day index
     sanction_idx = None
-    for i, (dt, _price) in enumerate(dated_prices):
+    for i, (dt, _) in enumerate(dated_prices):
         if sanction_idx is None and dt.strftime("%Y-%m-%d") >= sanction_date_str:
             sanction_idx = i
-
     if sanction_idx is None:
         sanction_idx = len(dated_prices) - 1
 
+    trading_days: list[tuple[int, float]] = []
     for i, (dt, price) in enumerate(dated_prices):
         day_offset = i - sanction_idx
         if -PRE_DAYS <= day_offset <= POST_DAYS:
-            pct_change = ((price - sanction_price) / sanction_price) * 100
-            trading_days.append((day_offset, round(pct_change, 2)))
+            raw_pct = ((price - sanction_price) / sanction_price) * 100
+
+            # Subtract benchmark return to get excess (sanctions-specific) return
+            if benchmark_event_price and benchmark_event_price != 0:
+                dt_str = dt.strftime("%Y-%m-%d")
+                bench_price = benchmark_by_date.get(dt_str)
+                if bench_price:
+                    benchmark_pct = ((bench_price - benchmark_event_price) / benchmark_event_price) * 100
+                    excess_pct = raw_pct - benchmark_pct
+                else:
+                    excess_pct = raw_pct
+            else:
+                excess_pct = raw_pct
+
+            trading_days.append((day_offset, round(excess_pct, 2)))
 
     if len(trading_days) < 20:
         return None
@@ -429,23 +486,15 @@ async def _fetch_comparable_curve(
 
 
 async def get_comparable_curves(
-    sector_filter: str | None = None,
-    sanction_type: str | None = None,
+    comparables: list[dict[str, Any]],
     industry_filter: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch normalized price curves for all comparable sanctions cases."""
-    comparables = SANCTIONS_COMPARABLES
+    """Fetch normalized price curves for a pre-selected list of comparable events.
 
-    # Filter by sanction_type first (most specific)
-    if sanction_type:
-        type_filtered = [
-            c for c in comparables
-            if c.get("sanction_type", "") == sanction_type
-        ]
-        if len(type_filtered) >= 3:
-            comparables = type_filtered
-
-    # Sub-filter by industry within the sanction_type subset
+    comparables is supplied by get_dynamic_comparables (or the static fallback).
+    industry_filter is an optional in-memory sub-filter applied on top.
+    """
+    # Sub-filter by chip industry type when relevant (cheap, no API cost)
     if industry_filter:
         industry_filtered = [
             c for c in comparables
@@ -453,16 +502,6 @@ async def get_comparable_curves(
         ]
         if len(industry_filtered) >= 3:
             comparables = industry_filtered
-
-    # Then filter by sector within the remaining subset
-    if sector_filter:
-        related_sectors = SECTOR_GROUPS.get(sector_filter.lower(), [sector_filter.lower()])
-        sector_filtered = [
-            c for c in comparables
-            if c.get("sector", "").lower() in related_sectors
-        ]
-        if len(sector_filtered) >= 3:
-            comparables = sector_filtered
 
     tasks = [
         _fetch_comparable_curve(comp, CHART_COLORS[i % len(CHART_COLORS)])
@@ -483,37 +522,122 @@ async def get_comparable_curves(
 def compute_projection(
     comparable_curves: list[dict[str, Any]],
     target_current_price: float,
+    target_sector: str | None = None,
+    target_sanction_type: str | None = None,
+    target_prices_30d: list[float] | None = None,
 ) -> dict[str, Any]:
-    """Compute mean projection + confidence band from comparable curves.
+    """Compute weighted mean projection + volatility-scaled confidence band.
 
-    Summary includes both pre-event decline (anticipatory selloff) and
-    post-announcement trajectory, so anticipated vs. surprise events read correctly.
+    Weighting per comparable curve:
+      recency   = exp(-0.10 * years_since_event)
+      sector_w  = 1.0 if exact sector match else 0.5
+      type_w    = 1.0 if exact sanction_type match else 0.5
+      raw_w     = recency * sector_w * type_w
+      w_i       = raw_w_i / sum(raw_w_j)   (normalized to sum=1)
+
+    Confidence band width is scaled by the target's 30-day realized volatility
+    relative to a 30% annualized baseline (band_scale clamped to [0.5, 2.0]).
+    High-volatility targets get wider bands; low-volatility targets get narrower ones.
+    The mean projection is not directionally adjusted — only band width changes.
     """
     if not comparable_curves or not target_current_price:
         return {"mean": [], "upper": [], "lower": [], "summary": {}}
 
-    # Collect values for all days (pre and post)
-    all_day_values: dict[int, list[float]] = {}
+    # --- Per-curve weights ---
+    today = datetime.utcnow().date()
+    raw_weights: list[float] = []
     for curve_data in comparable_curves:
+        try:
+            event_dt = datetime.strptime(curve_data["sanction_date"], "%Y-%m-%d").date()
+            years = (today - event_dt).days / 365.25
+        except (ValueError, KeyError):
+            years = 5.0
+        recency = math.exp(-0.10 * years)
+
+        sector_w = 1.0 if (target_sector and curve_data.get("sector") == target_sector) else 0.5
+        type_w   = 1.0 if (target_sanction_type and curve_data.get("sanction_type") == target_sanction_type) else 0.5
+
+        raw_weights.append(recency * sector_w * type_w)
+
+    # --- Trimmed mean: drop top/bottom 20% of curves by day-30 excess return ---
+    # Eliminates outliers (e.g. NVDA AI-boom recovery, extreme delisting cases) before
+    # computing the mean. Only applied when ≥5 curves exist so we don't over-trim small sets.
+    if len(comparable_curves) >= 5:
+        day30_vals: list[float] = []
+        for curve_data in comparable_curves:
+            pts = {p["day"]: p["pct"] for p in curve_data["curve"]}
+            near = [d for d in pts if 0 <= d <= 40]
+            day30_vals.append(pts[min(near, key=lambda d: abs(d - 30))] if near else 0.0)
+
+        n = len(comparable_curves)
+        trim = max(1, n // 5)
+        keep = set(sorted(range(n), key=lambda i: day30_vals[i])[trim: n - trim])
+        comparable_curves = [c for i, c in enumerate(comparable_curves) if i in keep]
+        raw_weights      = [w for i, w in enumerate(raw_weights)      if i in keep]
+
+    total_w = sum(raw_weights) or 1.0
+    norm_weights = [w / total_w for w in raw_weights]
+
+    # --- Coherence: fraction of post-trim curves with negative day-30 excess return ---
+    # direction_agreement = fraction in the majority direction (0.5 = split, 1.0 = unanimous)
+    # coherence_low flags when the model lacks directional consensus.
+    coherence_score = 1.0
+    if comparable_curves:
+        day30_signs: list[bool] = []
+        for curve_data in comparable_curves:
+            pts = {p["day"]: p["pct"] for p in curve_data["curve"]}
+            near = [d for d in pts if 0 <= d <= 40]
+            if near:
+                day30_signs.append(pts[min(near, key=lambda d: abs(d - 30))] < 0)
+        if day30_signs:
+            neg_frac = sum(day30_signs) / len(day30_signs)
+            coherence_score = max(neg_frac, 1.0 - neg_frac)
+    coherence_low = coherence_score < 0.65
+
+    # --- Realized volatility → band scale ---
+    band_scale = 1.0
+    prices_30d = target_prices_30d or []
+    if len(prices_30d) >= 5:
+        daily_returns = [
+            prices_30d[i] / prices_30d[i - 1] - 1
+            for i in range(1, len(prices_30d))
+            if prices_30d[i - 1] != 0
+        ]
+        if daily_returns:
+            mean_r = sum(daily_returns) / len(daily_returns)
+            variance_r = sum((r - mean_r) ** 2 for r in daily_returns) / len(daily_returns)
+            realized_vol = math.sqrt(variance_r) * math.sqrt(252)
+            band_scale = max(0.5, min(2.0, realized_vol / 0.30))
+
+    # --- Collect (weight, pct) per day ---
+    # day → list of (normalized_weight, pct)
+    all_day_entries: dict[int, list[tuple[float, float]]] = {}
+    for weight, curve_data in zip(norm_weights, comparable_curves):
         for point in curve_data["curve"]:
-            all_day_values.setdefault(point["day"], []).append(point["pct"])
+            all_day_entries.setdefault(point["day"], []).append((weight, point["pct"]))
 
     mean_curve = []
     upper_band = []
     lower_band = []
 
-    for day in sorted(all_day_values.keys()):
-        values = all_day_values[day]
-        if len(values) < 2:
+    for day in sorted(all_day_entries.keys()):
+        entries = all_day_entries[day]
+        if len(entries) < 2:
             continue
 
-        mean_pct = sum(values) / len(values)
-        variance = sum((v - mean_pct) ** 2 for v in values) / (len(values) - 1)
+        # Re-normalize weights for this day (not all curves cover every day)
+        day_total = sum(w for w, _ in entries) or 1.0
+        day_w = [w / day_total for w, _ in entries]
+        day_pcts = [p for _, p in entries]
+
+        mean_pct = sum(w * p for w, p in zip(day_w, day_pcts))
+        variance = sum(w * (p - mean_pct) ** 2 for w, p in zip(day_w, day_pcts))
         std_pct = math.sqrt(variance)
 
+        scaled_std = band_scale * std_pct
         projected_price = target_current_price * (1 + mean_pct / 100)
-        upper_price = target_current_price * (1 + (mean_pct + std_pct) / 100)
-        lower_price = target_current_price * (1 + (mean_pct - std_pct) / 100)
+        upper_price = target_current_price * (1 + (mean_pct + scaled_std) / 100)
+        lower_price = target_current_price * (1 + (mean_pct - scaled_std) / 100)
 
         mean_curve.append({
             "day": day,
@@ -522,12 +646,12 @@ def compute_projection(
         })
         upper_band.append({
             "day": day,
-            "pct": round(mean_pct + std_pct, 2),
+            "pct": round(mean_pct + scaled_std, 2),
             "price": round(upper_price, 2),
         })
         lower_band.append({
             "day": day,
-            "pct": round(mean_pct - std_pct, 2),
+            "pct": round(mean_pct - scaled_std, 2),
             "price": round(lower_price, 2),
         })
 
@@ -537,12 +661,16 @@ def compute_projection(
 
     summary: dict[str, Any] = {}
 
-    # Pre-event: drop from pre-event peak down to announcement day (day 0 = 0%).
-    # Positive pre_pcts = stock was higher before event (anticipated selloff into day 0).
-    # pre_event_decline is negative: -(peak above day-0) = how much was priced in already.
+    # Pre-event: excess return at the START of the pre-event window (day ~-60) vs day 0.
+    # Negative = stock was underperforming its sector benchmark before the event
+    #            (risk being priced in — "sell the rumor").
+    # Positive = stock was outperforming before the event (market was not anticipating).
+    # Using the first point in the window (not max) makes this directly comparable to
+    # post-event values, which are also measured from day 0.
     if pre_pcts:
-        pre_event_peak = max(pre_pcts)  # how high stock was relative to day-0 price
-        summary["pre_event_decline"] = round(-pre_event_peak, 2)  # negative = already priced in
+        # pre_pcts is sorted by day (most negative day first) because mean_curve is
+        # built from sorted(all_day_entries.keys())
+        summary["pre_event_decline"] = round(-pre_pcts[0], 2)
 
     # Post-announcement trajectory at 30 / 60 / 90 days
     for label, target_day in [("day_30", 30), ("day_60", 60), ("day_90", 90)]:
@@ -572,6 +700,8 @@ def compute_projection(
         "upper": upper_band,
         "lower": lower_band,
         "summary": summary,
+        "coherence_score": round(coherence_score, 3),
+        "coherence_low": coherence_low,
     }
 
 
@@ -642,24 +772,48 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
     elif any("swift" in p.lower() for p in programs):
         inferred_sanction_type = "swift_cutoff"
 
-    # Infer industry sub-type for us_export_control to differentiate chip designers vs equipment makers
+    # Infer industry sub-type for semiconductor companies to differentiate
+    # chip designers, equipment makers, and foundries. Applied to ALL semiconductor
+    # targets (not just us_export_control) so the industry_filter in get_comparable_curves
+    # can always narrow to the right reference class when ≥3 matching comparables exist.
     inferred_industry: str | None = None
-    if inferred_sanction_type == "us_export_control":
-        _EQUIPMENT_KEYWORDS = ("equipment", "materials", "systems", "instruments", "photonics", "laser")
-        _DESIGNER_KEYWORDS = ("semiconductor", "computing", "microelectronics", "fabless", "integrated circuit")
-        if any(k in industry_raw for k in _EQUIPMENT_KEYWORDS):
+    if mapped_sector == "semiconductors" or "semiconductor" in industry_raw:
+        _FOUNDRY_KEYWORDS = ("foundry", "contract manufactur", "wafer fabricat", "wafer foundry",
+                              "logic foundry", "fab ", "fabrication services")
+        _EQUIPMENT_KEYWORDS = ("equipment", "materials", "systems", "instruments", "photonics",
+                                "laser", "lithograph", "etch", "deposition", "metrology")
+        _DESIGNER_KEYWORDS = ("semiconductor", "computing", "microelectronics", "fabless",
+                               "integrated circuit", "chip design", "ic design")
+        if any(k in industry_raw for k in _FOUNDRY_KEYWORDS):
+            inferred_industry = "chip_foundry"
+        elif any(k in industry_raw for k in _EQUIPMENT_KEYWORDS):
             inferred_industry = "chip_equipment"
         elif any(k in industry_raw for k in _DESIGNER_KEYWORDS) or mapped_sector == "semiconductors":
             inferred_industry = "chip_designer"
 
-    curves = await get_comparable_curves(
-        sector_filter=mapped_sector or None,
+    recent_prices_30d: list[float] = target_info.pop("_recent_prices_30d", [])
+
+    raw_comparables, sourcing_method = await get_dynamic_comparables(
+        sector=mapped_sector or None,
         sanction_type=inferred_sanction_type,
+        country=target_info.get("country"),
+        static_fallback=SANCTIONS_COMPARABLES,
+        sector_groups=SECTOR_GROUPS,
+    )
+
+    curves = await get_comparable_curves(
+        comparables=raw_comparables,
         industry_filter=inferred_industry,
     )
 
     current_price = target_info.get("current_price") or 0
-    projection = compute_projection(curves, current_price)
+    projection = compute_projection(
+        curves,
+        current_price,
+        target_sector=mapped_sector or None,
+        target_sanction_type=inferred_sanction_type,
+        target_prices_30d=recent_prices_30d,
+    )
 
     target_info["sanctions_status"] = sanctions_context
 
@@ -671,5 +825,6 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
             "comparable_count": len(curves),
             "time_window_days": [-PRE_DAYS, POST_DAYS],
             "generated_at": datetime.utcnow().isoformat() + "Z",
+            "sourcing_method": sourcing_method,
         },
     }

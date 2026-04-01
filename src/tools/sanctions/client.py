@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
@@ -11,7 +12,8 @@ from typing import Any
 
 from src.common.cache import get_cached, set_cached
 from src.common.config import config
-from src.common.http_client import fetch_json, fetch_text, post_json
+from src.common.http_client import fetch_json, fetch_text
+from src.tools.screening.client import search_csl
 
 from .models import (
     ProximityEdge,
@@ -45,7 +47,12 @@ _CACHE_TTL_SDN = 86400  # 24 hours for SDN list download
 
 
 class OpenSanctionsClient:
-    """Client for the OpenSanctions public API (https://api.opensanctions.org)."""
+    """Client for the OpenSanctions API — used ONLY for proximity/graph queries.
+
+    All primary sanctions searching now goes through Trade.gov CSL + OFAC SDN.
+    OpenSanctions is retained solely for get_entity_relationships / get_entity
+    which provide the entity-graph data required by get_proximity().
+    """
 
     async def search_entities(
         self,
@@ -55,8 +62,12 @@ class OpenSanctionsClient:
     ) -> list[SanctionEntry]:
         """Search OpenSanctions for entities matching *query*.
 
-        Uses GET /search/default?q={query}&limit={limit}.
+        This is used only by get_proximity() to seed the graph walk.
         """
+        if not config.opensanctions_api_key:
+            logger.debug("OpenSanctions API key not configured; skipping search")
+            return []
+
         cache_params = {"q": query, "limit": limit, "entity_type": entity_type}
         cached = get_cached(_CACHE_NS_OPENSANCTIONS, action="search", **cache_params)
         if cached is not None and len(cached) > 0:
@@ -76,7 +87,10 @@ class OpenSanctionsClient:
                 params["schema"] = schema
 
         try:
-            data = await self._search_request(params)
+            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
+            data = await fetch_json(
+                f"{OPENSANCTIONS_BASE}/search/default", params=params, headers=headers
+            )
         except Exception as exc:
             logger.warning("OpenSanctions search unavailable (query=%s): %s", query, type(exc).__name__)
             return []
@@ -95,12 +109,18 @@ class OpenSanctionsClient:
 
     async def get_entity(self, entity_id: str) -> SanctionEntry | None:
         """Fetch a single entity by its OpenSanctions ID."""
+        if not config.opensanctions_api_key:
+            return None
+
         cached = get_cached(_CACHE_NS_OPENSANCTIONS, action="entity", id=entity_id)
         if cached is not None:
             return SanctionEntry.model_validate(cached)
 
         try:
-            data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}")
+            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
+            data = await fetch_json(
+                f"{OPENSANCTIONS_BASE}/entities/{entity_id}", headers=headers
+            )
         except Exception as exc:
             logger.warning("OpenSanctions get_entity unavailable (id=%s): %s", entity_id, type(exc).__name__)
             return None
@@ -116,83 +136,6 @@ class OpenSanctionsClient:
             )
         return entry
 
-    async def match_entity(
-        self,
-        name: str,
-        entity_type: str = "Thing",
-        properties: dict[str, list[str]] | None = None,
-    ) -> list[SanctionEntry]:
-        """Match an entity against OpenSanctions using POST /match/default."""
-        schema_map = {
-            "person": "Person",
-            "company": "Company",
-            "organization": "Organization",
-            "vessel": "Vessel",
-            "aircraft": "Aircraft",
-            "any": "Thing",
-        }
-        schema = schema_map.get(entity_type.lower(), "Thing")
-
-        props: dict[str, list[str]] = {"name": [name]}
-        if properties:
-            props.update(properties)
-
-        body = {
-            "schema": schema,
-            "properties": props,
-        }
-
-        cache_params = {"name": name, "schema": schema}
-        cached = get_cached(_CACHE_NS_OPENSANCTIONS, action="match", **cache_params)
-        if cached is not None and len(cached) > 0:
-            return [SanctionEntry.model_validate(e) for e in cached]
-
-        entries: list[SanctionEntry] = []
-        if config.opensanctions_api_key:
-            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
-            try:
-                data = await post_json(
-                    f"{OPENSANCTIONS_BASE}/match/default", json_body=body, headers=headers
-                )
-                for result in data.get("results", []):
-                    entry = self._parse_entity(result)
-                    if entry:
-                        entry.score = result.get("score")
-                        entries.append(entry)
-            except Exception as exc:
-                logger.warning("OpenSanctions match unavailable (name=%s): %s", name, type(exc).__name__)
-
-        # Public fallback when API key is not set or match endpoint fails.
-        if not entries:
-            entries = await self.search_entities(name, limit=10, entity_type=entity_type)
-            for idx, entry in enumerate(entries):
-                if entry.score is None:
-                    # Keep fallback scores deterministic and descending.
-                    entry.score = max(0.4, 0.8 - (idx * 0.05))
-
-        if entries:
-            set_cached(
-                [e.model_dump(mode="json") for e in entries],
-                _CACHE_NS_OPENSANCTIONS,
-                ttl=_CACHE_TTL_SEARCH,
-                action="match",
-                **cache_params,
-            )
-        return entries
-
-    async def _search_request(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Use authenticated search when key is available, otherwise public search."""
-        if config.opensanctions_api_key:
-            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
-            return await fetch_json(
-                f"{OPENSANCTIONS_BASE}/search/default", params=params, headers=headers
-            )
-
-        public_params = dict(params)
-        return await fetch_json(
-            f"{OPENSANCTIONS_BASE}/entities/_search", params=public_params
-        )
-
     async def get_entity_relationships(
         self,
         entity_id: str,
@@ -202,6 +145,9 @@ class OpenSanctionsClient:
         Uses the entity detail endpoint which includes related entities in its
         ``referents`` and properties.
         """
+        if not config.opensanctions_api_key:
+            return []
+
         cached = get_cached(
             _CACHE_NS_OPENSANCTIONS, action="relationships", id=entity_id
         )
@@ -209,7 +155,10 @@ class OpenSanctionsClient:
             return cached
 
         try:
-            data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}")
+            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
+            data = await fetch_json(
+                f"{OPENSANCTIONS_BASE}/entities/{entity_id}", headers=headers
+            )
         except Exception as exc:
             logger.warning("OpenSanctions relationships unavailable (id=%s): %s", entity_id, type(exc).__name__)
             return []
@@ -762,41 +711,94 @@ class OFACClient:
 
 
 class SanctionsClient:
-    """Unified client that queries both OpenSanctions and OFAC SDN."""
+    """Unified client querying the Trade.gov Consolidated Screening List and OFAC SDN.
+
+    OpenSanctions is retained only for get_proximity() which requires entity graph data
+    that CSL does not provide. All standard sanctions checks use CSL + OFAC SDN.
+    """
 
     def __init__(self) -> None:
         self.opensanctions = OpenSanctionsClient()
         self.ofac = OFACClient()
+
+    @staticmethod
+    def _csl_to_entries(csl_results: list[dict[str, Any]]) -> list[SanctionEntry]:
+        """Convert Trade.gov CSL API results to SanctionEntry objects."""
+        _type_map = {
+            "entity": "company",
+            "individual": "person",
+            "vessel": "vessel",
+            "aircraft": "aircraft",
+        }
+        entries: list[SanctionEntry] = []
+        for hit in csl_results:
+            name = (hit.get("name") or "").strip()
+            if not name:
+                continue
+
+            designation_date: datetime | None = None
+            start_date = hit.get("start_date")
+            if start_date:
+                for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y"):
+                    try:
+                        designation_date = datetime.strptime(start_date[:10], fmt[:len(start_date[:10])])
+                        break
+                    except ValueError:
+                        continue
+
+            identifiers: dict[str, str] = {}
+            for id_obj in hit.get("ids", []):
+                id_type = (id_obj.get("type") or "").strip()
+                id_num = (id_obj.get("number") or "").strip()
+                if id_type and id_num:
+                    identifiers[id_type] = id_num
+
+            addresses: list[str] = []
+            for addr in hit.get("addresses", []):
+                parts = [addr.get("city"), addr.get("state"), addr.get("country")]
+                parts = [p for p in parts if p]
+                if parts:
+                    addresses.append(", ".join(parts))
+
+            entries.append(SanctionEntry(
+                id=f"csl-{hit.get('entity_number') or name}",
+                name=name,
+                aliases=hit.get("alt_names") or [],
+                entity_type=_type_map.get((hit.get("type") or "").lower(), "unknown"),
+                programs=hit.get("programs") or [],
+                addresses=addresses,
+                identifiers=identifiers,
+                list_source=hit.get("source") or "CSL",
+                designation_date=designation_date,
+                remarks=hit.get("remarks"),
+                score=0.9,
+            ))
+        return entries
 
     async def search(
         self,
         query: str,
         entity_type: str = "any",
     ) -> SanctionSearchResult:
-        """Search both sources and merge results."""
-        import asyncio
+        """Search the Trade.gov CSL and OFAC SDN and merge results."""
+        csl_task = asyncio.create_task(search_csl(query))
+        ofac_task = asyncio.create_task(self.ofac.search(query, entity_type=entity_type))
 
-        os_task = asyncio.create_task(
-            self.opensanctions.search_entities(query, entity_type=entity_type)
-        )
-        ofac_task = asyncio.create_task(
-            self.ofac.search(query, entity_type=entity_type)
-        )
-
-        os_results, ofac_results = await asyncio.gather(
-            os_task, ofac_task, return_exceptions=True
+        csl_raw, ofac_results = await asyncio.gather(
+            csl_task, ofac_task, return_exceptions=True
         )
 
         matches: list[SanctionEntry] = []
-        if isinstance(os_results, list):
-            matches.extend(os_results)
+
+        if isinstance(csl_raw, list):
+            matches.extend(self._csl_to_entries(csl_raw))
         else:
-            logger.error("OpenSanctions search error: %s", os_results)
+            logger.warning("CSL search error: %s", csl_raw)
 
         if isinstance(ofac_results, list):
             matches.extend(ofac_results)
         else:
-            logger.error("OFAC search error: %s", ofac_results)
+            logger.warning("OFAC search error: %s", ofac_results)
 
         # Deduplicate by name (case-insensitive), keeping higher-scored entry
         seen: dict[str, SanctionEntry] = {}
@@ -815,28 +817,20 @@ class SanctionsClient:
         )
 
     async def check_status(self, entity_name: str) -> SanctionStatus:
-        """Check whether *entity_name* is sanctioned on any list."""
+        """Check whether *entity_name* is sanctioned on any list.
+
+        Uses Trade.gov CSL + OFAC SDN. CSL results score 0.9 (government-verified).
+        OFAC SDN fuzzy matches require >= 0.85 to reduce false positives.
+        """
         result = await self.search(entity_name)
 
-        # Consider only high-confidence matches (score >= 0.85) as positive hits.
-        # Lower thresholds produce false positives from OFAC fuzzy matching
-        # (e.g., "SHINING PATH" matching "Intel Corporation" at 0.5).
         strong_matches = [m for m in result.matches if (m.score or 0) >= 0.85]
-
-        # Also try the match endpoint for more precise matching
-        match_results = await self.opensanctions.match_entity(entity_name)
-        strong_match_entries = [m for m in match_results if (m.score or 0) >= 0.85]
-
-        all_strong = {e.id: e for e in strong_matches}
-        for e in strong_match_entries:
-            all_strong[e.id] = e
-        combined = list(all_strong.values())
 
         lists_found: list[str] = []
         designation_dates: list[datetime | None] = []
         all_programs: list[str] = []
 
-        for entry in combined:
+        for entry in strong_matches:
             if entry.list_source and entry.list_source not in lists_found:
                 lists_found.append(entry.list_source)
             if entry.designation_date:
@@ -847,11 +841,11 @@ class SanctionsClient:
 
         return SanctionStatus(
             entity_name=entity_name,
-            is_sanctioned=len(combined) > 0,
+            is_sanctioned=len(strong_matches) > 0,
             lists_found=lists_found,
             designation_dates=designation_dates,
             programs=all_programs,
-            entries=combined,
+            entries=strong_matches,
         )
 
     async def get_proximity(

@@ -191,6 +191,17 @@ ISO3_TO_COMTRADE_NUM: dict[str, str] = {
 }
 
 
+COMTRADE_NUM_TO_ISO3: dict[str, str] = {v: k for k, v in ISO3_TO_COMTRADE_NUM.items()}
+COMTRADE_NUM_TO_ISO3["0"] = "WLD"
+
+
+def _num_to_iso3(code: int | str | None) -> str:
+    """Convert a Comtrade numeric reporter/partner code to ISO-3 alpha."""
+    if code is None:
+        return ""
+    return COMTRADE_NUM_TO_ISO3.get(str(code), str(code))
+
+
 def resolve_country(name_or_code: str) -> str:
     """Resolve a country name or code to ISO-3 alpha code.
 
@@ -227,8 +238,17 @@ _TRADE_CACHE_TTL = 60 * 60 * 24 * 7
 # UN Comtrade client
 # ===========================================================================
 
-_COMTRADE_BASE = "https://comtradeapi.un.org/data/v1/get"
-_COMTRADE_REF_BASE = "https://comtradeapi.un.org/files/v1/app/reference"
+# Full-data endpoint requires a paid subscription key.
+# Preview endpoint is free (no key needed) but limited to 500 rows per request.
+# We auto-select based on whether a key is configured.
+_COMTRADE_PAID_BASE    = "https://comtradeapi.un.org/data/v1/get"
+_COMTRADE_PREVIEW_BASE = "https://comtradeapi.un.org/public/v1/preview"
+_COMTRADE_REF_BASE     = "https://comtradeapi.un.org/files/v1/app/reference"
+
+
+def _comtrade_base() -> str:
+    """Return the appropriate base URL depending on whether a key is set."""
+    return _COMTRADE_PAID_BASE if config.comtrade_api_key else _COMTRADE_PREVIEW_BASE
 
 
 def _comtrade_headers() -> dict[str, str]:
@@ -271,14 +291,17 @@ async def fetch_comtrade_trade(
 
     reporter_num = _comtrade_reporter_code(reporter_iso3)
 
-    # Build URL: GET /C/A/{reporterCode}/{period}
-    url = f"{_COMTRADE_BASE}/C/A/{reporter_num}/{year}"
+    url = f"{_comtrade_base()}/C/A/HS"
 
-    params: dict[str, str] = {"flowCode": flow_code}
+    params: dict[str, str] = {
+        "reporterCode": reporter_num,
+        "period": str(year),
+        "flowCode": flow_code,
+    }
     if partner_iso3:
         partner_num = _comtrade_reporter_code(partner_iso3)
         params["partnerCode"] = partner_num
-    if commodity_code:
+    if commodity_code and commodity_code.upper() != "TOTAL":
         params["cmdCode"] = commodity_code
 
     try:
@@ -303,20 +326,43 @@ async def fetch_comtrade_trade(
 
 
 def _parse_comtrade_records(records: list[dict[str, Any]]) -> list[TradeFlow]:
-    """Convert raw Comtrade JSON records into TradeFlow models."""
+    """Convert raw Comtrade JSON records into TradeFlow models.
+
+    The Comtrade Plus API v1 sometimes returns ``None`` for descriptive
+    fields (reporterISO, partnerISO, cmdDesc).  We fall back through
+    several alternatives and ultimately use a numeric→ISO3 reverse map.
+    """
     flows: list[TradeFlow] = []
     for rec in records:
-        flow_code = rec.get("flowCode", "")
+        flow_code = rec.get("flowCode") or ""
         flow_type = "import" if flow_code == "M" else "export"
+
+        reporter = (
+            rec.get("reporterISO")
+            or rec.get("reporterDesc")
+            or _num_to_iso3(rec.get("reporterCode"))
+        )
+        partner = (
+            rec.get("partnerISO")
+            or rec.get("partnerDesc")
+            or _num_to_iso3(rec.get("partnerCode"))
+        )
+        cmd_desc = (
+            rec.get("cmdDesc")
+            or rec.get("cmdDescE")
+            or rec.get("flowDesc")
+            or str(rec.get("cmdCode") or "")
+        )
+
         flows.append(
             TradeFlow(
-                reporter_country=rec.get("reporterISO", rec.get("reporterCode", "")),
-                partner_country=rec.get("partnerISO", rec.get("partnerCode", "")),
-                commodity_code=str(rec.get("cmdCode", "")),
-                commodity_desc=rec.get("cmdDesc", rec.get("cmdDescE", "")),
-                trade_value_usd=float(rec.get("primaryValue", 0) or 0),
-                weight_kg=float(rec.get("netWgt", 0) or 0) if rec.get("netWgt") else None,
-                year=int(rec.get("period", 0) or 0),
+                reporter_country=reporter or "UNKNOWN",
+                partner_country=partner or "UNKNOWN",
+                commodity_code=str(rec.get("cmdCode") or ""),
+                commodity_desc=cmd_desc,
+                trade_value_usd=float(rec.get("primaryValue") or 0),
+                weight_kg=float(rec.get("netWgt") or 0) if rec.get("netWgt") else None,
+                year=int(rec.get("period") or 0),
                 flow_type=flow_type,
             )
         )

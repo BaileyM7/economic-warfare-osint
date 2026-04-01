@@ -40,7 +40,8 @@ from src.tools.corporate.client import (
 )
 from src.tools.geopolitical.client import refresh_acled_token, gdelt_doc_search
 from src.tools.geopolitical.server import get_bilateral_tensions
-from src.tools.sanctions.client import OFACClient, OpenSanctionsClient
+from src.tools.sanctions.client import OFACClient, OpenSanctionsClient, SanctionsClient
+from src.tools.screening.client import search_csl
 from src.tools.trade.server import get_supply_chain_exposure
 from src.tools.vessels.client import vessel_find, vessel_by_mmsi, vessel_by_imo, vessel_history
 
@@ -289,9 +290,11 @@ async def sanctions_impact(req: SanctionsImpactRequest):
         prompt = (
             f"You are an economic warfare analyst. Given the following data about "
             f"{compact['name']} ({ticker}), write a 3-5 sentence risk narrative covering: "
-            f"(1) current sanctions status, (2) likely stock price trajectory based on "
-            f"comparable cases, (3) key supply chain or investor exposure that constitutes "
-            f"friendly fire risk.\n"
+            f"(1) current sanctions status, (2) likely stock price trajectory — note the "
+            f"projection uses market-adjusted excess returns vs the sector ETF benchmark, so "
+            f"values reflect underperformance vs the sector, not necessarily absolute price "
+            f"declines; translate to plain language for the reader, (3) key supply chain or "
+            f"investor exposure that constitutes friendly fire risk.\n"
             f"Data: {json.dumps(compact)}\n"
             f"Confidence qualifier: {comp_count} comparable cases used, data as of "
             f"{date.today().isoformat()}."
@@ -514,49 +517,36 @@ async def person_profile(req: PersonProfileRequest):
 
     try:
         # Run all lookups concurrently
-        os_client = OpenSanctionsClient()
-        ofac_client = OFACClient()
+        sanctions_client = SanctionsClient()
+        ofac_client = sanctions_client.ofac
 
-        sanctions_task = asyncio.create_task(
-            os_client.search_entities(name, limit=10, entity_type="person")
-        )
+        csl_task = asyncio.create_task(search_csl(name))
         ofac_task = asyncio.create_task(ofac_client.search(name, entity_type="person"))
-        os_match_task = asyncio.create_task(os_client.match_entity(name, entity_type="person"))
         officers_task = asyncio.create_task(oc_search_officers(name))
         icij_task = asyncio.create_task(icij_search(name, entity_type="officer"))
         gdelt_task = asyncio.create_task(gdelt_doc_search(name, days=30))
 
         (
-            sanctions_hits,
+            csl_hits_raw,
             ofac_hits,
-            os_match_hits,
             officer_records,
             icij_hits,
             gdelt_events,
         ) = await asyncio.gather(
-            sanctions_task, ofac_task, os_match_task, officers_task, icij_task, gdelt_task,
+            csl_task, ofac_task, officers_task, icij_task, gdelt_task,
             return_exceptions=True,
         )
 
         def _safe(result, default):
             return default if isinstance(result, Exception) else result
 
-        sanctions_hits = _safe(sanctions_hits, [])
+        csl_hits_raw = _safe(csl_hits_raw, [])
         ofac_hits = _safe(ofac_hits, [])
-        os_match_hits = _safe(os_match_hits, [])
         officer_records = _safe(officer_records, [])
         icij_hits = _safe(icij_hits, [])
         gdelt_events = _safe(gdelt_events, {})
 
-        # Merge OpenSanctions search + match hits and keep strongest entries per ID.
-        merged_os: dict[str, Any] = {}
-        for entry in [*(sanctions_hits or []), *(os_match_hits or [])]:
-          if not getattr(entry, "id", None):
-            continue
-          existing = merged_os.get(entry.id)
-          if existing is None or (entry.score or 0) > (existing.score or 0):
-            merged_os[entry.id] = entry
-        sanctions_hits = list(merged_os.values())
+        sanctions_hits = sanctions_client._csl_to_entries(csl_hits_raw or [])
 
         # Build sanctions summary
         is_sanctioned = bool(

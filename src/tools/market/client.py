@@ -162,10 +162,13 @@ class YFinanceClient:
     def _fetch_info(ticker: str) -> dict[str, Any]:
         t = yf.Ticker(ticker)
         try:
-            return t.info or {}
+            info = t.info or {}
         except Exception:
-            logger.warning("yfinance .info failed for %s", ticker, exc_info=True)
+            logger.warning("yfinance .info failed for %s — possibly not a publicly traded ticker", ticker)
             return {}
+        if not info.get("regularMarketPrice") and not info.get("currentPrice") and not info.get("longName"):
+            logger.info("Ticker %s returned no market data — likely not publicly traded", ticker)
+        return info
 
     @staticmethod
     def _fetch_history(ticker: str, period: str) -> Any:

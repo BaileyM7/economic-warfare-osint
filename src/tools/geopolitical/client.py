@@ -172,44 +172,63 @@ async def gdelt_bilateral_search(
 # ACLED Client
 # ---------------------------------------------------------------------------
 
-ACLED_BASE = "https://api.acleddata.com/acled/read"
-ACLED_TOKEN_URL = "https://acleddata.com/user/login?_format=json"
+ACLED_BASE = "https://acleddata.com/api/acled/read"
+ACLED_TOKEN_URL = "https://acleddata.com/oauth/token"
 
 # Cache TTL: 1 hour for ACLED (daily updates)
 ACLED_CACHE_TTL = 3600
 
 
 async def refresh_acled_token() -> bool:
-    """Login to ACLED and retrieve a fresh API token.
+    """Obtain or refresh an ACLED OAuth Bearer token.
 
-    POSTs credentials to the ACLED login endpoint and updates
-    config.acled_api_key in place. Returns True on success.
+    Uses the password grant on first call, then the refresh-token grant
+    for subsequent refreshes.  Updates ``config.acled_api_key`` in place.
     """
     if not config.acled_email or not config.acled_password:
+        if config.acled_api_key:
+            logger.info("ACLED API key present (no email/password for refresh)")
+            return True
         logger.warning("ACLED credentials not configured; skipping token refresh")
         return False
 
     import httpx
+
+    form: dict[str, str] = {
+        "client_id": "acled",
+    }
+
+    if config.acled_refresh_token:
+        form["grant_type"] = "refresh_token"
+        form["refresh_token"] = config.acled_refresh_token
+    else:
+        form["grant_type"] = "password"
+        form["username"] = config.acled_email
+        form["password"] = config.acled_password
+
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 ACLED_TOKEN_URL,
-                json={"name": config.acled_email, "pass": config.acled_password},
-                headers={"Content-Type": "application/json"},
+                data=form,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             resp.raise_for_status()
             data = resp.json()
-        new_token = (
-            data.get("access_token")
-            or data.get("token")
-            or data.get("api_key")
-            or data.get("csrf_token")
-        )
+
+        new_token = data.get("access_token")
         if not new_token:
-            logger.error("ACLED login returned no token. Response keys: %s", list(data.keys()))
+            logger.error("ACLED OAuth returned no access_token. Keys: %s", list(data.keys()))
             return False
+
         config.acled_api_key = new_token
-        logger.info("ACLED token refreshed via login successfully")
+        if data.get("refresh_token"):
+            config.acled_refresh_token = data["refresh_token"]
+
+        logger.info(
+            "ACLED token refreshed (expires_in=%s)",
+            data.get("expires_in", "?"),
+        )
         return True
     except Exception as exc:
         logger.error("ACLED token refresh failed: %s", exc)
@@ -271,7 +290,6 @@ async def acled_get_events(
     date_range = f"{start_date.strftime('%Y-%m-%d')}|{end_date.strftime('%Y-%m-%d')}"
 
     params: dict[str, Any] = {
-        "key": config.acled_api_key,
         "email": config.acled_email,
         "country": country,
         "event_date": date_range,
@@ -281,8 +299,10 @@ async def acled_get_events(
     if event_type:
         params["event_type"] = event_type
 
+    headers = {"Authorization": f"Bearer {config.acled_api_key}"}
+
     try:
-        data = await fetch_json(ACLED_BASE, params=params)
+        data = await fetch_json(ACLED_BASE, params=params, headers=headers)
     except Exception as exc:
         logger.warning("ACLED query failed for country=%r: %s", country, exc)
         return []
@@ -325,7 +345,6 @@ async def acled_get_events_bilateral(
     date_range = f"{start_date.strftime('%Y-%m-%d')}|{end_date.strftime('%Y-%m-%d')}"
 
     params: dict[str, Any] = {
-        "key": config.acled_api_key,
         "email": config.acled_email,
         "country": country,
         "actor1": actor_filter,
@@ -334,8 +353,10 @@ async def acled_get_events_bilateral(
         "limit": str(limit),
     }
 
+    headers = {"Authorization": f"Bearer {config.acled_api_key}"}
+
     try:
-        data = await fetch_json(ACLED_BASE, params=params)
+        data = await fetch_json(ACLED_BASE, params=params, headers=headers)
     except Exception as exc:
         logger.warning("ACLED bilateral query failed: %s", exc)
         return []
