@@ -38,6 +38,10 @@ class Config:
     sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
     sayari_client_secret: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_SECRET", ""))
 
+    # BuildWorkforce AI sector intelligence
+    buildworkforce_api_key: str = field(default_factory=lambda: os.getenv("BUILDWORKFORCE_API_KEY", ""))
+    buildworkforce_team_id: str = field(default_factory=lambda: os.getenv("BUILDWORKFORCE_TEAM_ID", "56487d92-a610-4875-8263-07a4d4afb6eb"))
+
     # No key needed
     # OFAC, OpenSanctions, GLEIF, ICIJ, GDELT, IMF, World Bank, yfinance, SEC EDGAR
 

@@ -2370,6 +2370,67 @@ async def followup(req: FollowUpRequest) -> FollowUpResponse:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# --- BuildWorkforce AI proxy ---
+
+import httpx as _httpx
+
+
+class BuildWorkforceRunRequest(BaseModel):
+    UserInput: str
+
+
+@app.post("/api/buildworkforce/run")
+async def buildworkforce_start_run(req: BuildWorkforceRunRequest):
+    """Proxy: start a BuildWorkforce sector analysis run."""
+    api_key = config.buildworkforce_api_key
+    team_id = config.buildworkforce_team_id
+    if not api_key:
+        raise HTTPException(status_code=503, detail="BUILDWORKFORCE_API_KEY not configured")
+    url = f"https://api.buildworkforce.ai/api/v2/public/teams/{team_id}/run"
+    try:
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                url,
+                headers={
+                    "accept": "application/json",
+                    "X-API-KEY": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={"UserInput": req.UserInput},
+            )
+        resp.raise_for_status()
+        return JSONResponse(content=resp.json())
+    except _httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/api/buildworkforce/runs/{run_id}")
+async def buildworkforce_poll_run(run_id: str):
+    """Proxy: poll a BuildWorkforce run for status and output."""
+    api_key = config.buildworkforce_api_key
+    team_id = config.buildworkforce_team_id
+    if not api_key:
+        raise HTTPException(status_code=503, detail="BUILDWORKFORCE_API_KEY not configured")
+    url = f"https://api.buildworkforce.ai/api/v2/public/teams/{team_id}/runs/{run_id}"
+    try:
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "accept": "application/json",
+                    "X-API-KEY": api_key,
+                },
+            )
+        resp.raise_for_status()
+        return JSONResponse(content=resp.json())
+    except _httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 # --- Legacy note ---
 # A previous revision had the async analysis runner disabled in this section.
 # The active implementation now lives near the /api/analyze endpoints above.
