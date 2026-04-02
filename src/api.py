@@ -45,7 +45,9 @@ from src.tools.geopolitical.server import get_bilateral_tensions
 from src.tools.sanctions.client import OFACClient, OpenSanctionsClient, SanctionsClient
 from src.tools.screening.client import search_csl
 from src.tools.trade.server import get_supply_chain_exposure
-from src.tools.vessels.client import vessel_find, vessel_by_mmsi, vessel_by_imo, vessel_history
+from src.tools.vessels.client import vessel_find, vessel_by_mmsi, vessel_by_imo, vessel_history, vessel_port_calls, infer_port_stops
+from src.tools.vessels.geo import get_countries_from_positions
+from src.tools.sayari.client import get_vessel_intel
 
 logger = logging.getLogger(__name__)
 
@@ -311,9 +313,9 @@ async def sanctions_impact(req: SanctionsImpactRequest):
 # --- Entity Graph endpoint ---
 
 _ENTITY_COLORS: dict[str, str] = {
-    "company": "#4A90D9", "person": "#7B68EE", "government": "#DC143C",
-    "vessel": "#2E8B57", "sanctions_list": "#F85149",
-    "theme": "#F0883E", "sector": "#3FB950",
+    "company": "#58a6ff", "person": "#a371f7", "government": "#DC143C",
+    "vessel": "#3fb950", "sanctions_list": "#F85149",
+    "theme": "#F0883E", "sector": "#f0883e",
 }
 
 
@@ -909,23 +911,28 @@ async def vessel_track(req: VesselTrackRequest):
         if not vessel_detail:
             vessel_detail = {"name": query, "note": "Vessel not found in AIS database"}
 
-        # OFAC sanctions check for vessel name
-        ofac_client = OFACClient()
+        # OFAC + Sayari in parallel
         vessel_name = vessel_detail.get("name", query)
-        # Restrict to SDN rows typed as *vessel* to avoid name collisions on person/org "Lana"-like strings.
-        ofac_hits = await ofac_client.search(vessel_name, entity_type="vessel")
-        sanctions_hits = [e for e in ofac_hits if (e.score or 0) >= 0.75]
-        # If the hull is not an SDN vessel row, check listed owner (e.g. oligarch yachts).
-        if not sanctions_hits and vessel_detail.get("owner"):
-            owner_hits = await ofac_client.search(
-                str(vessel_detail["owner"]), entity_type="person"
-            )
-            sanctions_hits = [
-                e for e in owner_hits if (e.score or 0) >= 0.75
-            ][:6]
+        vessel_imo = vessel_detail.get("imo") or None
+        vessel_owner = vessel_detail.get("owner") or None
+
+        async def _ofac_check():
+            ofac_client = OFACClient()
+            ofac_hits = await ofac_client.search(vessel_name, entity_type="vessel")
+            hits = [e for e in ofac_hits if (e.score or 0) >= 0.75]
+            if not hits and vessel_owner:
+                owner_hits = await ofac_client.search(str(vessel_owner), entity_type="person")
+                hits = [e for e in owner_hits if (e.score or 0) >= 0.75][:6]
+            return hits
+
+        ofac_task = asyncio.create_task(_ofac_check())
+        sayari_task = asyncio.create_task(
+            get_vessel_intel(vessel_name, imo=vessel_imo, owner_name=vessel_owner)
+        )
+        sanctions_hits, sayari_intel = await asyncio.gather(ofac_task, sayari_task)
         is_sanctioned = bool(sanctions_hits)
 
-        # Build vis.js graph: vessel → flag state → operator → sanctions
+        # Build vis.js graph: vessel → flag state → operator → sanctions → UBO
         nodes: dict[str, dict] = {}
         edges: dict[str, dict] = {}
 
@@ -951,6 +958,57 @@ async def vessel_track(req: VesselTrackRequest):
                 "from": vessel_id, "to": sid, "label": "OFAC match", "arrows": "to", "dashes": True,
             }
 
+        # Sayari UBO chain → graph nodes (tree structure using parent_entity_id)
+        if sayari_intel and sayari_intel.resolved and sayari_intel.ownership:
+            # Map Sayari entity IDs → graph node IDs for parent lookups
+            entity_to_node: dict[str, str] = {}
+            if sayari_intel.ownership.vessel_entity_id:
+                entity_to_node[sayari_intel.ownership.vessel_entity_id] = vessel_id
+
+            # Helper to get a human-readable edge label from relationship type
+            def _rel_label(rel_type: str, pct: float | None) -> str:
+                if pct:
+                    return f"owns {pct:.0f}%"
+                label_map = {
+                    "registered_owner": "registered owner",
+                    "owner": "owned by",
+                    "beneficial_owner": "beneficial owner",
+                    "operator": "operated by",
+                    "builder": "built by",
+                    "manager": "managed by",
+                    "ism_manager": "ISM manager",
+                    "charterer": "chartered by",
+                    "group_beneficial_owner": "group beneficial owner",
+                    "technical_manager": "technical manager",
+                    "commercial_manager": "commercial manager",
+                }
+                return label_map.get(rel_type, rel_type or "beneficial owner")
+
+            for link in sayari_intel.ownership.chain:
+                link_id = f"ubo_{v_slug(link.name)}"
+                node_type = "person" if link.entity_type == "person" else "company"
+                nodes[link_id] = _node(link_id, link.name, node_type, link.country)
+                entity_to_node[link.entity_id] = link_id
+
+                # Connect to parent — use parent_entity_id if available, else vessel
+                parent_node_id = vessel_id
+                if link.parent_entity_id and link.parent_entity_id in entity_to_node:
+                    parent_node_id = entity_to_node[link.parent_entity_id]
+
+                edge_label = _rel_label(link.relationship_type, link.ownership_percentage)
+                edges[f"{parent_node_id}→{link_id}"] = {
+                    "from": parent_node_id, "to": link_id, "label": edge_label,
+                    "arrows": "to", "dashes": False,
+                }
+
+                if link.is_sanctioned:
+                    sanc_id = f"sanc_ubo_{v_slug(link.name)}"
+                    nodes[sanc_id] = _node(sanc_id, f"SANCTIONED: {link.name}", "sanctions_list")
+                    edges[f"{link_id}→{sanc_id}"] = {
+                        "from": link_id, "to": sanc_id, "label": "sanctioned",
+                        "arrows": "to", "dashes": True,
+                    }
+
         # Route summary from history
         route_points = [
             {"lat": p["latitude"], "lon": p["longitude"],
@@ -958,6 +1016,29 @@ async def vessel_track(req: VesselTrackRequest):
             for p in history
             if isinstance(p, dict) and "latitude" in p and "longitude" in p
         ]
+
+        # Port calls + countries visited (run concurrently)
+        port_calls_data: list[dict] = []
+        countries_visited: list[str] = []
+        port_stops_inferred: list[dict] = []
+
+        async def _get_port_data():
+            nonlocal port_calls_data, countries_visited, port_stops_inferred
+            mmsi_str = str(vessel_detail.get("mmsi", ""))
+            # Try Datalastic port call API first
+            if mmsi_str:
+                port_calls_data = await vessel_port_calls(mmsi_str, days=90)
+            # Get countries from AIS positions
+            if history:
+                countries_visited = await get_countries_from_positions(history)
+                port_stops_inferred = infer_port_stops(history)
+            # If port calls returned countries, add those too
+            for pc in port_calls_data:
+                c = pc.get("country", "")
+                if c and c not in countries_visited:
+                    countries_visited.append(c)
+
+        port_data_task = asyncio.create_task(_get_port_data())
 
         # Start narrative generation concurrently with graph finalization
         compact = {
@@ -973,11 +1054,46 @@ async def vessel_track(req: VesselTrackRequest):
             "route_point_count": len(route_points),
             "has_live_ais": bool(route_points),
         }
+        # Enrich with Sayari UBO/trade data for narrative
+        if sayari_intel and sayari_intel.resolved:
+            compact["beneficial_owners"] = [
+                {"name": l.name, "type": l.entity_type, "country": l.country,
+                 "sanctioned": l.is_sanctioned, "pep": l.is_pep}
+                for l in (sayari_intel.ownership.chain if sayari_intel.ownership else [])
+            ]
+            compact["trade_countries"] = sayari_intel.trade.trade_countries if sayari_intel.trade else []
+            compact["top_commodities"] = [
+                h["description"][:50] for h in (sayari_intel.trade.top_hs_codes if sayari_intel.trade else [])
+            ]
+            # Risk scores and trade counterparty data for richer narrative
+            compact["ownership_risk_scores"] = sayari_intel.risk_scores
+            if sayari_intel.trade:
+                # Collect unique trade counterparties and their risk flags
+                counterparties = set()
+                risk_flags = set()
+                for r in sayari_intel.trade.records:
+                    if r.supplier:
+                        counterparties.add(r.supplier)
+                    if r.buyer:
+                        counterparties.add(r.buyer)
+                    risk_flags.update(r.supplier_risks)
+                    risk_flags.update(r.buyer_risks)
+                compact["trade_counterparty_count"] = len(counterparties)
+                compact["trade_counterparty_risk_flags"] = list(risk_flags)[:10]
+        # Wait for port data before building narrative
+        await port_data_task
+
+        compact["countries_visited"] = countries_visited
+        compact["port_calls"] = [
+            {"port": pc.get("port_name"), "country": pc.get("country")}
+            for pc in port_calls_data[:10]
+        ]
+
         vessel_prompt = (
             f"You are a maritime intelligence analyst. Given the following vessel intelligence "
             f"for {vessel_name}, write 3-5 sentences characterizing the risk profile: "
-            f"sanctions status, flag-of-convenience indicators, ownership opacity, and any "
-            f"dark shipping patterns evident from route history.\n"
+            f"sanctions status, flag-of-convenience indicators, beneficial ownership chain, "
+            f"trade patterns, countries visited, and any dark shipping indicators.\n"
             f"Data: {json.dumps(compact)}"
         )
         narrative_task = asyncio.create_task(_generate_narrative(vessel_prompt))
@@ -986,6 +1102,38 @@ async def vessel_track(req: VesselTrackRequest):
             "nodes": list(nodes.values()),
             "edges": list(edges.values()),
         }
+
+        # Build trade network graph (separate from ownership graph)
+        trade_nodes: dict[str, dict] = {}
+        trade_edges: dict[str, dict] = {}
+        if sayari_intel and sayari_intel.trade and sayari_intel.trade.records:
+            # Include vessel node as anchor
+            trade_nodes[vessel_id] = nodes[vessel_id]
+            seen_companies: set[str] = set()
+            for rec in sayari_intel.trade.records:
+                for role, company_name, risks in [
+                    ("supplier", rec.supplier, rec.supplier_risks),
+                    ("buyer", rec.buyer, rec.buyer_risks),
+                ]:
+                    if not company_name or company_name in seen_companies:
+                        continue
+                    seen_companies.add(company_name)
+                    cid = f"trade_{v_slug(company_name)}"
+                    has_risk = bool(risks)
+                    node_type = "sanctions_list" if has_risk else "company"
+                    trade_nodes[cid] = _node(cid, company_name, node_type)
+                    cat = rec.commodity_category or "goods"
+                    trade_edges[f"{vessel_id}→{cid}"] = {
+                        "from": vessel_id, "to": cid,
+                        "label": f"{role}: {cat}",
+                        "arrows": "to", "dashes": has_risk,
+                    }
+
+        trade_graph_result = {
+            "nodes": list(trade_nodes.values()),
+            "edges": list(trade_edges.values()),
+        }
+
         narrative = await narrative_task
 
         return JSONResponse(content={
@@ -996,9 +1144,24 @@ async def vessel_track(req: VesselTrackRequest):
                 for e in sanctions_hits
             ],
             "route_history": route_points,
+            "countries_visited": countries_visited,
+            "port_calls": port_calls_data,
+            "port_stops_inferred": port_stops_inferred,
+            "ownership_chain": (
+                [link.model_dump() for link in sayari_intel.ownership.chain]
+                if sayari_intel and sayari_intel.ownership else []
+            ),
+            "owner_name": sayari_intel.owner_name if sayari_intel else None,
+            "trade_activity": (
+                sayari_intel.trade.model_dump() if sayari_intel and sayari_intel.trade else None
+            ),
+            "risk_scores": sayari_intel.risk_scores if sayari_intel else {},
             "graph": graph_result,
+            "trade_graph": trade_graph_result,
             "narrative": narrative,
-            "sources": ["Datalastic AIS", "OFAC SDN"],
+            "sources": ["Datalastic AIS", "OFAC SDN"] + (
+                ["Sayari Graph"] if sayari_intel and sayari_intel.resolved else []
+            ),
         })
 
     except Exception as e:
@@ -2065,6 +2228,7 @@ async def followup(req: FollowUpRequest) -> FollowUpResponse:
 # The active implementation now lives near the /api/analyze endpoints above.
 
 
+
 # --- Inline frontend ---
 
 def _read_index_html() -> str:
@@ -2076,6 +2240,7 @@ def _read_index_html() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Economic Warfare OSINT — Sanctions Impact Projector</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
 <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/styles/vis-network.min.css">
@@ -2150,7 +2315,7 @@ def _read_index_html() -> str:
   .projection-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px; }
   .proj-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; text-align: center; }
   .proj-card .proj-label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
-  .proj-card .proj-value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .proj-card .proj-value { font-size: 28px; font-weight: 600; margin-top: 4px; }
   .proj-card .proj-range { font-size: 12px; color: #8b949e; margin-top: 4px; }
   .proj-card .proj-note { font-size: 11px; color: #6e7681; margin-top: 4px; font-style: italic; }
   .proj-value.negative { color: #f85149; }
@@ -2173,13 +2338,13 @@ def _read_index_html() -> str:
   .graph-stats { font-size: 11px; color: #484f58; text-align: center; padding: 4px 0; }
 
   /* Entity type badge */
-  .entity-type-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
-    border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase;
+  .entity-type-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 14px;
+    border-radius: 12px; font-size: 13px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.6px; margin-left: 12px; }
-  .entity-type-badge.company  { background: rgba(74,144,217,0.15); color: #4A90D9; border: 1px solid rgba(74,144,217,0.3); }
-  .entity-type-badge.person   { background: rgba(123,104,238,0.15); color: #7B68EE; border: 1px solid rgba(123,104,238,0.3); }
-  .entity-type-badge.vessel   { background: rgba(46,139,87,0.15); color: #2E8B57; border: 1px solid rgba(46,139,87,0.3); }
-  .entity-type-badge.sector   { background: rgba(63,185,80,0.15); color: #3FB950; border: 1px solid rgba(63,185,80,0.3); }
+  .entity-type-badge.company  { background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); }
+  .entity-type-badge.person   { background: rgba(163,113,247,0.15); color: #a371f7; border: 1px solid rgba(163,113,247,0.3); }
+  .entity-type-badge.vessel   { background: rgba(63,185,80,0.15); color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+  .entity-type-badge.sector   { background: rgba(240,136,62,0.15); color: #f0883e; border: 1px solid rgba(240,136,62,0.3); }
 
   /* Person profile */
   .person-header { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 24px; }
@@ -2243,7 +2408,7 @@ def _read_index_html() -> str:
 <div class="main">
 
   <div class="query-box">
-    <input type="text" id="queryInput" placeholder="What happens if we sanction...? (enter a company name or stock ticker)" />
+    <input type="text" id="queryInput" placeholder="Search for a company, person, vessel, or sector..." />
     <div class="btn-row">
       <button class="btn btn-primary" id="analyzeBtn" onclick="startAnalysis()">Analyze</button>
       <button class="btn btn-secondary" id="deepAnalyzeBtn" onclick="startDeepAnalysis()" style="border-color:#58a6ff;color:#58a6ff;">Deep Analysis</button>
@@ -2253,11 +2418,11 @@ def _read_index_html() -> str:
     </div>
     <div class="examples">
       <span class="example-chip" data-ticker="BABA" onclick="runExample(this)">Sanction Alibaba (BABA)</span>
-      <span class="example-chip" data-ticker="0981.HK" onclick="runExample(this)">Sanction SMIC (0981.HK)</span>
-      <span class="example-chip" data-ticker="TSM" onclick="runExample(this)">What if we sanction TSMC? (TSM)</span>
-      <span class="example-chip" data-ticker="BIDU" onclick="runExample(this)">Sanction Baidu (BIDU)</span>
-      <span class="example-chip" data-ticker="0763.HK" onclick="runExample(this)">ZTE Corp (0763.HK)</span>
-      <span class="example-chip" data-ticker="INTC" onclick="runExample(this)">Intel chip restrictions (INTC)</span>
+      <span class="example-chip" data-ticker="TSM" onclick="runExample(this)">What if we sanction TSMC?</span>
+      <span class="example-chip" data-query="Viktor Vekselberg" onclick="runExample(this)">Viktor Vekselberg</span>
+      <span class="example-chip" data-query="MSC Oscar" onclick="runExample(this)">Track vessel MSC Oscar</span>
+      <span class="example-chip" data-query="Semiconductor" onclick="runExample(this)">Semiconductor sector</span>
+      <span class="example-chip" data-query="Roman Abramovich" onclick="runExample(this)">Roman Abramovich</span>
     </div>
   </div>
 
@@ -2372,19 +2537,14 @@ def _read_index_html() -> str:
   <div id="vesselPanel" style="display:none; margin-top:32px;">
     <div class="graph-section-header">Vessel Intelligence Profile</div>
     <div class="vessel-grid" id="vesselStats"></div>
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">
-      <div class="info-card">
-        <h3>Sanctions Status</h3>
-        <div id="vesselSanctionsInfo" style="margin-top:8px;"></div>
-      </div>
-      <div class="info-card">
-        <h3>Recent AIS Track (last 14 days)</h3>
-        <div style="overflow-x:auto;">
-          <table class="route-table">
-            <thead><tr><th>Lat</th><th>Lon</th><th>Speed</th></tr></thead>
-            <tbody id="routeTableBody"></tbody>
-          </table>
-        </div>
+    <div id="vesselSanctionsInfo" style="margin-bottom:12px;"></div>
+    <div class="info-card" style="margin-bottom:24px;">
+      <h3>Recent AIS Track</h3>
+      <div style="max-height:280px; overflow-y:auto; border-radius:6px; border:1px solid #30363d;">
+        <table class="route-table" style="margin:0;">
+          <thead style="position:sticky; top:0; background:#161b22; z-index:1;"><tr><th>Lat</th><th>Lon</th><th>Speed</th></tr></thead>
+          <tbody id="routeTableBody"></tbody>
+        </table>
       </div>
     </div>
     <!-- AIS Route Map -->
@@ -2399,18 +2559,57 @@ def _read_index_html() -> str:
       <div id="vesselMapEmpty" class="graph-empty" style="position:relative; top:-220px; pointer-events:none;">No AIS position data available</div>
     </div>
 
+    <!-- Risk Assessment Narrative -->
+    <div class="info-card" id="vesselNarrativeCard" style="display:none; margin-bottom:24px;">
+      <h3>Risk Assessment</h3>
+      <p id="vesselNarrativeText" style="color:#e6edf3; line-height:1.6; margin:0;"></p>
+    </div>
+
+    <!-- Countries Visited -->
+    <div class="info-card" id="vesselCountriesCard" style="display:none; margin-bottom:24px;">
+      <h3>Countries / Regions Visited</h3>
+      <div id="vesselCountriesContent" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;"></div>
+    </div>
+
+    <!-- Beneficial Ownership Chain (Sayari) -->
+    <div class="info-card" id="ownershipChainCard" style="display:none; margin-bottom:24px;">
+      <h3>Beneficial Ownership Chain <span style="font-size:11px; color:#58a6ff; font-weight:normal; text-transform:none;">(Sayari Graph)</span></h3>
+      <div id="ownershipChainContent" style="margin-top:8px;"></div>
+    </div>
+
+    <!-- Trade Activity (Sayari) -->
+    <div class="info-card" id="tradeActivityCard" style="display:none; margin-bottom:24px;">
+      <h3>Trade Activity <span style="font-size:11px; color:#58a6ff; font-weight:normal; text-transform:none;">(Sayari Graph)</span></h3>
+      <div id="tradeActivityContent"></div>
+    </div>
+
+    <!-- Trade Flow Sankey -->
+    <div class="info-card" id="tradeFlowCard" style="display:none; margin-bottom:24px;">
+      <h3>Trade Flow Diagram</h3>
+      <div style="position:relative; height:500px;">
+        <canvas id="tradeFlowSankey"></canvas>
+      </div>
+    </div>
+
+    <!-- Tabbed Network Graph -->
     <div id="vesselGraphSection" class="graph-section active">
-      <div class="graph-section-header">Ownership &amp; Sanctions Network</div>
-      <div class="graph-legend">
-        <span class="legend-item"><span class="legend-dot" style="background:#2E8B57"></span>Vessel</span>
+      <div class="graph-section-header">Network Analysis</div>
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <button class="map-range-btn active" id="tabOwnership" onclick="switchVesselTab('ownership')">Ownership &amp; Sanctions</button>
+        <button class="map-range-btn" id="tabTrade" onclick="switchVesselTab('trade')">Trade Network</button>
+      </div>
+      <div class="graph-legend" id="vesselGraphLegend">
+        <span class="legend-item"><span class="legend-dot" style="background:#3fb950"></span>Vessel</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#58a6ff"></span>Company</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#a371f7"></span>Person/UBO</span>
         <span class="legend-item"><span class="legend-dot" style="background:#DC143C"></span>Flag State</span>
-        <span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Sanctions</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Sanctions/Risk</span>
       </div>
       <div class="graph-container" id="vesselGraphContainer">
         <div class="graph-empty" id="vesselGraphEmpty">Loading network...</div>
       </div>
     </div>
-    <div class="source-note">Sources: Datalastic AIS · OFAC SDN</div>
+    <div class="source-note" id="vesselSourceNote">Sources: Datalastic AIS · OFAC SDN</div>
   </div>
 
   <!-- ── Sector Analysis Panel ── -->
@@ -2552,8 +2751,9 @@ fetch('/api/health').then(r => r.json()).then(data => {
 }).catch(() => {});
 
 function runExample(el) {
-  document.getElementById('queryInput').value = el.textContent;
-  startAnalysis(el.dataset.ticker);
+  var query = el.dataset.query || el.textContent;
+  document.getElementById('queryInput').value = query;
+  startAnalysis(el.dataset.ticker || null);
 }
 
 function clearAll() {
@@ -2936,47 +3136,210 @@ function renderVesselProfile(data) {
   document.getElementById('vesselPanel').style.display = 'block';
   const v = data.vessel || {};
 
+  // Sanctions as a stat card instead of separate section
+  var sancValue = data.is_sanctioned
+    ? '<span style="color:#f85149;font-weight:600;">SANCTIONED</span>'
+    : '<span style="color:#3fb950;">Clear</span>';
+
   const stats = [
     { label: 'Vessel Name', value: v.name || '—' },
     { label: 'IMO', value: v.imo || '—' },
     { label: 'MMSI', value: v.mmsi || '—' },
     { label: 'Flag', value: v.flag || '—' },
     { label: 'Type', value: v.vessel_type || '—' },
-    { label: 'DWT', value: v.deadweight ? v.deadweight.toLocaleString() + ' t' : '—' },
+    { label: 'OFAC Status', value: sancValue, raw: true },
     { label: 'Speed', value: v.speed != null ? v.speed + ' kn' : '—' },
     { label: 'Destination', value: v.destination || '—' },
-    { label: 'Status', value: v.status || '—' },
+    { label: 'Owner', value: data.owner_name || v.owner || '—' },
   ];
-  document.getElementById('vesselStats').innerHTML = stats.map(s =>
-    '<div class="vessel-stat"><div class="v-label">' + s.label + '</div><div class="v-value">' + s.value + '</div></div>'
-  ).join('');
+  document.getElementById('vesselStats').innerHTML = stats.map(function(s) {
+    return '<div class="vessel-stat"><div class="v-label">' + s.label + '</div><div class="v-value">' + s.value + '</div></div>';
+  }).join('');
 
-  // Sanctions
-  const sEl = document.getElementById('vesselSanctionsInfo');
-  if (data.is_sanctioned) {
-    sEl.innerHTML = '<span class="sanctions-badge sanctioned">🚨 OFAC LISTED</span>' +
-      '<ul style="margin-top:8px;list-style:none;">' +
-      (data.sanctions_matches || []).slice(0,3).map(m =>
-        '<li style="font-size:12px;color:#f85149;padding:4px 0;">' + m.name + ' (score: ' + (m.score || 0).toFixed(2) + ')</li>'
-      ).join('') + '</ul>';
+  // Sanctions detail (collapse into info line under stats if sanctioned)
+  var sEl = document.getElementById('vesselSanctionsInfo');
+  if (data.is_sanctioned && data.sanctions_matches && data.sanctions_matches.length) {
+    sEl.innerHTML = '<ul style="margin:0;list-style:none;padding:0;">' +
+      data.sanctions_matches.slice(0,3).map(function(m) {
+        return '<li style="font-size:12px;color:#f85149;padding:2px 0;">' + m.name + ' (score: ' + (m.score || 0).toFixed(2) + ') — ' + (m.programs || []).join(', ') + '</li>';
+      }).join('') + '</ul>';
   } else {
-    sEl.innerHTML = '<span class="sanctions-badge clear">✓ No OFAC Vessel Match</span>';
+    sEl.innerHTML = '';
   }
 
-  // Route history table (last 8 points)
-  const tbody = document.getElementById('routeTableBody');
-  const pts = (data.route_history || []).slice(-12);
+  // Route history table (last 12 points)
+  var tbody = document.getElementById('routeTableBody');
+  var pts = (data.route_history || []).slice(-12);
   tbody.innerHTML = pts.length
-    ? pts.map(p => '<tr><td>' + (p.lat || '—') + '</td><td>' + (p.lon || '—') + '</td><td>' + (p.speed != null ? p.speed + ' kn' : '—') + '</td></tr>').join('')
+    ? pts.map(function(p) { return '<tr><td>' + (p.lat || '—') + '</td><td>' + (p.lon || '—') + '</td><td>' + (p.speed != null ? p.speed + ' kn' : '—') + '</td></tr>'; }).join('')
     : '<tr><td colspan="3" style="color:#484f58">No AIS track data available</td></tr>';
 
   // AIS Route Map
-  initVesselMap(data.route_history, v);
+  try { initVesselMap(data.route_history, v); } catch(e) { console.error('Map init error:', e); }
 
-  // Graph
-  const g = data.graph || {};
-  vesselNetwork = renderVisGraph('vesselGraphContainer', 'vesselGraphEmpty', null,
-    g.nodes, g.edges, vesselNetwork);
+  // --- Narrative ---
+  var narCard = document.getElementById('vesselNarrativeCard');
+  if (data.narrative) {
+    narCard.style.display = 'block';
+    document.getElementById('vesselNarrativeText').textContent = data.narrative;
+  } else {
+    narCard.style.display = 'none';
+  }
+
+  // --- Countries Visited ---
+  var cCard = document.getElementById('vesselCountriesCard');
+  var countries = data.countries_visited || [];
+  if (countries.length) {
+    cCard.style.display = 'block';
+    document.getElementById('vesselCountriesContent').innerHTML = countries.map(function(c) {
+      var isOcean = c.charAt(0) === '(';
+      var bg = isOcean ? '#1c2129' : '#0d2137';
+      var border = isOcean ? '#30363d' : '#1f6feb';
+      var color = isOcean ? '#8b949e' : '#58a6ff';
+      return '<span style="background:' + bg + ';border:1px solid ' + border + ';border-radius:12px;padding:4px 12px;font-size:12px;color:' + color + ';">' + c + '</span>';
+    }).join('');
+  } else {
+    cCard.style.display = 'none';
+  }
+
+  // --- Ownership Chain (Sayari) ---
+  var chainCard = document.getElementById('ownershipChainCard');
+  var chainContent = document.getElementById('ownershipChainContent');
+  var chain = data.ownership_chain || [];
+  if (chain.length) {
+    chainCard.style.display = 'block';
+    var relLabels = {
+      registered_owner: 'Registered Owner', owner: 'Owner', beneficial_owner: 'Beneficial Owner',
+      operator: 'Operator', builder: 'Builder', manager: 'Manager', ism_manager: 'ISM Manager',
+      charterer: 'Charterer', technical_manager: 'Technical Manager', commercial_manager: 'Commercial Manager',
+      group_beneficial_owner: 'Group Beneficial Owner', original_ship_orderer: 'Original Ship Orderer',
+      management_company: 'Management Company'
+    };
+    chainContent.innerHTML = chain.map(function(link) {
+      var badges = '';
+      if (link.is_sanctioned) badges += '<span class="sanctions-badge sanctioned" style="font-size:10px;padding:2px 6px;margin-left:8px;">SANCTIONED</span>';
+      if (link.is_pep) badges += '<span style="display:inline-block;padding:2px 6px;border-radius:12px;font-size:10px;background:rgba(184,134,11,0.15);color:#b8860b;border:1px solid rgba(184,134,11,0.3);margin-left:8px;">PEP</span>';
+      var pct = link.ownership_percentage ? ' (' + link.ownership_percentage + '%)' : '';
+      var icon = link.entity_type === 'person' ? '&#x1F464;' : '&#x1F3E2;';
+      var color = link.entity_type === 'person' ? '#a371f7' : '#4A90D9';
+      var rel = relLabels[link.relationship_type] || link.relationship_type || 'Related';
+      var indent = ((link.depth || 1) - 1) * 24;
+      return '<div style="padding:10px;border:1px solid #30363d;border-radius:6px;margin:2px 0;background:#0d1117;margin-left:' + indent + 'px;">' +
+        '<span style="color:' + color + ';">' + icon + '</span> <strong>' + link.name + '</strong>' + pct + badges +
+        '<div style="font-size:11px;color:#8b949e;">' + rel + ' &middot; ' + (link.country || 'Unknown') + '</div></div>';
+    }).join('');
+  } else {
+    chainCard.style.display = 'none';
+  }
+
+  // --- Trade Activity (Sayari) ---
+  var tradeCard = document.getElementById('tradeActivityCard');
+  var tradeContent = document.getElementById('tradeActivityContent');
+  var ta = data.trade_activity;
+  if (ta && ta.records && ta.records.length) {
+    tradeCard.style.display = 'block';
+    var tradeHtml = '<table class="route-table"><thead><tr><th>Date</th><th>From</th><th>To</th><th>Commodity</th></tr></thead><tbody>';
+    ta.records.slice(0, 10).forEach(function(r) {
+      tradeHtml += '<tr><td>' + (r.date || '&mdash;') + '</td><td>' + (r.departure_country || '&mdash;') + '</td><td>' + (r.arrival_country || '&mdash;') + '</td><td style="font-size:11px;">' + (r.hs_description || r.hs_code || '&mdash;') + '</td></tr>';
+    });
+    tradeHtml += '</tbody></table>';
+    if (ta.top_hs_codes && ta.top_hs_codes.length) {
+      tradeHtml += '<div style="margin-top:12px;"><span style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Top Commodities</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">';
+      ta.top_hs_codes.forEach(function(hs) {
+        tradeHtml += '<span style="background:#1c2129;border:1px solid #30363d;border-radius:12px;padding:3px 10px;font-size:11px;color:#8b949e;">' + (hs.description || hs.code) + '</span>';
+      });
+      tradeHtml += '</div></div>';
+    }
+    if (ta.trade_countries && ta.trade_countries.length) {
+      tradeHtml += '<div style="margin-top:12px;"><span style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Trade Countries</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">';
+      ta.trade_countries.forEach(function(c) {
+        tradeHtml += '<span style="background:#1c2129;border:1px solid #30363d;border-radius:12px;padding:3px 10px;font-size:11px;color:#58a6ff;">' + c + '</span>';
+      });
+      tradeHtml += '</div></div>';
+    }
+    tradeContent.innerHTML = tradeHtml;
+  } else {
+    tradeCard.style.display = 'none';
+  }
+
+  // --- Sankey Trade Flow ---
+  var flowCard = document.getElementById('tradeFlowCard');
+  var sankey = (ta && ta.sankey_flows) || [];
+  if (sankey.length >= 6 && typeof Chart !== 'undefined') {
+    flowCard.style.display = 'block';
+    var ctx = document.getElementById('tradeFlowSankey');
+    if (window._vesselSankey) { window._vesselSankey.destroy(); }
+    window._vesselSankey = new Chart(ctx, {
+      type: 'sankey',
+      data: {
+        datasets: [{
+          data: sankey.map(function(f) { return {from: f.from, to: f.to, flow: f.flow}; }),
+          colorFrom: function(c) {
+            var key = c.dataset.data[c.dataIndex].from;
+            return key.indexOf('(origin)') >= 0 ? '#58a6ff' : '#f0883e';
+          },
+          colorTo: function(c) {
+            var key = c.dataset.data[c.dataIndex].to;
+            return key.indexOf('(dest)') >= 0 ? '#3fb950' : '#f0883e';
+          },
+          colorMode: 'gradient',
+          labels: (ta && ta.sankey_labels) || {},
+          size: 'max',
+          nodeWidth: 12,
+          nodePadding: 24,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+      }
+    });
+  } else {
+    flowCard.style.display = 'none';
+  }
+
+  // --- Sources ---
+  var sources = data.sources || ['Datalastic AIS', 'OFAC SDN'];
+  document.getElementById('vesselSourceNote').textContent = 'Sources: ' + sources.join(' · ');
+
+  // --- Tabbed Graphs ---
+  vesselOwnershipData = data.graph || {nodes: [], edges: []};
+  vesselTradeData = data.trade_graph || {nodes: [], edges: []};
+  switchVesselTab('ownership');
+}
+
+var vesselOwnershipData = null;
+var vesselTradeData = null;
+
+function switchVesselTab(tab) {
+  var ownerBtn = document.getElementById('tabOwnership');
+  var tradeBtn = document.getElementById('tabTrade');
+  ownerBtn.className = 'map-range-btn' + (tab === 'ownership' ? ' active' : '');
+  tradeBtn.className = 'map-range-btn' + (tab === 'trade' ? ' active' : '');
+  var graphData = tab === 'ownership' ? vesselOwnershipData : vesselTradeData;
+  if (graphData && graphData.nodes && graphData.nodes.length) {
+    vesselNetwork = renderVisGraph('vesselGraphContainer', 'vesselGraphEmpty', null,
+      graphData.nodes, graphData.edges, vesselNetwork);
+  } else {
+    document.getElementById('vesselGraphEmpty').textContent = 'No ' + tab + ' data available';
+    document.getElementById('vesselGraphEmpty').style.display = 'block';
+  }
+  // Update legend for trade tab
+  var legend = document.getElementById('vesselGraphLegend');
+  if (tab === 'trade') {
+    legend.innerHTML =
+      '<span class="legend-item"><span class="legend-dot" style="background:#3fb950"></span>Vessel</span>' +
+      '<span class="legend-item"><span class="legend-dot" style="background:#58a6ff"></span>Trade Partner</span>' +
+      '<span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Risk Flagged</span>';
+  } else {
+    legend.innerHTML =
+      '<span class="legend-item"><span class="legend-dot" style="background:#3fb950"></span>Vessel</span>' +
+      '<span class="legend-item"><span class="legend-dot" style="background:#58a6ff"></span>Company</span>' +
+      '<span class="legend-item"><span class="legend-dot" style="background:#a371f7"></span>Person/UBO</span>' +
+      '<span class="legend-item"><span class="legend-dot" style="background:#DC143C"></span>Flag State</span>' +
+      '<span class="legend-item"><span class="legend-dot" style="background:#F85149"></span>Sanctions</span>';
+  }
 }
 
 // ── Vessel AIS Map ───────────────────────────────────────────────────────────
