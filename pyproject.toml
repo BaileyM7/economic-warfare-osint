@@ -27,6 +27,8 @@ dependencies = [
     # Web server
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
+    # Corporate intelligence
+    "sayari>=0.1.40",
 ]
 
 [project.optional-dependencies]
