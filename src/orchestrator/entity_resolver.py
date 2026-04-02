@@ -27,14 +27,23 @@ Entity types:
 - "orchestrator"= a complex analytical question involving multiple entities, relationships, hypotheticals, \
 or supply-chain/geopolitical analysis that cannot be answered by looking up a single entity
 
-Use "orchestrator" only when the query genuinely requires cross-domain reasoning across multiple entities \
-(e.g. "What is the relationship between Gazprom and Shell?", "Map the supply chain exposure of the EU \
-semiconductor sector"). Do NOT use "orchestrator" for single-entity questions framed as hypotheticals \
-(e.g. "What if we sanction TSMC?" → this is a company query about TSMC).
+Use "orchestrator" ONLY when the query genuinely requires cross-domain reasoning across MULTIPLE DISTINCT \
+entities with no single primary subject (e.g. "What is the relationship between Gazprom and Shell?", \
+"Map the supply chain exposure of the EU semiconductor sector").
+
+IMPORTANT: If the query mentions a single named entity (vessel, person, company, sector) but adds \
+context, hypotheticals, or asks "what should we do", classify by the PRIMARY entity type, NOT as \
+orchestrator. Examples:
+- "What should I do about the Ever Given, given current events in Iran?" → vessel (Ever Given)
+- "What if we sanction TSMC?" → company (TSMC)
+- "How should we respond to Viktor Vekselberg's sanctions evasion?" → person (Viktor Vekselberg)
+- "What export controls should apply to semiconductors given China tensions?" → sector (semiconductor)
+The system will use the full question text to generate context-aware recommendations.
 
 Extract the canonical entity name or identifier from the query. For vessels, return only the vessel \
-name or numeric identifier — strip command words like "track"/"find"/"show me", articles like "the"/"a", \
-and type words like "vessel"/"ship"/"tanker". For orchestrator queries, set entity_name to the full query.
+name or numeric identifier — strip command words like "track"/"find"/"show me"/"what should I do about", \
+articles like "the"/"a", and type words like "vessel"/"ship"/"tanker". For orchestrator queries, set \
+entity_name to the full query.
 
 Default to "company" if the entity is ambiguous.
 

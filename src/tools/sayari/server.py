@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from src.tools.sayari.client import get_sayari_client
+from src.tools.sayari.rest_client import get_sayari_client
 
 logger = logging.getLogger(__name__)
 

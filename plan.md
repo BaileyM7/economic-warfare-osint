@@ -102,7 +102,7 @@ ANALYST INPUT
 │             2 subsidiaries not yet  │
 │             designated              │
 │                                     │
-│  Refinitiv → $2.1B market cap,     │
+│  Refinitiv → $2.1B market cap,      │
 │              top institutional      │
 │              holders include 3 US   │
 │              pension funds          │

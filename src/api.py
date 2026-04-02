@@ -102,6 +102,62 @@ async def _generate_narrative(prompt: str) -> str:
         return ""
 
 
+_COA_SYSTEM = """You are a US national security and economic warfare policy advisor. Given an intelligence analysis and the analyst's specific question, produce 3-4 concise, actionable Courses of Action (CoAs) that US or allied governments could take.
+
+Rules:
+- If the analyst asked a specific question, tailor your recommendations to directly address their concern
+- Each CoA must reference specific data from the analysis (entity names, countries, programs, trade routes)
+- Frame actions in terms of policy levers: sanctions designations, export controls, diplomatic engagement, intelligence collection, financial monitoring, trade restrictions, allied coordination
+- Be specific: name the agency, regulation, or mechanism
+- Each CoA should be 1-2 sentences
+- State recommendations with full confidence — do NOT hedge with phrases like "consider", "may want to", "could potentially", or "warrants further review". Use directive language: "Designate...", "Direct FinCEN to...", "Coordinate with allies to..."
+- Return ONLY a JSON array of strings, no markdown
+
+CRITICAL — cite the correct legal mechanism for each situation:
+- Forced labor (China/Xinjiang): UFLPA, CBP UFLPA Entity List
+- Forced labor (non-China): Section 307 of Tariff Act, CBP Withhold Release Orders (WROs), ILAB List
+- Iran sanctions: CAATSA, EO 13846, OFAC Iran programs (IRAN-EO13902, IFSR, etc.)
+- Russia sanctions: EO 14024, OFAC Russia/Ukraine programs, EU Council Regulations
+- Export controls: BIS Entity List, Military End-User List, Denied Persons List
+- Trade retaliation: Section 301 (tariffs), Section 232 (national security)
+- Financial monitoring: FinCEN, BSA/AML, correspondent banking restrictions
+Do NOT conflate these — e.g. do not cite UFLPA for Vietnamese goods or BIS for sanctions."""
+
+
+async def _generate_recommendations(data_summary: dict, analyst_question: str = "") -> list[str]:
+    """Generate 3-4 actionable CoAs from analysis data. Returns [] on failure."""
+    client = _get_anthropic_client()
+    if not client:
+        return []
+    try:
+        user_content = ""
+        if analyst_question:
+            user_content = f"ANALYST QUESTION: {analyst_question}\n\nINTELLIGENCE DATA:\n"
+        user_content += json.dumps(data_summary)
+
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=config.model,
+                max_tokens=600,
+                system=_COA_SYSTEM,
+                messages=[{"role": "user", "content": user_content}],
+            ),
+            timeout=15.0,
+        )
+        text = response.content[0].text.strip()
+        # Parse JSON array from response
+        if text.startswith("["):
+            return json.loads(text)
+        # Try extracting JSON from markdown fence
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        return []
+    except Exception as exc:
+        logger.warning("recommendations generation failed: %s", exc)
+        return []
+
+
 app = FastAPI(
     title="Economic Warfare OSINT",
     description="Multi-agent OSINT system for economic warfare scenario analysis",
@@ -140,6 +196,7 @@ _analyses: dict[str, dict[str, Any]] = {}
 
 class SanctionsImpactRequest(BaseModel):
     ticker: str
+    analyst_question: str = ""  # original user query for context-aware CoA
 
 
 class EntityGraphRequest(BaseModel):
@@ -148,14 +205,17 @@ class EntityGraphRequest(BaseModel):
 
 class PersonProfileRequest(BaseModel):
     name: str
+    analyst_question: str = ""
 
 
 class VesselTrackRequest(BaseModel):
     query: str  # vessel name, IMO, or MMSI
+    analyst_question: str = ""
 
 
 class SectorAnalysisRequest(BaseModel):
     sector: str
+    analyst_question: str = ""
 
 
 class AnalyzeRequest(BaseModel):
@@ -261,6 +321,79 @@ async def analyze_sync(req: AnalyzeRequest):
     return JSONResponse(content=assessment.model_dump(mode="json"))
 
 
+# --- Follow-up Query endpoint ---
+
+class FollowUpRequest(BaseModel):
+    question: str
+    context: dict  # prior analysis result JSON
+    entity_type: str = ""  # company, person, vessel, sector
+
+
+_FOLLOWUP_SYSTEM = """You are a senior economic warfare intelligence analyst briefing a decision-maker. The user previously ran an analysis and now has a follow-up question about the results. Answer their question using the analysis data provided as context.
+
+Rules:
+- Reference specific data from the prior analysis (entity names, countries, trade routes, risk flags, ownership chains)
+- Be concise but thorough — 3-6 sentences
+- If the question asks about a specific commodity, trade route, or entity from the data, focus your answer there
+- If the data does not contain exactly what the analyst asked about, draw confident conclusions by connecting available evidence to the question. Apply your expertise to the available intelligence and state your assessment definitively
+- ABSOLUTELY FORBIDDEN phrases (never use these or anything similar): "I don't see", "the data doesn't show", "there are no records for", "I would need more data", "to provide more specific analysis", "however the data shows", "I can address the general risks", "based on the analysis data provided". Instead, open with a direct analytical statement about the risk topic the analyst asked about
+- Frame your analysis from a US/allied national security perspective
+
+CRITICAL — Use the correct legal/regulatory mechanism for each situation. Do NOT conflate:
+- UFLPA (Uyghur Forced Labor Prevention Act) — applies ONLY to goods from Xinjiang, China or entities on the UFLPA Entity List
+- Section 307 of the Tariff Act (19 USC 1307) — prohibits importing goods made with forced labor from ANY country
+- CBP Withhold Release Orders (WROs) — CBP's enforcement tool for Section 307, applicable to specific producers/regions worldwide
+- ILAB List (DOL Bureau of International Labor Affairs) — identifies goods from countries produced with forced/child labor
+- BIS Entity List — export control restriction, NOT a forced labor tool
+- OFAC SDN List — sanctions designation, NOT a forced labor tool
+- CAATSA / EO 13846 — Iran-specific sanctions
+- EO 14024 — Russia-specific sanctions
+- Section 301 — trade retaliation tool (tariffs), not sanctions
+
+When discussing forced labor risks in Vietnam, Southeast Asia, or non-China contexts, cite Section 307/WROs and the ILAB List — NOT UFLPA.
+When discussing China/Xinjiang forced labor, cite UFLPA.
+When discussing sanctions, cite the correct country-specific program (OFAC SDN, CAATSA, EU sanctions regulations).
+When discussing export controls, cite BIS and the specific list (Entity List, MEU, Denied Persons)."""
+
+
+@app.post("/api/follow-up")
+async def follow_up(req: FollowUpRequest):
+    """Answer a follow-up question using prior analysis as context."""
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    client = _get_anthropic_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="LLM not configured")
+
+    # Build a compact summary to stay within token budget
+    context_str = json.dumps(req.context, default=str)
+    # Truncate if too large (keep under ~8KB)
+    if len(context_str) > 8000:
+        context_str = context_str[:8000] + "...(truncated)"
+
+    try:
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=config.model,
+                max_tokens=800,
+                system=_FOLLOWUP_SYSTEM,
+                messages=[
+                    {"role": "user", "content": f"Here is the prior analysis:\n{context_str}"},
+                    {"role": "assistant", "content": "I've reviewed the analysis data. What would you like to know?"},
+                    {"role": "user", "content": question},
+                ],
+            ),
+            timeout=20.0,
+        )
+        answer = response.content[0].text.strip()
+        return JSONResponse(content={"answer": answer})
+    except Exception as e:
+        logger.exception("follow_up error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- Sanctions Impact Projector endpoint ---
 
 @app.post("/api/sanctions-impact")
@@ -303,8 +436,12 @@ async def sanctions_impact(req: SanctionsImpactRequest):
             f"Confidence qualifier: {comp_count} comparable cases used, data as of "
             f"{date.today().isoformat()}."
         )
-        narrative = await _generate_narrative(prompt)
+        narrative, recommendations = await asyncio.gather(
+            _generate_narrative(prompt),
+            _generate_recommendations(compact, req.analyst_question),
+        )
         result["narrative"] = narrative
+        result["recommendations"] = recommendations
         return JSONResponse(content=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -474,7 +611,7 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
     # ── 4. Sayari entity resolution (enrich main node with sayariId) ──────
     if config.sayari_client_id and config.sayari_client_secret:
         try:
-            from src.tools.sayari.client import get_sayari_client
+            from src.tools.sayari.rest_client import get_sayari_client
             sayari = get_sayari_client()
             resolved = await asyncio.wait_for(sayari.resolve(query, limit=1), timeout=10.0)
             if resolved.entities:
@@ -567,7 +704,7 @@ class SayariTraversalRequest(BaseModel):
 @app.post("/api/sayari/resolve")
 async def sayari_resolve_endpoint(req: SayariResolveRequest):
     """Resolve a name to Sayari entity IDs."""
-    from src.tools.sayari.client import get_sayari_client
+    from src.tools.sayari.rest_client import get_sayari_client
     try:
         client = get_sayari_client()
         result = await asyncio.wait_for(
@@ -583,7 +720,7 @@ async def sayari_resolve_endpoint(req: SayariResolveRequest):
 @app.post("/api/sayari/related")
 async def sayari_related_endpoint(req: SayariTraversalRequest):
     """Get entities related to a Sayari entity (graph traversal)."""
-    from src.tools.sayari.client import get_sayari_client
+    from src.tools.sayari.rest_client import get_sayari_client
     try:
         client = get_sayari_client()
         result = await asyncio.wait_for(
@@ -599,7 +736,7 @@ async def sayari_related_endpoint(req: SayariTraversalRequest):
 @app.post("/api/sayari/ubo")
 async def sayari_ubo_endpoint(req: SayariEntityRequest):
     """Get ultimate beneficial owners of a Sayari entity."""
-    from src.tools.sayari.client import get_sayari_client
+    from src.tools.sayari.rest_client import get_sayari_client
     try:
         client = get_sayari_client()
         result = await asyncio.wait_for(
@@ -841,12 +978,13 @@ async def person_profile(req: PersonProfileRequest):
             f"clean profile means analytically."
         )
         narrative_task = asyncio.create_task(_generate_narrative(person_prompt))
+        coa_task = asyncio.create_task(_generate_recommendations(compact, req.analyst_question))
 
         graph_result = {
             "nodes": list(nodes.values()),
             "edges": list(edges.values()),
         }
-        narrative = await narrative_task
+        narrative, recommendations = await asyncio.gather(narrative_task, coa_task)
 
         return JSONResponse(content={
             "name": name,
@@ -860,6 +998,7 @@ async def person_profile(req: PersonProfileRequest):
             "recent_events": recent_events,
             "graph": graph_result,
             "narrative": narrative,
+            "recommendations": recommendations,
             "sources": ["OpenSanctions", "OFAC SDN", "OpenCorporates", "ICIJ Offshore Leaks", "GDELT"],
         })
 
@@ -1090,13 +1229,18 @@ async def vessel_track(req: VesselTrackRequest):
         ]
 
         vessel_prompt = (
-            f"You are a maritime intelligence analyst. Given the following vessel intelligence "
-            f"for {vessel_name}, write 3-5 sentences characterizing the risk profile: "
-            f"sanctions status, flag-of-convenience indicators, beneficial ownership chain, "
-            f"trade patterns, countries visited, and any dark shipping indicators.\n"
+            f"You are a senior maritime intelligence analyst briefing a decision-maker. "
+            f"Given the following vessel intelligence for {vessel_name}, write 3-5 sentences "
+            f"delivering a definitive risk characterization. State conclusions with authority — "
+            f"do NOT hedge, qualify with 'limited data', or say 'warrants further investigation'. "
+            f"If the vessel is clean, state it is clean and why. If there are red flags, state "
+            f"exactly what the risk is. Cover: sanctions status, flag-of-convenience indicators, "
+            f"beneficial ownership chain, trade patterns, commodity flows, and dark shipping indicators. "
+            f"Reference specific entity names, countries, and risk scores from the data.\n"
             f"Data: {json.dumps(compact)}"
         )
         narrative_task = asyncio.create_task(_generate_narrative(vessel_prompt))
+        coa_task = asyncio.create_task(_generate_recommendations(compact, req.analyst_question))
 
         graph_result = {
             "nodes": list(nodes.values()),
@@ -1134,7 +1278,7 @@ async def vessel_track(req: VesselTrackRequest):
             "edges": list(trade_edges.values()),
         }
 
-        narrative = await narrative_task
+        narrative, recommendations = await asyncio.gather(narrative_task, coa_task)
 
         return JSONResponse(content={
             "vessel": vessel_detail,
@@ -1159,6 +1303,7 @@ async def vessel_track(req: VesselTrackRequest):
             "graph": graph_result,
             "trade_graph": trade_graph_result,
             "narrative": narrative,
+            "recommendations": recommendations,
             "sources": ["Datalastic AIS", "OFAC SDN"] + (
                 ["Sayari Graph"] if sayari_intel and sayari_intel.resolved else []
             ),
@@ -1586,12 +1731,13 @@ async def sector_analysis(req: SectorAnalysisRequest):
             f"Data: {json.dumps(compact)}"
         )
         narrative_task = asyncio.create_task(_generate_narrative(sector_prompt))
+        coa_task = asyncio.create_task(_generate_recommendations(compact, req.analyst_question))
 
         graph_result = {
             "nodes": list(nodes.values()),
             "edges": list(edges.values()),
         }
-        narrative = await narrative_task
+        narrative, recommendations = await asyncio.gather(narrative_task, coa_task)
 
         return JSONResponse(content={
             "sector": sector,
@@ -1601,6 +1747,7 @@ async def sector_analysis(req: SectorAnalysisRequest):
             "companies": company_profiles,
             "graph": graph_result,
             "narrative": narrative,
+            "recommendations": recommendations,
             "supply_chain_exposures": supply_chain_exposures,
             "geopolitical_tensions": geopolitical_tensions,
             "sources": ["OFAC SDN", "OpenSanctions"],
@@ -2565,6 +2712,12 @@ def _read_index_html() -> str:
       <p id="vesselNarrativeText" style="color:#e6edf3; line-height:1.6; margin:0;"></p>
     </div>
 
+    <!-- Recommended Actions -->
+    <div class="info-card" id="vesselCoaCard" style="display:none; margin-bottom:24px;">
+      <h3>Recommended Courses of Action</h3>
+      <ol id="vesselCoaList" style="color:#e6edf3; line-height:1.7; margin:8px 0 0 0; padding-left:20px;"></ol>
+    </div>
+
     <!-- Countries Visited -->
     <div class="info-card" id="vesselCountriesCard" style="display:none; margin-bottom:24px;">
       <h3>Countries / Regions Visited</h3>
@@ -2655,16 +2808,133 @@ def _read_index_html() -> str:
     <div class="source-note">Sources: OFAC SDN · OpenSanctions</div>
   </div>
 
+  <!-- Follow-Up Query Box (shared across all entity types) -->
+  <div id="followUpSection" style="display:none; margin-top:32px;">
+    <div class="info-card">
+      <h3>Follow-Up Question</h3>
+      <div style="display:flex; gap:8px; align-items:flex-start;">
+        <textarea id="followUpInput" rows="2" placeholder="Ask a follow-up question about the analysis above..." style="flex:1; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#e6edf3; padding:10px; font-size:13px; font-family:inherit; resize:vertical;"></textarea>
+        <button class="btn btn-primary" id="followUpBtn" onclick="submitFollowUp()" style="white-space:nowrap; height:44px;">Ask</button>
+      </div>
+      <div id="followUpHistory" style="margin-top:16px;"></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
 let impactChart = null;
 let lastData = null;
+let lastEntityType = '';
 let visNetwork = null;
 let personNetwork = null;
 let vesselNetwork = null;
 let sectorNetwork = null;
 let orchestratorProgressCursor = 0;
+
+// Follow-up query handling
+function showFollowUp(data, entityType) {
+  lastData = data;
+  lastEntityType = entityType;
+  document.getElementById('followUpSection').style.display = 'block';
+  document.getElementById('followUpInput').value = '';
+  document.getElementById('followUpHistory').innerHTML = '';
+}
+
+async function submitFollowUp() {
+  var input = document.getElementById('followUpInput');
+  var question = input.value.trim();
+  if (!question || !lastData) return;
+
+  var btn = document.getElementById('followUpBtn');
+  btn.disabled = true;
+  btn.textContent = 'Thinking...';
+
+  // Show the question in the history
+  var history = document.getElementById('followUpHistory');
+  history.innerHTML += '<div style="margin-bottom:12px;padding:10px;border-radius:6px;background:#161b22;border:1px solid #30363d;">' +
+    '<div style="font-size:11px;color:#58a6ff;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">Your Question</div>' +
+    '<div style="color:#e6edf3;">' + question + '</div></div>';
+
+  input.value = '';
+
+  try {
+    var resp = await fetch('/api/follow-up', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: question,
+        context: lastData,
+        entity_type: lastEntityType,
+      }),
+    });
+    if (!resp.ok) throw new Error('Request failed');
+    var result = await resp.json();
+
+    history.innerHTML += '<div style="margin-bottom:16px;padding:10px;border-radius:6px;background:#0d1117;border:1px solid #30363d;">' +
+      '<div style="font-size:11px;color:#3fb950;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">Analysis</div>' +
+      '<div style="color:#e6edf3;line-height:1.6;">' + result.answer + '</div></div>';
+  } catch(e) {
+    history.innerHTML += '<div style="color:#f85149;padding:8px;">Error: ' + e.message + '</div>';
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Ask';
+  // Scroll to the answer
+  history.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Allow Enter to submit (Shift+Enter for newline)
+document.addEventListener('DOMContentLoaded', function() {
+  var input = document.getElementById('followUpInput');
+  if (input) {
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitFollowUp(); }
+    });
+  }
+});
+
+// Drill-down: pre-fill follow-up with a commodity/country/route question
+function askTradeFollowUp(question) {
+  var input = document.getElementById('followUpInput');
+  var section = document.getElementById('followUpSection');
+  if (!input || !section) return;
+  section.style.display = 'block';
+  input.value = question;
+  input.focus();
+  // Scroll to follow-up section
+  section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// Shared: inject narrative + CoA cards into any panel
+function renderNarrativeAndCoa(panelId, data) {
+  var panel = document.getElementById(panelId);
+  if (!panel) return;
+  // Remove any previously injected cards
+  panel.querySelectorAll('.injected-narrative, .injected-coa').forEach(function(el) { el.remove(); });
+  // Find insertion point — before the graph section or at the end
+  var graphSection = panel.querySelector('.graph-section') || null;
+  // Narrative
+  if (data.narrative) {
+    var narDiv = document.createElement('div');
+    narDiv.className = 'info-card injected-narrative';
+    narDiv.style.marginBottom = '24px';
+    narDiv.innerHTML = '<h3>Risk Assessment</h3><p style="color:#e6edf3;line-height:1.6;margin:0;">' + data.narrative + '</p>';
+    if (graphSection) { panel.insertBefore(narDiv, graphSection); } else { panel.appendChild(narDiv); }
+  }
+  // CoA
+  var recs = data.recommendations || [];
+  if (recs.length) {
+    var coaDiv = document.createElement('div');
+    coaDiv.className = 'info-card injected-coa';
+    coaDiv.style.marginBottom = '24px';
+    coaDiv.innerHTML = '<h3>Recommended Courses of Action</h3>' +
+      '<ol style="color:#e6edf3;line-height:1.7;margin:8px 0 0 0;padding-left:20px;">' +
+      recs.map(function(r) { return '<li style="margin-bottom:8px;font-size:13px;">' + r + '</li>'; }).join('') +
+      '</ol>';
+    if (graphSection) { panel.insertBefore(coaDiv, graphSection); } else { panel.appendChild(coaDiv); }
+  }
+}
 
 const VIS_OPTS = {
   physics: {
@@ -2777,6 +3047,9 @@ function clearAll() {
   document.getElementById('vesselPanel').style.display = 'none';
   document.getElementById('sectorPanel').style.display = 'none';
   document.getElementById('orchestratorPanel').style.display = 'none';
+  document.getElementById('followUpSection').style.display = 'none';
+  document.getElementById('followUpHistory').innerHTML = '';
+  lastEntityType = '';
   orchestratorProgressCursor = 0;
   const badge = document.getElementById('entityTypeBadge');
   badge.style.display = 'none';
@@ -2911,15 +3184,15 @@ async function startAnalysis(tickerOverride) {
       await startDeepAnalysis();
       return;
     } else if (entityType === 'person') {
-      await runPersonAnalysis(entityName);
+      await runPersonAnalysis(entityName, raw);
     } else if (entityType === 'vessel') {
-      await runVesselAnalysis(entityName);
+      await runVesselAnalysis(entityName, raw);
     } else if (entityType === 'sector') {
-      await runSectorAnalysis(entityName);
+      await runSectorAnalysis(entityName, raw);
     } else {
       // company — existing flow
       const ticker = tickerOverride || extractTicker(raw);
-      await runCompanyAnalysis(ticker, entityName);
+      await runCompanyAnalysis(ticker, entityName, raw);
     }
 
   } catch (e) {
@@ -3014,14 +3287,14 @@ async function startDeepAnalysis() {
 }
 
 // ── Company (existing flow) ──────────────────────────────────────────────────
-async function runCompanyAnalysis(ticker, entityName) {
+async function runCompanyAnalysis(ticker, entityName, analystQuestion) {
   addProgress('Checking sanctions status (OFAC, OpenSanctions, Trade.gov CSL)...', 'step');
   addProgress('Fetching historical comparable data...', 'step');
 
   const resp = await fetch('/api/sanctions-impact', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ticker }),
+    body: JSON.stringify({ ticker, analyst_question: analystQuestion || '' }),
   });
 
   if (!resp.ok) {
@@ -3039,10 +3312,11 @@ async function runCompanyAnalysis(ticker, entityName) {
 
   renderResults(data);
   loadEntityGraph(ticker || entityName);
+  showFollowUp(data, 'company');
 }
 
 // ── Person (insider-threat style) ────────────────────────────────────────────
-async function runPersonAnalysis(name) {
+async function runPersonAnalysis(name, analystQuestion) {
   addProgress('Searching OFAC SDN + OpenSanctions (person schema)...', 'step');
   addProgress('Looking up corporate affiliations (OpenCorporates)...', 'step');
   addProgress('Pulling GDELT news events...', 'step');
@@ -3050,7 +3324,7 @@ async function runPersonAnalysis(name) {
   const resp = await fetch('/api/person-profile', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, analyst_question: analystQuestion || '' }),
   });
   if (!resp.ok) { addProgress('Error fetching person profile', 'error'); return; }
 
@@ -3059,6 +3333,7 @@ async function runPersonAnalysis(name) {
   document.getElementById('progressSpinner').style.display = 'none';
 
   renderPersonProfile(data);
+  showFollowUp(data, 'person');
 }
 
 function renderPersonProfile(data) {
@@ -3107,6 +3382,9 @@ function renderPersonProfile(data) {
     evList.innerHTML = '<li style="color:#484f58">No recent news events found</li>';
   }
 
+  // Narrative + CoA (injected dynamically)
+  renderNarrativeAndCoa('personPanel', data);
+
   // Graph
   const g = data.graph || {};
   personNetwork = renderVisGraph('personGraphContainer', 'personGraphEmpty', 'personGraphStats',
@@ -3114,14 +3392,14 @@ function renderPersonProfile(data) {
 }
 
 // ── Vessel ───────────────────────────────────────────────────────────────────
-async function runVesselAnalysis(query) {
+async function runVesselAnalysis(query, analystQuestion) {
   addProgress('Querying Datalastic AIS for vessel position...', 'step');
   addProgress('Checking OFAC SDN for vessel sanctions...', 'step');
 
   const resp = await fetch('/api/vessel-track', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, analyst_question: analystQuestion || '' }),
   });
   if (!resp.ok) { addProgress('Error fetching vessel data', 'error'); return; }
 
@@ -3130,6 +3408,7 @@ async function runVesselAnalysis(query) {
   document.getElementById('progressSpinner').style.display = 'none';
 
   renderVesselProfile(data);
+  showFollowUp(data, 'vessel');
 }
 
 function renderVesselProfile(data) {
@@ -3186,6 +3465,18 @@ function renderVesselProfile(data) {
     narCard.style.display = 'none';
   }
 
+  // --- Recommended Actions ---
+  var coaCard = document.getElementById('vesselCoaCard');
+  var recs = data.recommendations || [];
+  if (recs.length) {
+    coaCard.style.display = 'block';
+    document.getElementById('vesselCoaList').innerHTML = recs.map(function(r) {
+      return '<li style="margin-bottom:8px; font-size:13px;">' + r + '</li>';
+    }).join('');
+  } else {
+    coaCard.style.display = 'none';
+  }
+
   // --- Countries Visited ---
   var cCard = document.getElementById('vesselCountriesCard');
   var countries = data.countries_visited || [];
@@ -3240,20 +3531,29 @@ function renderVesselProfile(data) {
     tradeCard.style.display = 'block';
     var tradeHtml = '<table class="route-table"><thead><tr><th>Date</th><th>From</th><th>To</th><th>Commodity</th></tr></thead><tbody>';
     ta.records.slice(0, 10).forEach(function(r) {
-      tradeHtml += '<tr><td>' + (r.date || '&mdash;') + '</td><td>' + (r.departure_country || '&mdash;') + '</td><td>' + (r.arrival_country || '&mdash;') + '</td><td style="font-size:11px;">' + (r.hs_description || r.hs_code || '&mdash;') + '</td></tr>';
+      var dep = r.departure_country || '';
+      var arr = r.arrival_country || '';
+      var cat = r.commodity_category || '';
+      var desc = r.hs_description || r.hs_code || '&mdash;';
+      var q = 'What are the risks associated with ' + cat + ' trade between ' + dep + ' and ' + arr + '? Include forced labor, sanctions evasion, and supply chain concerns.';
+      tradeHtml += '<tr style="cursor:pointer;" onclick="askTradeFollowUp(this.dataset.q)" data-q="' + q.replace(/"/g, '&quot;') + '" title="Click to analyze this trade route">' +
+        '<td>' + (r.date || '&mdash;') + '</td><td>' + (dep || '&mdash;') + '</td><td>' + (arr || '&mdash;') + '</td><td style="font-size:11px;">' + desc + '</td></tr>';
     });
     tradeHtml += '</tbody></table>';
     if (ta.top_hs_codes && ta.top_hs_codes.length) {
-      tradeHtml += '<div style="margin-top:12px;"><span style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Top Commodities</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">';
+      tradeHtml += '<div style="margin-top:12px;"><span style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Top Commodities <span style="font-size:10px;color:#484f58;">(click to analyze)</span></span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">';
       ta.top_hs_codes.forEach(function(hs) {
-        tradeHtml += '<span style="background:#1c2129;border:1px solid #30363d;border-radius:12px;padding:3px 10px;font-size:11px;color:#8b949e;">' + (hs.description || hs.code) + '</span>';
+        var label = hs.description || hs.code;
+        var q = 'What are the forced labor, sanctions, and supply chain risks associated with international trade in ' + label + '?';
+        tradeHtml += '<span style="background:#1c2129;border:1px solid #30363d;border-radius:12px;padding:3px 10px;font-size:11px;color:#8b949e;cursor:pointer;" onclick="askTradeFollowUp(this.dataset.q)" data-q="' + q.replace(/"/g, '&quot;') + '" title="Click to analyze">' + label + '</span>';
       });
       tradeHtml += '</div></div>';
     }
     if (ta.trade_countries && ta.trade_countries.length) {
-      tradeHtml += '<div style="margin-top:12px;"><span style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Trade Countries</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">';
+      tradeHtml += '<div style="margin-top:12px;"><span style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Trade Countries <span style="font-size:10px;color:#484f58;">(click to analyze)</span></span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">';
       ta.trade_countries.forEach(function(c) {
-        tradeHtml += '<span style="background:#1c2129;border:1px solid #30363d;border-radius:12px;padding:3px 10px;font-size:11px;color:#58a6ff;">' + c + '</span>';
+        var q = 'What are the sanctions risks, export control concerns, and geopolitical factors affecting trade with ' + c + '?';
+        tradeHtml += '<span style="background:#1c2129;border:1px solid #30363d;border-radius:12px;padding:3px 10px;font-size:11px;color:#58a6ff;cursor:pointer;" onclick="askTradeFollowUp(this.dataset.q)" data-q="' + q.replace(/"/g, '&quot;') + '" title="Click to analyze">' + c + '</span>';
       });
       tradeHtml += '</div></div>';
     }
@@ -3460,14 +3760,14 @@ function setMapRange(range) {
 }
 
 // ── Sector ───────────────────────────────────────────────────────────────────
-async function runSectorAnalysis(sector) {
+async function runSectorAnalysis(sector, analystQuestion) {
   addProgress('Identifying key players in ' + sector + ' sector...', 'step');
   addProgress('Checking OFAC sanctions exposure...', 'step');
 
   const resp = await fetch('/api/sector-analysis', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sector }),
+    body: JSON.stringify({ sector, analyst_question: analystQuestion || '' }),
   });
   if (!resp.ok) { addProgress('Error fetching sector data', 'error'); return; }
 
@@ -3476,6 +3776,7 @@ async function runSectorAnalysis(sector) {
   document.getElementById('progressSpinner').style.display = 'none';
 
   renderSectorProfile(data);
+  showFollowUp(data, 'sector');
 }
 
 function renderSectorProfile(data) {
@@ -3502,6 +3803,9 @@ function renderSectorProfile(data) {
 
   // Graph
   const g = data.graph || {};
+  // Narrative + CoA
+  renderNarrativeAndCoa('sectorPanel', data);
+
   sectorNetwork = renderVisGraph('sectorGraphContainer', 'sectorGraphEmpty', 'sectorGraphStats',
     g.nodes, g.edges, sectorNetwork);
 }
@@ -3603,6 +3907,9 @@ function renderResults(data) {
   ).join('');
 
   renderChart(data);
+
+  // Narrative + CoA
+  renderNarrativeAndCoa('resultsPanel', data);
 }
 
 function toggleComparable(idx) {
