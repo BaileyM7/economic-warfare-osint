@@ -199,11 +199,13 @@ class Orchestrator:
         if error_only_steps:
             print(f"  [synthesize] {len(error_only_steps)} step(s) returned errors only: {error_only_steps}")
 
-        results_text = json.dumps(tool_results, indent=2, default=str)
+        # Compact tool results — strip large arrays/raw data to stay within context
+        compacted = _compact_tool_results(tool_results)
+        results_text = json.dumps(compacted, indent=2, default=str)
 
-        # Truncate if too long for context window, but record what was lost
+        # Truncate if still too long for context window
         truncation_note = ""
-        _LIMIT = 50000
+        _LIMIT = 80000
         if len(results_text) > _LIMIT:
             # Preserve metadata about the truncation so Claude knows data was cut
             chars_dropped = len(results_text) - _LIMIT
@@ -344,6 +346,39 @@ class Orchestrator:
                 "depends_on": [],
             },
         ]
+
+
+def _compact_tool_results(results: dict[str, Any], max_list: int = 10, max_str: int = 500) -> dict[str, Any]:
+    """Recursively compact tool results to fit within synthesis context window.
+
+    Truncates long strings, caps list lengths, and strips raw binary/HTML data.
+    Reduces 6MB+ tool dumps to ~50-100KB of meaningful summaries.
+    """
+    if isinstance(results, dict):
+        out = {}
+        for k, v in results.items():
+            # Skip keys that are typically huge and low-signal
+            if k in ("raw_html", "raw_response", "raw_data", "price_history",
+                      "historical_data", "chart_data", "curve", "positions"):
+                if isinstance(v, list):
+                    out[k] = f"[{len(v)} items omitted]"
+                else:
+                    out[k] = "[omitted]"
+            else:
+                out[k] = _compact_tool_results(v, max_list, max_str)
+        return out
+    elif isinstance(results, list):
+        if len(results) > max_list:
+            compacted = [_compact_tool_results(item, max_list, max_str) for item in results[:max_list]]
+            compacted.append(f"... and {len(results) - max_list} more items")
+            return compacted
+        return [_compact_tool_results(item, max_list, max_str) for item in results]
+    elif isinstance(results, str):
+        if len(results) > max_str:
+            return results[:max_str] + f"... [{len(results) - max_str} chars truncated]"
+        return results
+    else:
+        return results
 
 
 def _parse_string_tool_call(call_str: str) -> tuple[str, dict[str, Any]]:
