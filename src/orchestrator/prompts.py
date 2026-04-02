@@ -28,6 +28,21 @@ You have access to the following data tools:
 - get_offshore_connections(entity_name) — ICIJ Offshore Leaks
 - resolve_entity(name, jurisdiction) — entity resolution across sources
 
+## Sayari Entity Intelligence
+- sayari_resolve(query) — resolve a name to Sayari entity IDs (companies, people, assets)
+- sayari_get_related(entity_id, depth, limit) — graph traversal from a Sayari entity (related entities + relationships)
+- sayari_get_ubo(entity_id) — ultimate beneficial ownership chain
+- sayari_get_entity(entity_id) — full entity profile (addresses, identifiers, risk flags)
+
+**NOTE:** sayari_get_related, sayari_get_ubo, and sayari_get_entity require a Sayari entity_id. \
+Call sayari_resolve first to obtain entity IDs from a name.
+
+**SAYARI SCOPE:** Sayari excels at non-US companies, offshore vehicles, shell structures, and \
+obscure intermediaries. It has limited coverage of major US private companies (SpaceX, Palantir \
+pre-IPO, etc.) and publicly traded US firms. For well-known US companies, use search_entity \
+(OpenCorporates/GLEIF) or get_corporate_tree for ownership structure. Do NOT block a supply \
+chain analysis step on Sayari resolution of a US household-name company.
+
 ## Market Data
 - get_stock_profile(ticker) — company profile + current price (publicly traded tickers ONLY)
 - get_price_history(ticker, period) — historical prices
@@ -47,6 +62,20 @@ return a clear "not publicly traded" result. Never fabricate ticker symbols.
 - get_supply_chain_exposure(country, commodity_code) — import dependency analysis
 - get_trade_partners(country, flow, year) — top trade partners
 - get_shipping_connectivity(country) — maritime connectivity score
+
+**SUPPLY CHAIN KEY HS CODES** (use these for aerospace/defense/space industry analysis):
+- "8542" — integrated circuits / semiconductors
+- "8803" — spacecraft & satellite parts (HS 2022: use "8802" for aircraft, "8529" for satellite parts/components)
+- "2846" — rare earth compounds (critical for motors, magnets, guidance systems)
+- "2844" — radioactive isotopes (propulsion-adjacent; Iran enrichment program overlap)
+- "7601" — unwrought aluminum (rocket structures)
+- "7403" — refined copper (wiring, thermal management)
+- "8504" — transformers / power electronics
+- "8471" — computers and data-processing hardware
+
+For supply chain exposure of a US aerospace company, run get_supply_chain_exposure(country="USA", commodity_code=...) \
+for the relevant codes above. Do NOT rely solely on entity graph traversal — run commodity-level \
+trade lookups in parallel as a primary supply chain signal.
 
 ## Geopolitical Context
 - search_events(query, days) — recent GDELT events
@@ -121,6 +150,20 @@ Depth requirements for the plan:
 - Each step must list concrete tools with filled parameters (real tickers, country names, years, commodity codes where applicable).
 - Cover multiple domains when the question implies them (do not only run search_sanctions + search_events).
 - Avoid duplicating the same tool with identical parameters in multiple steps unless a later step genuinely depends on earlier results.
+
+**Aerospace / defense / space industry supply chain rule:** When the target is an aerospace, defense, \
+or space company (e.g. SpaceX, Boeing, Lockheed, Northrop, Raytheon), the supply chain step MUST \
+include direct commodity-level lookups via get_supply_chain_exposure and/or get_commodity_trade — \
+do NOT rely solely on Sayari entity graph traversal to establish supply chain dependencies. \
+Run at minimum: get_supply_chain_exposure(country="USA", commodity_code="8542") for semiconductors \
+and get_supply_chain_exposure(country="USA", commodity_code="2846") for rare earths. \
+Add additional codes from the HS code list in the Trade Flows section as relevant to the scenario. \
+These calls are independent of any entity resolution and can run in the first parallel step.
+
+**Iran-nexus supply chain rule:** When Iran is the adversary/scenario country, also run \
+get_bilateral_trade(reporter="USA", partner="IRN", year=2022) and \
+get_bilateral_trade(reporter="CHN", partner="IRN", year=2022) to establish direct trade linkage \
+and identify China as a potential transshipment vector for sanctioned components.
 """
 
 # Appended to SYSTEM_PROMPT on the **synthesis** API call only (final JSON assessment).
@@ -139,6 +182,8 @@ SYNTHESIS_SYSTEM_SUPPLEMENT = """
 5. **Recommendations:** Every recommendation must reference a **specific finding or data field** (e.g. "Per step_3 get_market_exposure…"). Generic advice will be treated as a failure.
 
 6. **Friendly fire:** Name **specific** exposed channels (funds, banks, routes, programs) when the tools name them; if tools return empty, state "no allied exposure surfaced in retrieved data" and name the tool/step that was checked.
+
+7. **Tool failure handling:** When an entity resolution tool (sayari_resolve, search_entity) returns an error or empty result for a well-known company, do NOT write a finding whose only content is "tool X failed to resolve entity Y." Instead: (a) pivot to what the commodity-level or bilateral trade steps DID return — cite those numbers; (b) state what the resolution failure means structurally (e.g., "SpaceX's absence from Sayari reflects its private-company, US-domestic registration footprint, not a data gap about its supply chain"); (c) synthesize the supply chain finding from the trade data results that were collected, not from the entity graph that wasn't. A supply chain finding backed by Comtrade commodity data should be rated MEDIUM or HIGH depending on data completeness — not automatically LOW because Sayari didn't resolve.
 """
 
 SYNTHESIS_PROMPT = """\

@@ -43,11 +43,19 @@ def _ofac_source() -> SourceReference:
 
 
 def _determine_confidence(match_count: int, top_score: float | None) -> Confidence:
-    """Heuristic confidence based on match quality."""
+    """Heuristic confidence based on match quality.
+
+    Score >= 0.9 is typically an exact-name match from a government list (CSL/OFAC),
+    which is HIGH. Fuzzy or token-based matches (0.6–0.89) are MEDIUM — they may be
+    aliases or transliterations but are not guaranteed to be the same legal entity.
+    We never return HIGH for a single fuzzy match without multi-source corroboration.
+    """
     if match_count == 0:
         return Confidence.LOW
-    if top_score is not None and top_score >= 0.9:
+    # Exact or near-exact name match on a government-issued list
+    if top_score is not None and top_score >= 0.9 and match_count >= 1:
         return Confidence.HIGH
+    # Token/partial/fuzzy match — MEDIUM regardless of count
     if top_score is not None and top_score >= 0.6:
         return Confidence.MEDIUM
     return Confidence.LOW

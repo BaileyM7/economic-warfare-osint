@@ -66,6 +66,8 @@ class YFinanceClient:
             return StockProfile.model_validate(cached)
 
         info = await asyncio.to_thread(self._fetch_info, ticker)
+        if info.get("_data_unavailable"):
+            logger.warning("get_stock_profile: no data for %s (%s)", ticker, info.get("_reason", ""))
         profile = StockProfile(
             ticker=ticker.upper(),
             name=info.get("longName") or info.get("shortName", ticker),
@@ -76,7 +78,11 @@ class YFinanceClient:
             exchange=info.get("exchange"),
             description=info.get("longBusinessSummary"),
         )
-        set_cached(profile.model_dump(), self.CACHE_NS, action="profile", ticker=ticker)
+        result = profile.model_dump()
+        if info.get("_data_unavailable"):
+            result["data_unavailable"] = True
+            result["data_note"] = info.get("_reason", "no market data returned")
+        set_cached(result, self.CACHE_NS, action="profile", ticker=ticker)
         return profile
 
     async def get_price_data(self, ticker: str, period: str = "1y") -> PriceData:
@@ -163,11 +169,15 @@ class YFinanceClient:
         t = yf.Ticker(ticker)
         try:
             info = t.info or {}
-        except Exception:
-            logger.warning("yfinance .info failed for %s — possibly not a publicly traded ticker", ticker)
-            return {}
-        if not info.get("regularMarketPrice") and not info.get("currentPrice") and not info.get("longName"):
-            logger.info("Ticker %s returned no market data — likely not publicly traded", ticker)
+        except Exception as exc:
+            logger.warning("yfinance .info failed for %s: %s", ticker, exc)
+            return {"_data_unavailable": True, "_reason": str(exc)}
+        has_price = info.get("regularMarketPrice") or info.get("currentPrice")
+        has_name = info.get("longName") or info.get("shortName")
+        if not has_price and not has_name:
+            logger.info("Ticker %s returned no market data — likely not publicly traded or delisted", ticker)
+            info["_data_unavailable"] = True
+            info["_reason"] = "no price or name data returned by yfinance"
         return info
 
     @staticmethod

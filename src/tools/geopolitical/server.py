@@ -80,19 +80,21 @@ def _classify_conflict_intensity(risk_score: float) -> str:
     return "extreme"
 
 
-def _classify_tension_level(avg_goldstein: float | None) -> str:
-    """Map average Goldstein scale to a tension label.
+def _classify_tension_level(avg_tone: float | None) -> str:
+    """Map average GDELT media tone to a tension label.
 
-    Goldstein scale ranges roughly from -10 (most conflictual) to +10 (most
-    cooperative).  GDELT tone is used as proxy when Goldstein is unavailable.
+    GDELT Doc API returns a media-sentiment tone score (roughly -100 to +100),
+    NOT the Goldstein conflict scale.  Thresholds here are calibrated to tone,
+    not Goldstein — they are not interchangeable.
     """
-    if avg_goldstein is None:
+    if avg_tone is None:
         return "unknown"
-    if avg_goldstein >= 3.0:
+    # GDELT tone: negative = hostile coverage, positive = cooperative coverage
+    if avg_tone >= 1.0:
         return "cooperative"
-    if avg_goldstein >= -1.0:
+    if avg_tone >= -2.0:
         return "neutral"
-    if avg_goldstein >= -5.0:
+    if avg_tone >= -6.0:
         return "tense"
     return "hostile"
 
@@ -154,11 +156,22 @@ def _compute_risk_score(
 def _confidence_for_data(
     gdelt_count: int, acled_available: bool, acled_count: int
 ) -> Confidence:
-    """Determine confidence based on data completeness."""
-    if acled_available and acled_count > 0 and gdelt_count > 0:
+    """Determine confidence based on data completeness.
+
+    GDELT-only results are capped at MEDIUM because:
+    - GDELT counts deduplicated media articles, not ground-truth events
+    - Without ACLED fatality/location data, intensity cannot be independently verified
+    HIGH requires both ACLED event data and meaningful GDELT coverage (>5 articles).
+    """
+    if acled_available and acled_count > 0 and gdelt_count > 5:
         return Confidence.HIGH
-    if gdelt_count > 10:
+    if acled_available and acled_count > 0:
         return Confidence.MEDIUM
+    if gdelt_count > 20:
+        # GDELT-only: meaningful coverage but media-proxy only
+        return Confidence.MEDIUM
+    if gdelt_count > 0:
+        return Confidence.LOW
     return Confidence.LOW
 
 
@@ -180,14 +193,22 @@ async def search_events(query: str, days: int = 30) -> dict:
     """
     events = await gdelt_doc_search(query, days=days)
 
+    # num_mentions on the first event stores the raw (pre-dedup) article count
+    raw_article_count = events[0].num_mentions if events else 0
+
     response = ToolResponse(
         data={
             "query": query,
             "days": days,
-            "event_count": len(events),
+            "unique_incident_count": len(events),
+            "raw_article_count": raw_article_count,
+            "data_note": (
+                "GDELT counts are deduplicated media articles, not verified ground-truth events. "
+                f"{raw_article_count} raw articles collapsed to {len(events)} unique incidents."
+            ),
             "events": [e.model_dump(mode="json") for e in events],
         },
-        confidence=Confidence.MEDIUM if events else Confidence.LOW,
+        confidence=Confidence.MEDIUM if len(events) > 5 else Confidence.LOW,
         sources=_sources_used(include_acled=False),
     )
     return response.model_dump(mode="json")
@@ -225,15 +246,19 @@ async def get_conflict_data(country: str, days: int = 90) -> dict:
         type_breakdown = dict(Counter(e.event_type for e in acled_events))
         total_events = len(acled_events)
 
-        # Escalation: split events into first/second half of period
-        midpoint = len(acled_events) // 2
+        # Escalation: sort by date before splitting to ensure chronological comparison
+        sorted_acled = sorted(acled_events, key=lambda e: e.event_date or datetime.min)
+        midpoint = len(sorted_acled) // 2
         first_half_count = midpoint
         second_half_count = total_events - midpoint
     else:
         total_fatalities = 0
-        type_breakdown = {"gdelt_articles": len(gdelt_events)}
+        # Label clearly as article count, not event count
+        type_breakdown = {"gdelt_media_articles": len(gdelt_events)}
         total_events = len(gdelt_events)
-        midpoint = total_events // 2
+        # Sort GDELT events by date before splitting
+        sorted_gdelt = sorted(gdelt_events, key=lambda e: e.date or datetime.min)
+        midpoint = len(sorted_gdelt) // 2
         first_half_count = midpoint
         second_half_count = total_events - midpoint
 
@@ -252,8 +277,13 @@ async def get_conflict_data(country: str, days: int = 90) -> dict:
         escalation_trend=_determine_escalation((first_half_count, second_half_count)),
     )
 
-    confidence = Confidence.HIGH if used_acled else Confidence.MEDIUM
-    if total_events == 0:
+    # ACLED provides ground-truth conflict events; GDELT provides media articles only.
+    # GDELT-only fallback is capped at LOW for conflict data (media coverage ≠ event truth).
+    if used_acled:
+        confidence = Confidence.HIGH if total_events > 5 else Confidence.MEDIUM
+    elif total_events > 0:
+        confidence = Confidence.LOW  # GDELT article count is not a conflict event count
+    else:
         confidence = Confidence.LOW
 
     response = ToolResponse(
@@ -370,11 +400,10 @@ async def get_bilateral_tensions(
 
     tones = [e.avg_tone for e in events if e.avg_tone is not None]
     avg_tone = sum(tones) / len(tones) if tones else None
-    goldsteins = [e.goldstein_scale for e in events if e.goldstein_scale is not None]
-    avg_goldstein = sum(goldsteins) / len(goldsteins) if goldsteins else None
-
-    # Use avg_tone as Goldstein proxy if actual Goldstein not available
-    tension_indicator = avg_goldstein if avg_goldstein is not None else avg_tone
+    # GDELT Doc API does not return Goldstein scale — avg_goldstein is always None here.
+    # tension_level is derived from media tone only; do not misrepresent as Goldstein scale.
+    avg_goldstein = None  # not available from GDELT Doc search
+    tension_indicator = avg_tone
 
     from datetime import timedelta
 
@@ -382,21 +411,31 @@ async def get_bilateral_tensions(
     start = end - timedelta(days=days)
     period = f"{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
 
+    raw_article_count = events[0].num_mentions if events else 0
+
     report = BilateralTensionReport(
         country1=country1,
         country2=country2,
         period=period,
         events=events[:50],  # cap serialized events
-        avg_goldstein=avg_goldstein,
+        avg_goldstein=avg_goldstein,  # always None from GDELT Doc API
         avg_tone=avg_tone,
         event_count=len(events),
         tension_level=_classify_tension_level(tension_indicator),
     )
 
-    confidence = Confidence.MEDIUM if events else Confidence.LOW
+    report_data = report.model_dump(mode="json")
+    report_data["raw_article_count"] = raw_article_count
+    report_data["data_note"] = (
+        "Event count reflects deduplicated media articles (unique incidents), not ACLED ground-truth events. "
+        "Tension level is derived from GDELT media tone, not Goldstein conflict scale. "
+        f"{raw_article_count} raw articles → {len(events)} unique incidents."
+    )
+
+    confidence = Confidence.MEDIUM if len(events) > 5 else Confidence.LOW
 
     response = ToolResponse(
-        data=report.model_dump(mode="json"),
+        data=report_data,
         confidence=confidence,
         sources=_sources_used(include_acled=False),
     )

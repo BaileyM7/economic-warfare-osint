@@ -119,6 +119,20 @@ class ToolRegistry:
         except ImportError as e:
             print(f"  Warning: economic tools not available: {e}")
 
+        try:
+            from src.tools.sayari.server import (
+                sayari_get_entity,
+                sayari_get_related,
+                sayari_get_ubo,
+                sayari_resolve,
+            )
+            self._tools["sayari_resolve"] = sayari_resolve
+            self._tools["sayari_get_related"] = sayari_get_related
+            self._tools["sayari_get_ubo"] = sayari_get_ubo
+            self._tools["sayari_get_entity"] = sayari_get_entity
+        except ImportError as e:
+            print(f"  Warning: sayari tools not available: {e}")
+
         self._loaded = True
         print(f"  Loaded {len(self._tools)} tools")
 

@@ -103,3 +103,4 @@ class ImpactAssessment(BaseModel):
     confidence_summary: dict[str, Confidence] = Field(default_factory=dict)
     sources: list[SourceReference] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
+    tool_results: dict[str, Any] = Field(default_factory=dict)

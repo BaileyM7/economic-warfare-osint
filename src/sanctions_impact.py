@@ -13,7 +13,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Any
 
-from .comparable_sourcer import get_dynamic_comparables
+from .comparable_sourcer import get_dynamic_comparables, get_target_control_peers
 from .tools.market.client import YFinanceClient
 from .tools.sanctions.client import SanctionsClient
 from .tools.screening.client import search_csl
@@ -33,7 +33,6 @@ CHART_COLORS = [
 # Curated reference dataset — US-accessible tickers only
 # ---------------------------------------------------------------------------
 SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
-    # --- OFAC/CCMC designation or Chinese regulatory crackdown ---
     {
         "name": "ZTE Corp",
         "ticker": "0763.HK",
@@ -41,7 +40,8 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "description": "US Commerce Dept denial order — total export ban",
         "sector": "telecom",
         "sanction_type": "ofac_ccmc",
-        # 90d: -44.5%
+        "severity": "blocking",
+        "market_cap_tier": "mid",
     },
     {
         "name": "Alibaba",
@@ -50,16 +50,8 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "description": "ANT Group IPO halted — regulatory crackdown begins",
         "sector": "tech",
         "sanction_type": "ofac_ccmc",
-        # 90d: -20.5%
-    },
-    {
-        "name": "Xiaomi",
-        "ticker": "1810.HK",
-        "sanction_date": "2021-01-14",
-        "description": "CCMC blacklist designation — investment ban",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
-        # 30d: -21.0%
+        "severity": "regulatory_crackdown",
+        "market_cap_tier": "mega",
     },
     {
         "name": "Full Truck Alliance",
@@ -68,98 +60,8 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "description": "China cybersecurity probe — data security crackdown",
         "sector": "tech",
         "sanction_type": "ofac_ccmc",
-        # 30d: -44.8%
-    },
-    {
-        "name": "Tencent Music",
-        "ticker": "TME",
-        "sanction_date": "2021-07-24",
-        "description": "China tech crackdown — antitrust & data security",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
-        # 90d: -36.3%
-    },
-    {
-        "name": "Bilibili",
-        "ticker": "BILI",
-        "sanction_date": "2021-07-24",
-        "description": "China tech regulatory storm — content/data controls",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
-        # 90d: -28.5%
-    },
-    {
-        "name": "NIO",
-        "ticker": "NIO",
-        "sanction_date": "2021-07-24",
-        "description": "Chinese ADR delisting fears — SEC/PCAOB scrutiny",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
-        # 90d: -11.3%
-    },
-    {
-        "name": "PDD Holdings",
-        "ticker": "PDD",
-        "sanction_date": "2021-07-24",
-        "description": "China tech crackdown — e-commerce regulatory pressure",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
-        # 90d: -30.0%
-    },
-    {
-        "name": "Baidu",
-        "ticker": "BIDU",
-        "sanction_date": "2021-01-14",
-        "description": "CCMC designation — AI/military-linked concerns",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
-        # 60d: -13.0%, 90d: -22.6%
-    },
-    {
-        "name": "Micron",
-        "ticker": "MU",
-        "sanction_date": "2023-05-21",
-        "description": "China retaliatory ban — cybersecurity review failure",
-        "sector": "semiconductors",
-        "sanction_type": "retaliation",
-        # 30d: -10.2%
-    },
-    {
-        "name": "KWEB ETF",
-        "ticker": "KWEB",
-        "sanction_date": "2021-07-24",
-        "description": "China Internet sector-wide sanctions/regulatory impact",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
-        # 90d: -13.1%
-    },
-    # --- US export control actions ---
-    {
-        "name": "Nvidia",
-        "ticker": "NVDA",
-        "sanction_date": "2022-10-07",
-        "description": "BIS advanced chip export rule — A100/H100 banned to China",
-        "sector": "semiconductors",
-        "sanction_type": "us_export_control",
-        "industry": "chip_designer",
-    },
-    {
-        "name": "Applied Materials",
-        "ticker": "AMAT",
-        "sanction_date": "2022-10-07",
-        "description": "BIS October 2022 rule — fab equipment export controls",
-        "sector": "semiconductors",
-        "sanction_type": "us_export_control",
-        "industry": "chip_equipment",
-    },
-    {
-        "name": "ASML",
-        "ticker": "ASML",
-        "sanction_date": "2023-01-28",
-        "description": "Dutch EUV export license revoked — US pressure on Netherlands",
-        "sector": "semiconductors",
-        "sanction_type": "us_export_control",
-        "industry": "chip_equipment",
+        "severity": "regulatory_crackdown",
+        "market_cap_tier": "mid",
     },
     {
         "name": "Qualcomm",
@@ -168,72 +70,53 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "description": "Huawei supply ban — BIS Entity List export restriction",
         "sector": "semiconductors",
         "sanction_type": "us_export_control",
+        "severity": "entity_list",
+        "market_cap_tier": "large",
         "industry": "chip_designer",
     },
     {
-        "name": "Lam Research",
-        "ticker": "LRCX",
+        "name": "Nvidia",
+        "ticker": "NVDA",
         "sanction_date": "2022-10-07",
-        "description": "BIS October 2022 rule — etch/deposition equipment export controls",
+        "description": "BIS advanced chip export rule — A100/H100 banned to China",
         "sector": "semiconductors",
         "sanction_type": "us_export_control",
+        "severity": "sectoral",
+        "market_cap_tier": "mega",
+        "industry": "chip_designer",
+    },
+    {
+        "name": "ASML",
+        "ticker": "ASML",
+        "sanction_date": "2023-01-28",
+        "description": "Dutch EUV export license revoked — US pressure on Netherlands",
+        "sector": "semiconductors",
+        "sanction_type": "us_export_control",
+        "severity": "sectoral",
+        "market_cap_tier": "mega",
         "industry": "chip_equipment",
-    },
-    {
-        "name": "KLA Corporation",
-        "ticker": "KLAC",
-        "sanction_date": "2022-10-07",
-        "description": "BIS October 2022 rule — process control equipment export controls",
-        "sector": "semiconductors",
-        "sanction_type": "us_export_control",
-        "industry": "chip_equipment",
-    },
-    {
-        "name": "Marvell Technology",
-        "ticker": "MRVL",
-        "sanction_date": "2022-10-07",
-        "description": "BIS October 2022 rule — networking/storage chip China revenue exposure",
-        "sector": "semiconductors",
-        "sanction_type": "us_export_control",
-        "industry": "chip_designer",
-    },
-    {
-        "name": "Western Digital",
-        "ticker": "WDC",
-        "sanction_date": "2022-10-07",
-        "description": "BIS October 2022 rule — NAND/HDD China supply chain exposure",
-        "sector": "semiconductors",
-        "sanction_type": "us_export_control",
-        "industry": "chip_designer",
-    },
-    {
-        "name": "Intel",
-        "ticker": "INTC",
-        "sanction_date": "2023-10-17",
-        "description": "BIS advanced chip rule tightened — Gaudi AI chip China ban",
-        "sector": "semiconductors",
-        "sanction_type": "us_export_control",
-        "industry": "chip_designer",
     },
     {
         "name": "SMIC",
         "ticker": "0981.HK",
         "sanction_date": "2020-12-18",
-        "description": "BIS Entity List — US equipment export ban to China's largest foundry",
+        "description": "BIS Entity List — US equipment ban to largest Chinese foundry",
         "sector": "semiconductors",
         "sanction_type": "us_export_control",
+        "severity": "entity_list",
+        "market_cap_tier": "mid",
         "industry": "chip_foundry",
     },
-    # --- BIS penalty ---
     {
         "name": "Seagate",
         "ticker": "STX",
         "sanction_date": "2023-04-19",
-        "description": "BIS $300M fine for Huawei HDD sales in violation of export rules",
+        "description": "BIS $300M fine for Huawei HDD sales violating export rules",
         "sector": "semiconductors",
         "sanction_type": "bis_penalty",
+        "severity": "entity_list",
+        "market_cap_tier": "mid",
     },
-    # --- Sectoral energy sanctions ---
     {
         "name": "Gazprom ADR",
         "ticker": "OGZPY",
@@ -241,8 +124,9 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "description": "EU/US sectoral energy sanctions — Russia Ukraine invasion",
         "sector": "energy",
         "sanction_type": "sectoral",
+        "severity": "sectoral",
+        "market_cap_tier": "large",
     },
-    # --- SWIFT exclusion ---
     {
         "name": "Sberbank ADR",
         "ticker": "SBRCY",
@@ -250,23 +134,8 @@ SANCTIONS_COMPARABLES: list[dict[str, Any]] = [
         "description": "SWIFT exclusion — Russia financial sector sanctions",
         "sector": "finance",
         "sanction_type": "swift_cutoff",
-    },
-    {
-        "name": "VTB Bank",
-        "ticker": "VTBR.ME",
-        "sanction_date": "2022-02-24",
-        "description": "SWIFT exclusion + OFAC SDN — Russia financial sector sanctions",
-        "sector": "finance",
-        "sanction_type": "swift_cutoff",
-    },
-    # --- OFAC/CCMC additions ---
-    {
-        "name": "NetEase",
-        "ticker": "NTES",
-        "sanction_date": "2021-07-24",
-        "description": "China tech crackdown — gaming/content regulatory pressure",
-        "sector": "tech",
-        "sanction_type": "ofac_ccmc",
+        "severity": "blocking",
+        "market_cap_tier": "large",
     },
 ]
 
@@ -449,18 +318,27 @@ async def _fetch_comparable_curve(
     if sanction_idx is None:
         sanction_idx = len(dated_prices) - 1
 
+    # Forward-fill benchmark prices so every trading day uses excess returns
+    # (avoids mixing raw and excess returns when benchmark has date gaps, e.g. holidays)
+    last_known_bench: float | None = benchmark_event_price if benchmark_event_price else None
+
     trading_days: list[tuple[int, float]] = []
     for i, (dt, price) in enumerate(dated_prices):
         day_offset = i - sanction_idx
         if -PRE_DAYS <= day_offset <= POST_DAYS:
             raw_pct = ((price - sanction_price) / sanction_price) * 100
 
-            # Subtract benchmark return to get excess (sanctions-specific) return
+            # Subtract benchmark return to get excess (sanctions-specific) return.
+            # Forward-fill last known benchmark price for days with no benchmark data
+            # (e.g. ETF holiday gaps) so all points use the same return basis.
             if benchmark_event_price and benchmark_event_price != 0:
                 dt_str = dt.strftime("%Y-%m-%d")
                 bench_price = benchmark_by_date.get(dt_str)
                 if bench_price:
-                    benchmark_pct = ((bench_price - benchmark_event_price) / benchmark_event_price) * 100
+                    last_known_bench = bench_price
+                # Use last known benchmark price (forward-fill) if today is missing
+                if last_known_bench and last_known_bench != 0:
+                    benchmark_pct = ((last_known_bench - benchmark_event_price) / benchmark_event_price) * 100
                     excess_pct = raw_pct - benchmark_pct
                 else:
                     excess_pct = raw_pct
@@ -503,6 +381,17 @@ async def get_comparable_curves(
         if len(industry_filtered) >= 3:
             comparables = industry_filtered
 
+    # Deduplicate by ticker — if Claude returns the same company twice (different event
+    # dates), keep the first occurrence. Prevents duplicate chart lines for the same firm.
+    seen_tickers: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for c in comparables:
+        t = (c.get("ticker") or "").upper()
+        if t and t not in seen_tickers:
+            seen_tickers.add(t)
+            deduped.append(c)
+    comparables = deduped
+
     tasks = [
         _fetch_comparable_curve(comp, CHART_COLORS[i % len(CHART_COLORS)])
         for i, comp in enumerate(comparables)
@@ -519,33 +408,227 @@ async def get_comparable_curves(
     return curves
 
 
+async def get_control_curves(
+    raw_comparables: list[dict[str, Any]],
+    target_peers: list[str],
+) -> list[dict[str, Any]]:
+    """Fetch excess-return curves for non-sanctioned peers of the TARGET company.
+
+    target_peers is a list of tickers similar to the queried company (not to the
+    individual comparables). Each peer is measured over every comparable's event
+    window so the curves are time-aligned to the same shocks. The sector benchmark
+    subtraction cancels out broad market moves, leaving only idiosyncratic returns.
+
+    If target_peers is empty, falls back to each comparable's own control_peers list
+    (the coarser, comparable-relative peers from SANCTIONS_COMPARABLES).
+    """
+    # Tickers that are already in the comparable (sanctioned) group — must not appear
+    # in the control group, since they represent the sanctioned event itself.
+    comparable_tickers: set[str] = {
+        (c.get("ticker") or "").upper() for c in raw_comparables if c.get("ticker")
+    }
+
+    tasks: list[Any] = []
+    color_idx = 0
+
+    # Deduplicate (peer_ticker, sanction_date) pairs — many comparables can share
+    # the same event date (e.g. 7 entries on 2021-07-24), so running the same peer
+    # across duplicate dates produces identical curves that waste API quota.
+    seen_peer_windows: set[tuple[str, str]] = set()
+
+    resolved_peers = target_peers
+
+    if not resolved_peers:
+        # Dynamic fallback: target-company peer sourcing failed, so source peers for
+        # each comparable individually (treating each comparable as a mini-target).
+        # Results are cached per ticker so this is cheap on repeat runs.
+        peer_tasks = [
+            get_target_control_peers(
+                ticker=comp["ticker"],
+                company_name=comp.get("name", comp["ticker"]),
+                sector=comp.get("sector"),
+                industry=comp.get("industry"),
+            )
+            for comp in raw_comparables
+            if comp.get("ticker")
+        ]
+        fallback_results = await asyncio.gather(*peer_tasks, return_exceptions=True)
+        fallback_set: set[str] = set()
+        for r in fallback_results:
+            if isinstance(r, list):
+                fallback_set.update(r)
+        resolved_peers = list(fallback_set)
+
+    if not resolved_peers:
+        return []
+
+    for comp in raw_comparables:
+        peers: list[str] = resolved_peers
+        sanction_date = comp["sanction_date"]
+        for peer_ticker in peers:
+            peer_upper = peer_ticker.upper()
+            # Skip if this peer is already a sanctioned comparable
+            if peer_upper in comparable_tickers:
+                continue
+            # Skip duplicate (peer, date) windows
+            window_key = (peer_upper, sanction_date)
+            if window_key in seen_peer_windows:
+                continue
+            seen_peer_windows.add(window_key)
+
+            peer_comp = {
+                "ticker": peer_ticker,
+                "sanction_date": sanction_date,
+                "sector": comp.get("sector", ""),
+                "name": peer_ticker,
+                "description": "Non-sanctioned peer",
+                "sanction_type": comp.get("sanction_type", ""),
+                "industry": "",
+            }
+            tasks.append(
+                _fetch_comparable_curve(peer_comp, CHART_COLORS[color_idx % len(CHART_COLORS)])
+            )
+            color_idx += 1
+
+    if not tasks:
+        return []
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    raw_curves: list[dict[str, Any]] = []
+    for r in results:
+        if isinstance(r, dict):
+            raw_curves.append(r)
+        elif isinstance(r, Exception):
+            logger.warning("Control peer curve fetch error: %s", r)
+
+    # Aggregate: each peer appears once with its excess return averaged across
+    # all comparable event windows. This prevents the same ticker showing up
+    # N times in the legend (once per comparable).
+    curves_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for c in raw_curves:
+        curves_by_ticker.setdefault(c["ticker"], []).append(c)
+
+    aggregated: list[dict[str, Any]] = []
+    for ticker_str, ticker_curves in curves_by_ticker.items():
+        # Average pct at each day across all event windows
+        day_pcts: dict[int, list[float]] = {}
+        for c in ticker_curves:
+            for pt in c["curve"]:
+                day_pcts.setdefault(pt["day"], []).append(pt["pct"])
+
+        avg_curve = [
+            {"day": day, "pct": round(sum(pcts) / len(pcts), 2)}
+            for day, pcts in sorted(day_pcts.items())
+        ]
+
+        ref = ticker_curves[0]
+        aggregated.append({
+            "name": ticker_str,
+            "ticker": ticker_str,
+            "sanction_date": "",          # not meaningful for an averaged curve
+            "description": f"Non-sanctioned peer (avg {len(ticker_curves)} windows)",
+            "sector": ref.get("sector", ""),
+            "sanction_type": "",
+            "industry": "",
+            "color": ref["color"],
+            "curve": avg_curve,
+        })
+
+    logger.debug(
+        "Control group: %d raw curves → %d aggregated peers",
+        len(raw_curves), len(aggregated),
+    )
+    return aggregated
+
+
+_SEVERITY_ADJACENCY: dict[str, set[str]] = {
+    "blocking": {"entity_list"},
+    "entity_list": {"blocking", "sectoral"},
+    "sectoral": {"entity_list", "delisting_threat"},
+    "delisting_threat": {"sectoral", "regulatory_crackdown"},
+    "regulatory_crackdown": {"delisting_threat"},
+}
+
+_CAP_TIERS = ("mega", "large", "mid", "small")
+
+
+def _severity_weight(target_sev: str | None, comp_sev: str | None) -> float:
+    if not target_sev or not comp_sev:
+        return 0.7
+    if target_sev == comp_sev:
+        return 1.0
+    if comp_sev in _SEVERITY_ADJACENCY.get(target_sev, set()):
+        return 0.6
+    return 0.3
+
+
+def _cap_tier_weight(target_tier: str | None, comp_tier: str | None) -> float:
+    if not target_tier or not comp_tier:
+        return 0.7
+    try:
+        t_idx = _CAP_TIERS.index(target_tier)
+        c_idx = _CAP_TIERS.index(comp_tier)
+    except ValueError:
+        return 0.7
+    diff = abs(t_idx - c_idx)
+    if diff == 0:
+        return 1.0
+    if diff == 1:
+        return 0.7
+    return 0.4
+
+
+def infer_cap_tier(market_cap: float | None) -> str:
+    if not market_cap or market_cap <= 0:
+        return "mid"
+    if market_cap >= 200e9:
+        return "mega"
+    if market_cap >= 20e9:
+        return "large"
+    if market_cap >= 2e9:
+        return "mid"
+    return "small"
+
+
 def compute_projection(
     comparable_curves: list[dict[str, Any]],
     target_current_price: float,
     target_sector: str | None = None,
     target_sanction_type: str | None = None,
     target_prices_30d: list[float] | None = None,
+    *,
+    target_severity: str | None = None,
+    target_cap_tier: str | None = None,
 ) -> dict[str, Any]:
     """Compute weighted mean projection + volatility-scaled confidence band.
 
-    Weighting per comparable curve:
-      recency   = exp(-0.10 * years_since_event)
-      sector_w  = 1.0 if exact sector match else 0.5
-      type_w    = 1.0 if exact sanction_type match else 0.5
-      raw_w     = recency * sector_w * type_w
-      w_i       = raw_w_i / sum(raw_w_j)   (normalized to sum=1)
+    Weighting per comparable curve (Phase D):
+      recency    = exp(-0.10 * years_since_event)
+      sector_w   = 1.0 if exact sector match else 0.5
+      type_w     = 1.0 if exact sanction_type match else 0.5
+      sev_w      = severity match (1.0 / 0.6 / 0.3)
+      cap_w      = cap-tier match (1.0 / 0.7 / 0.4)
+      cluster_w  = 1/N for N events on the same date
 
-    Confidence band width is scaled by the target's 30-day realized volatility
-    relative to a 30% annualized baseline (band_scale clamped to [0.5, 2.0]).
-    High-volatility targets get wider bands; low-volatility targets get narrower ones.
-    The mean projection is not directionally adjusted — only band width changes.
+    Two-phase projection:
+      Shock phase (days 0-7): severity exponent 1.5 (higher severity influence)
+      Structural phase (days 13+): severity exponent 1.0
+      Days 8-12: linear blend between the two phases
     """
     if not comparable_curves or not target_current_price:
         return {"mean": [], "upper": [], "lower": [], "summary": {}}
 
-    # --- Per-curve weights ---
     today = datetime.utcnow().date()
-    raw_weights: list[float] = []
+
+    from collections import Counter
+    date_cluster_counts: Counter = Counter(
+        c.get("sanction_date", "") for c in comparable_curves
+    )
+
+    # Per-curve weight components: (base_w, sev_w)
+    # base_w includes everything except severity so the per-day loop can apply
+    # a phase-dependent severity exponent.
+    curve_weight_parts: list[tuple[float, float]] = []
     for curve_data in comparable_curves:
         try:
             event_dt = datetime.strptime(curve_data["sanction_date"], "%Y-%m-%d").date()
@@ -557,11 +640,16 @@ def compute_projection(
         sector_w = 1.0 if (target_sector and curve_data.get("sector") == target_sector) else 0.5
         type_w   = 1.0 if (target_sanction_type and curve_data.get("sanction_type") == target_sanction_type) else 0.5
 
-        raw_weights.append(recency * sector_w * type_w)
+        cluster_n = date_cluster_counts.get(curve_data.get("sanction_date", ""), 1)
+        cluster_w = 1.0 / max(cluster_n, 1)
 
-    # --- Trimmed mean: drop top/bottom 20% of curves by day-30 excess return ---
-    # Eliminates outliers (e.g. NVDA AI-boom recovery, extreme delisting cases) before
-    # computing the mean. Only applied when ≥5 curves exist so we don't over-trim small sets.
+        sev_w = _severity_weight(target_severity, curve_data.get("severity"))
+        cap_w = _cap_tier_weight(target_cap_tier, curve_data.get("market_cap_tier"))
+
+        base_w = recency * sector_w * type_w * cluster_w * cap_w
+        curve_weight_parts.append((base_w, sev_w))
+
+    # --- Trimmed mean: drop top/bottom 20% by day-30 excess return ---
     if len(comparable_curves) >= 5:
         day30_vals: list[float] = []
         for curve_data in comparable_curves:
@@ -572,15 +660,10 @@ def compute_projection(
         n = len(comparable_curves)
         trim = max(1, n // 5)
         keep = set(sorted(range(n), key=lambda i: day30_vals[i])[trim: n - trim])
-        comparable_curves = [c for i, c in enumerate(comparable_curves) if i in keep]
-        raw_weights      = [w for i, w in enumerate(raw_weights)      if i in keep]
+        comparable_curves   = [c for i, c in enumerate(comparable_curves)   if i in keep]
+        curve_weight_parts  = [w for i, w in enumerate(curve_weight_parts)  if i in keep]
 
-    total_w = sum(raw_weights) or 1.0
-    norm_weights = [w / total_w for w in raw_weights]
-
-    # --- Coherence: fraction of post-trim curves with negative day-30 excess return ---
-    # direction_agreement = fraction in the majority direction (0.5 = split, 1.0 = unanimous)
-    # coherence_low flags when the model lacks directional consensus.
+    # --- Coherence score ---
     coherence_score = 1.0
     if comparable_curves:
         day30_signs: list[bool] = []
@@ -609,29 +692,41 @@ def compute_projection(
             realized_vol = math.sqrt(variance_r) * math.sqrt(252)
             band_scale = max(0.5, min(2.0, realized_vol / 0.30))
 
-    # --- Collect (weight, pct) per day ---
-    # day → list of (normalized_weight, pct)
-    all_day_entries: dict[int, list[tuple[float, float]]] = {}
-    for weight, curve_data in zip(norm_weights, comparable_curves):
+    # --- Per-day data: day -> list of (curve_index, pct) ---
+    all_day_entries: dict[int, list[tuple[int, float]]] = {}
+    for i, curve_data in enumerate(comparable_curves):
         for point in curve_data["curve"]:
-            all_day_entries.setdefault(point["day"], []).append((weight, point["pct"]))
+            all_day_entries.setdefault(point["day"], []).append((i, point["pct"]))
 
-    mean_curve = []
-    upper_band = []
-    lower_band = []
+    mean_curve: list[dict[str, Any]] = []
+    upper_band: list[dict[str, Any]] = []
+    lower_band: list[dict[str, Any]] = []
 
     for day in sorted(all_day_entries.keys()):
         entries = all_day_entries[day]
         if len(entries) < 2:
             continue
 
-        # Re-normalize weights for this day (not all curves cover every day)
-        day_total = sum(w for w, _ in entries) or 1.0
-        day_w = [w / day_total for w, _ in entries]
-        day_pcts = [p for _, p in entries]
+        # Two-phase severity exponent: shock (1.5) → structural (1.0)
+        if day <= 7:
+            sev_exp = 1.5
+        elif day <= 12:
+            sev_exp = 1.5 - 0.1 * (day - 7)
+        else:
+            sev_exp = 1.0
 
-        mean_pct = sum(w * p for w, p in zip(day_w, day_pcts))
-        variance = sum(w * (p - mean_pct) ** 2 for w, p in zip(day_w, day_pcts))
+        raw_w_list: list[float] = []
+        pct_list: list[float] = []
+        for curve_idx, pct in entries:
+            base_w, sev_w = curve_weight_parts[curve_idx]
+            raw_w_list.append(base_w * (sev_w ** sev_exp))
+            pct_list.append(pct)
+
+        day_total = sum(raw_w_list) or 1.0
+        day_w = [w / day_total for w in raw_w_list]
+
+        mean_pct = sum(w * p for w, p in zip(day_w, pct_list))
+        variance = sum(w * (p - mean_pct) ** 2 for w, p in zip(day_w, pct_list))
         std_pct = math.sqrt(variance)
 
         scaled_std = band_scale * std_pct
@@ -661,25 +756,14 @@ def compute_projection(
 
     summary: dict[str, Any] = {}
 
-    # Pre-event: excess return at the START of the pre-event window (day ~-60) vs day 0.
-    # Negative = stock was underperforming its sector benchmark before the event
-    #            (risk being priced in — "sell the rumor").
-    # Positive = stock was outperforming before the event (market was not anticipating).
-    # Using the first point in the window (not max) makes this directly comparable to
-    # post-event values, which are also measured from day 0.
     if pre_pcts:
-        # pre_pcts is sorted by day (most negative day first) because mean_curve is
-        # built from sorted(all_day_entries.keys())
         summary["pre_event_decline"] = round(-pre_pcts[0], 2)
 
-    # Post-announcement trajectory at 30 / 60 / 90 days
     for label, target_day in [("day_30", 30), ("day_60", 60), ("day_90", 90)]:
-        # Find nearest available day at or after target
         candidates = [d for d in post_pcts_by_day if d <= target_day]
         if candidates:
             nearest = max(candidates)
             summary[f"{label}_post"] = post_pcts_by_day[nearest]
-            # Range from bands
             upper_pts = {p["day"]: p["pct"] for p in upper_band if p["day"] >= 0}
             lower_pts = {p["day"]: p["pct"] for p in lower_band if p["day"] >= 0}
             u_candidates = [d for d in upper_pts if d <= target_day]
@@ -690,10 +774,28 @@ def compute_projection(
                     round(upper_pts[max(u_candidates)], 2),
                 ]
 
-    # Peak-to-trough across the full window
     all_mean_pcts = [p["pct"] for p in mean_curve]
     if all_mean_pcts:
         summary["max_drawdown"] = round(min(all_mean_pcts), 2)
+
+    # Shock trough: minimum mean excess return in days 0-10
+    shock_pts = [p["pct"] for p in mean_curve if 0 <= p["day"] <= 10]
+    if shock_pts:
+        summary["shock_trough"] = round(min(shock_pts), 2)
+
+    # Recovery day: first day after the overall trough where mean recovers 50% of drawdown
+    post_mean_pts = [p for p in mean_curve if p["day"] >= 0]
+    if post_mean_pts:
+        trough_pct = min(p["pct"] for p in post_mean_pts)
+        trough_day = next(p["day"] for p in post_mean_pts if p["pct"] == trough_pct)
+        recovery_threshold = trough_pct * 0.5 if trough_pct < 0 else 0.0
+        recovery_found = None
+        for p in post_mean_pts:
+            if p["day"] > trough_day and p["pct"] >= recovery_threshold:
+                recovery_found = p["day"]
+                break
+        summary["recovery_day"] = recovery_found
+        summary["terminal_pct"] = post_mean_pts[-1]["pct"]
 
     return {
         "mean": mean_curve,
@@ -793,18 +895,75 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
 
     recent_prices_30d: list[float] = target_info.pop("_recent_prices_30d", [])
 
+    # --- Infer severity and cap tier for weighting ---
+    inferred_severity: str | None = None
+    if inferred_sanction_type in ("swift_cutoff",):
+        inferred_severity = "blocking"
+    elif inferred_sanction_type == "ofac_ccmc":
+        if sanctions_context.get("is_sanctioned"):
+            inferred_severity = "blocking"
+        else:
+            inferred_severity = "regulatory_crackdown"
+    elif inferred_sanction_type == "us_export_control":
+        if any("entity list" in s for s in [m.get("source", "").lower() for m in sanctions_context.get("csl_matches", [])]):
+            inferred_severity = "entity_list"
+        else:
+            inferred_severity = "sectoral"
+    elif inferred_sanction_type == "sectoral":
+        inferred_severity = "sectoral"
+    elif inferred_sanction_type in ("bis_penalty", "retaliation"):
+        inferred_severity = "entity_list"
+
+    target_market_cap = target_info.get("market_cap")
+    target_cap_tier = infer_cap_tier(target_market_cap)
+
     raw_comparables, sourcing_method = await get_dynamic_comparables(
         sector=mapped_sector or None,
         sanction_type=inferred_sanction_type,
         country=target_info.get("country"),
         static_fallback=SANCTIONS_COMPARABLES,
         sector_groups=SECTOR_GROUPS,
+        severity=inferred_severity,
+        market_cap=target_market_cap,
+        sub_sector=industry_raw or None,
     )
 
-    curves = await get_comparable_curves(
-        comparables=raw_comparables,
-        industry_filter=inferred_industry,
+    # Collect sanctioned comparable tickers for cross-list dedup
+    used_tickers: set[str] = {
+        (c.get("ticker") or "").upper()
+        for c in raw_comparables
+        if c.get("ticker")
+    }
+
+    # Build a short sanctions context string for the peers prompt
+    _ctx_parts = [inferred_sanction_type or "general"]
+    if inferred_severity:
+        _ctx_parts.append(f"severity: {inferred_severity}")
+    if sanctions_context.get("programs"):
+        _ctx_parts.append(f"programs: {', '.join(sanctions_context['programs'][:3])}")
+    sanctions_context_str = "; ".join(_ctx_parts)
+
+    # Fetch target-similar peers and comparable curves in parallel
+    target_peers, curves = await asyncio.gather(
+        get_target_control_peers(
+            ticker=ticker,
+            company_name=company_name,
+            sector=mapped_sector or None,
+            industry=industry_raw or None,
+            market_cap=target_market_cap,
+            excluded_tickers=used_tickers,
+            sanctions_context_str=sanctions_context_str,
+        ),
+        get_comparable_curves(
+            comparables=raw_comparables,
+            industry_filter=inferred_industry,
+        ),
     )
+
+    # Belt-and-suspenders: filter out any control peers that overlap with comparables
+    target_peers = [t for t in target_peers if t.upper() not in used_tickers]
+
+    control_curves = await get_control_curves(raw_comparables, target_peers)
 
     current_price = target_info.get("current_price") or 0
     projection = compute_projection(
@@ -813,6 +972,17 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
         target_sector=mapped_sector or None,
         target_sanction_type=inferred_sanction_type,
         target_prices_30d=recent_prices_30d,
+        target_severity=inferred_severity,
+        target_cap_tier=target_cap_tier,
+    )
+    control_projection = compute_projection(
+        control_curves,
+        current_price,
+        target_sector=mapped_sector or None,
+        target_sanction_type=inferred_sanction_type,
+        target_prices_30d=recent_prices_30d,
+        target_severity=inferred_severity,
+        target_cap_tier=target_cap_tier,
     )
 
     target_info["sanctions_status"] = sanctions_context
@@ -821,10 +991,16 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
         "target": target_info,
         "comparables": curves,
         "projection": projection,
+        "control_comparables": control_curves,
+        "control_projection": control_projection,
         "metadata": {
             "comparable_count": len(curves),
+            "control_peer_count": len(control_curves),
+            "control_peer_tickers": target_peers,
             "time_window_days": [-PRE_DAYS, POST_DAYS],
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "sourcing_method": sourcing_method,
+            "inferred_severity": inferred_severity,
+            "inferred_cap_tier": target_cap_tier,
         },
     }

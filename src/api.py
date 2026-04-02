@@ -36,8 +36,10 @@ from src.tools.corporate.client import (
     gleif_get_direct_parent,
     gleif_get_ultimate_parent,
     oc_search_officers,
+    oc_search_companies,
     icij_search,
 )
+from src.tools.market.client import YFinanceClient, _is_pension_or_sovereign
 from src.tools.geopolitical.client import refresh_acled_token, gdelt_doc_search
 from src.tools.geopolitical.server import get_bilateral_tensions
 from src.tools.sanctions.client import OFACClient, OpenSanctionsClient, SanctionsClient
@@ -319,10 +321,13 @@ def _truncate(s: str, n: int = 28) -> str:
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def _node(nid: str, name: str, entity_type: str, country: str | None = None) -> dict[str, Any]:
+def _node(nid: str, name: str, entity_type: str, country: str | None = None, sayari_id: str | None = None) -> dict[str, Any]:
     title = f"{name}\n{entity_type}" + (f" · {country}" if country else "")
-    return {"id": nid, "label": _truncate(name), "title": title,
+    node: dict[str, Any] = {"id": nid, "label": _truncate(name), "title": title,
             "group": entity_type, "color": _ENTITY_COLORS.get(entity_type, "#808080")}
+    if sayari_id:
+        node["sayariId"] = sayari_id
+    return node
 
 
 _LEI_20 = re.compile(r"[A-Z0-9]{20}")
@@ -358,9 +363,9 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
     nodes: dict[str, dict] = {}
     edges: dict[str, dict] = {}
 
-    def add_node(nid: str, name: str, etype: str, country: str | None = None) -> None:
+    def add_node(nid: str, name: str, etype: str, country: str | None = None, sayari_id: str | None = None) -> None:
         if nid and name and nid not in nodes:
-            nodes[nid] = _node(nid, name, etype, country)
+            nodes[nid] = _node(nid, name, etype, country, sayari_id=sayari_id)
 
     def add_edge(src: str, tgt: str, label: str, dashes: bool = False) -> None:
         if src in nodes and tgt in nodes and src != tgt:
@@ -373,7 +378,16 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
         return s.lower().replace(" ", "_").replace(",", "").replace(".", "")[:64]
 
     # ── 1. GLEIF corporate structure ──────────────────────────────────────
-    lei_records = await gleif_search_lei(query)
+    _all_lei = await gleif_search_lei(query)
+
+    def _graph_lei_matches(q: str, legal_name: str) -> bool:
+        q_low, n_low = q.lower(), legal_name.lower()
+        q_tok = set(re.findall(r"[a-z0-9]{4,}", q_low))
+        if not q_tok:
+            return bool(re.search(r"\b" + re.escape(q_low) + r"\b", n_low))
+        return bool(q_tok & set(re.findall(r"[a-z0-9]{4,}", n_low)))
+
+    lei_records = [r for r in _all_lei if _graph_lei_matches(query, r.legal_name)]
     main_id = slug(query)
     add_node(main_id, query, "company")
 
@@ -455,6 +469,54 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
         add_node(comp_id, f"{comp['name']} ({comp['ticker']})", "company")
         add_edge(sector_id, comp_id, "comparable")
 
+    # ── 4. Sayari entity resolution (enrich main node with sayariId) ──────
+    if config.sayari_client_id and config.sayari_client_secret:
+        try:
+            from src.tools.sayari.client import get_sayari_client
+            sayari = get_sayari_client()
+            resolved = await asyncio.wait_for(sayari.resolve(query, limit=1), timeout=10.0)
+            if resolved.entities:
+                primary = resolved.entities[0]
+                if main_id in nodes:
+                    nodes[main_id]["sayariId"] = primary.entity_id
+        except Exception as exc:
+            logger.debug("Sayari resolution skipped for entity graph: %s", exc)
+
+    # ── 5. Sanctions screening of company/person nodes ─────────────────
+    # Screen non-sanctions-list entity nodes against OFAC+CSL and recolor
+    # sanctioned ones red so the graph visually shows sanctions status.
+    screenable = [
+        (nid, nd) for nid, nd in nodes.items()
+        if nd.get("group") in ("company", "person", "vessel")
+        and nd.get("group") != "sanctions_list"
+    ]
+    if screenable:
+        sc = SanctionsClient()
+
+        async def _screen(nid: str, nd: dict) -> tuple[str, bool, list[str]]:
+            name = nd.get("title", "").split("\n")[0].strip()
+            if not name:
+                name = nd.get("label", "")
+            try:
+                status = await asyncio.wait_for(sc.check_status(name), timeout=8.0)
+                return nid, status.is_sanctioned, status.programs
+            except Exception:
+                return nid, False, []
+
+        screen_results = await asyncio.gather(
+            *[_screen(nid, nd) for nid, nd in screenable[:20]],
+            return_exceptions=True,
+        )
+        for r in screen_results:
+            if isinstance(r, tuple):
+                nid, is_sanctioned, programs = r
+                if is_sanctioned and nid in nodes:
+                    nodes[nid]["color"] = "#F85149"
+                    old_title = nodes[nid].get("title", "")
+                    nodes[nid]["title"] = old_title + "\nSANCTIONED"
+                    if programs:
+                        nodes[nid]["title"] += f" ({', '.join(programs[:3])})"
+
     return list(nodes.values()), list(edges.values())
 
 
@@ -482,6 +544,108 @@ async def entity_graph_endpoint(req: EntityGraphRequest):
     except Exception as e:
         logger.exception("Entity graph error for query=%s", query)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Sayari endpoints ---
+
+class SayariResolveRequest(BaseModel):
+    query: str
+    limit: int = 5
+    entity_type: str | None = None
+
+class SayariEntityRequest(BaseModel):
+    entity_id: str
+
+class SayariTraversalRequest(BaseModel):
+    entity_id: str
+    depth: int = 1
+    limit: int = 20
+
+
+@app.post("/api/sayari/resolve")
+async def sayari_resolve_endpoint(req: SayariResolveRequest):
+    """Resolve a name to Sayari entity IDs."""
+    from src.tools.sayari.client import get_sayari_client
+    try:
+        client = get_sayari_client()
+        result = await asyncio.wait_for(
+            client.resolve(req.query.strip(), limit=req.limit, entity_type=req.entity_type),
+            timeout=15.0,
+        )
+        return JSONResponse(content=result.model_dump(mode="json"))
+    except Exception as e:
+        logger.warning("Sayari resolve error: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/sayari/related")
+async def sayari_related_endpoint(req: SayariTraversalRequest):
+    """Get entities related to a Sayari entity (graph traversal)."""
+    from src.tools.sayari.client import get_sayari_client
+    try:
+        client = get_sayari_client()
+        result = await asyncio.wait_for(
+            client.get_traversal(req.entity_id, depth=req.depth, limit=req.limit),
+            timeout=20.0,
+        )
+        return JSONResponse(content=result.model_dump(mode="json"))
+    except Exception as e:
+        logger.warning("Sayari traversal error: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/sayari/ubo")
+async def sayari_ubo_endpoint(req: SayariEntityRequest):
+    """Get ultimate beneficial owners of a Sayari entity."""
+    from src.tools.sayari.client import get_sayari_client
+    try:
+        client = get_sayari_client()
+        result = await asyncio.wait_for(
+            client.get_ubo(req.entity_id),
+            timeout=20.0,
+        )
+        return JSONResponse(content=result.model_dump(mode="json"))
+    except Exception as e:
+        logger.warning("Sayari UBO error: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# --- Batch sanctions screening ---
+
+class SanctionsScreenBatchRequest(BaseModel):
+    names: list[str]
+
+
+@app.post("/api/sanctions/screen-batch")
+async def sanctions_screen_batch(req: SanctionsScreenBatchRequest):
+    """Screen a list of entity names against OFAC SDN + Trade.gov CSL.
+
+    Returns a dict keyed by the input name with sanctions status for each.
+    Runs all checks concurrently; individual failures are reported as not-sanctioned.
+    """
+    names = [n.strip() for n in req.names if n.strip()][:30]
+    if not names:
+        return JSONResponse(content={"results": {}})
+
+    client = SanctionsClient()
+
+    async def _check_one(name: str) -> tuple[str, dict]:
+        try:
+            status = await asyncio.wait_for(client.check_status(name), timeout=10.0)
+            return name, {
+                "sanctioned": status.is_sanctioned,
+                "lists": status.lists_found,
+                "programs": status.programs,
+            }
+        except Exception:
+            return name, {"sanctioned": False, "lists": [], "programs": []}
+
+    results = await asyncio.gather(*[_check_one(n) for n in names], return_exceptions=True)
+    output: dict[str, dict] = {}
+    for r in results:
+        if isinstance(r, tuple):
+            output[r[0]] = r[1]
+    return JSONResponse(content={"results": output})
 
 
 # --- Entity type resolver ---
@@ -1282,6 +1446,618 @@ async def sector_analysis(req: SectorAnalysisRequest):
     except Exception as e:
         logger.exception("sector_analysis error for sector=%s", sector)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Entity Risk Report endpoint ---
+
+class EntityRiskReportRequest(BaseModel):
+    name: str
+    entity_type: str = "company"  # company, person, vessel, sanctions_list, sector, sayari
+    ticker: str | None = None
+    lei: str | None = None
+
+
+_HIGH_RISK_COUNTRIES = {
+    "RU", "IR", "KP", "BY", "CU", "SY", "VE", "MM", "SD", "SS",
+    "CF", "CD", "IQ", "LB", "LY", "SO", "YE", "ZW",
+}
+_ELEVATED_RISK_COUNTRIES = {"CN", "HK", "TR", "AE", "SA", "PK", "NG", "UA", "UZ", "KZ"}
+
+# Maps full country names (as returned by yfinance) to ISO-2 codes.
+# GLEIF already returns ISO-2 codes. Unknown names resolve to None → risk=LOW (safe).
+_COUNTRY_NAME_TO_ISO: dict[str, str] = {
+    # Risk-relevant
+    "china": "CN", "hong kong": "HK", "russia": "RU", "iran": "IR",
+    "north korea": "KP", "belarus": "BY", "cuba": "CU", "syria": "SY",
+    "venezuela": "VE", "myanmar": "MM", "burma": "MM", "sudan": "SD",
+    "turkey": "TR", "united arab emirates": "AE", "saudi arabia": "SA",
+    "pakistan": "PK", "nigeria": "NG", "ukraine": "UA", "uzbekistan": "UZ",
+    "kazakhstan": "KZ", "south sudan": "SS", "central african republic": "CF",
+    "dr congo": "CD", "democratic republic of the congo": "CD", "iraq": "IQ",
+    "lebanon": "LB", "libya": "LY", "somalia": "SO", "yemen": "YE",
+    "zimbabwe": "ZW",
+    # Common yfinance country names (not risk-scored but needed for accurate display)
+    "taiwan": "TW", "united states": "US", "germany": "DE", "japan": "JP",
+    "france": "FR", "united kingdom": "GB", "netherlands": "NL",
+    "south korea": "KR", "india": "IN", "singapore": "SG", "canada": "CA",
+    "australia": "AU", "brazil": "BR", "mexico": "MX", "israel": "IL",
+    "sweden": "SE", "switzerland": "CH", "spain": "ES", "italy": "IT",
+}
+
+
+def _country_to_iso(country: str | None) -> str | None:
+    """Normalise a country string to an ISO-2 code for risk scoring.
+    Returns None for unknown country names — risk scoring treats that as LOW."""
+    if not country:
+        return None
+    c = country.strip()
+    if len(c) == 2:
+        return c.upper()
+    return _COUNTRY_NAME_TO_ISO.get(c.lower())  # None if unknown — don't guess
+
+
+@app.post("/api/entity-risk-report")
+async def entity_risk_report(req: EntityRiskReportRequest):
+    """Generate a focused risk report for an entity node from the entity graph.
+
+    Runs all data sources in parallel:
+      OFAC SDN · Trade.gov CSL · GLEIF (corporate structure + parent chain) ·
+      OpenCorporates (officers) · ICIJ Offshore Leaks ·
+      Yahoo Finance (profile, price, 52w range, institutional holders, analyst consensus)
+    """
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Entity name cannot be empty")
+
+    entity_type = req.entity_type.lower()
+    ticker = (req.ticker or "").strip().upper() or None
+
+    try:
+        from datetime import datetime as _dt
+
+        yf_client = YFinanceClient()
+        ofac_client = OFACClient()
+        sanctions_client = SanctionsClient()
+
+        # ── Fire all data sources in parallel ────────────────────────────
+        async def _safe(coro, default):
+            try:
+                return await asyncio.wait_for(coro, timeout=12.0)
+            except Exception:
+                return default
+
+        tasks: dict[str, Any] = {
+            "ofac": _safe(ofac_client.search(name), []),
+            "csl": _safe(search_csl(name), []),
+            "gleif": _safe(gleif_search_lei(name), []),
+            "oc": _safe(oc_search_companies(name), []),
+            # ICIJ /api/v1/search is currently 404 — skip to avoid wasted latency
+        }
+        if ticker:
+            tasks["yf_profile"] = _safe(yf_client.get_stock_profile(ticker), None)
+            tasks["yf_price"] = _safe(yf_client.get_price_data(ticker, period="1y"), None)
+            tasks["yf_holders"] = _safe(yf_client.get_institutional_holders(ticker), [])
+            tasks["yf_analyst"] = _safe(yf_client.get_analyst_estimate(ticker), None)
+
+        keys = list(tasks.keys())
+        results = await asyncio.gather(*[tasks[k] for k in keys])
+        r = dict(zip(keys, results))
+
+        # ── Sanctions ────────────────────────────────────────────────────
+        ofac_hits = [e for e in (r["ofac"] or []) if (e.score or 0) >= 0.75]
+        csl_raw = sanctions_client._csl_to_entries(r["csl"] or [])
+        csl_hits = [e for e in csl_raw if (e.score or 0) >= 0.6]
+
+        is_sanctioned = bool(ofac_hits or csl_hits)
+        sanction_programs: list[str] = []
+        sanction_lists: list[str] = []
+        sanction_details: list[dict[str, Any]] = []
+
+        for e in ofac_hits:
+            if e.programs:
+                sanction_programs.extend(e.programs)
+            sanction_lists.append("OFAC SDN")
+            sanction_details.append({
+                "name": e.name,
+                "score": round(e.score or 0, 2),
+                "programs": (e.programs or [])[:3],
+                "remarks": (e.remarks or "")[:200] or None,
+            })
+        for e in csl_hits:
+            if e.programs:
+                sanction_programs.extend(e.programs)
+            sanction_lists.append("Trade.gov CSL")
+
+        sanction_programs = list(dict.fromkeys(sanction_programs))[:6]
+        sanction_lists = list(dict.fromkeys(sanction_lists))
+
+        # ── Corporate structure (GLEIF) ───────────────────────────────────
+        corporate_info: dict[str, Any] = {}
+        country: str | None = None
+
+        def _name_matches(query: str, candidate: str) -> bool:
+            """Check that a GLEIF/OC result name actually corresponds to the query.
+
+            For queries with 4+ char tokens, require at least one shared token.
+            For short names (e.g. ZTE, BYD), fall back to case-insensitive substring.
+            """
+            q_low, c_low = query.lower(), candidate.lower()
+            q_tokens = set(re.findall(r"[a-z0-9]{4,}", q_low))
+            if not q_tokens:
+                # Short ticker/acronym: require the full query as a word boundary match
+                return bool(re.search(r"\b" + re.escape(q_low) + r"\b", c_low))
+            c_tokens = set(re.findall(r"[a-z0-9]{4,}", c_low))
+            return bool(q_tokens & c_tokens)
+
+        lei_records = r.get("gleif") or []
+        lei_records = [rec for rec in lei_records if _name_matches(name, rec.legal_name)]
+
+        # Pull GLEIF structural data (LEI, status) but don't commit country yet —
+        # yfinance is more authoritative for listed companies' actual HQ.
+        gleif_country: str | None = None
+        if lei_records:
+            rec = lei_records[0]
+            gleif_country = rec.country
+            corporate_info = {
+                "legal_name": rec.legal_name,
+                "lei": rec.lei,
+                "country": rec.country,
+                "status": rec.status,
+            }
+            try:
+                parent = await asyncio.wait_for(gleif_get_ultimate_parent(rec.lei), timeout=6.0)
+                if parent:
+                    corporate_info["ultimate_parent_lei"] = parent.parent_id
+            except Exception:
+                pass
+
+        # Officers from OpenCorporates
+        oc_companies = [c for c in (r.get("oc") or []) if _name_matches(name, c.name)]
+        officers: list[dict[str, str]] = []
+        oc_country: str | None = None
+        if oc_companies:
+            oc_co = oc_companies[0]
+            if oc_co.jurisdiction:
+                oc_country = oc_co.jurisdiction.split("_")[0].upper()
+            if not corporate_info.get("legal_name"):
+                corporate_info["legal_name"] = oc_co.name
+            if oc_co.incorporation_date:
+                corporate_info["incorporation_date"] = str(oc_co.incorporation_date)
+            if oc_co.registered_address:
+                corporate_info["registered_address"] = oc_co.registered_address
+            if oc_co.status:
+                corporate_info.setdefault("status", oc_co.status)
+            for off in (oc_co.officers or [])[:5]:
+                officers.append({"name": off.name, "role": off.role or ""})
+
+        # If officers not from OC, try the officer-by-name endpoint
+        if not officers:
+            try:
+                off_list = await asyncio.wait_for(oc_search_officers(name), timeout=8.0)
+                for off in off_list[:5]:
+                    officers.append({"name": off.name, "role": off.role or ""})
+            except Exception:
+                pass
+
+        # ICIJ offshore connections (API currently unavailable — always empty)
+        offshore_flags: list[dict[str, str]] = []
+
+        # ── Market data (ticker) ──────────────────────────────────────────
+        market_info: dict[str, Any] | None = None
+        exposure: dict[str, Any] | None = None
+        yf_country: str | None = None
+
+        if ticker:
+            profile = r.get("yf_profile")
+            price_data = r.get("yf_price")
+            holders = r.get("yf_holders") or []
+            analyst = r.get("yf_analyst")
+
+            if profile:
+                yf_country = profile.country  # most authoritative for listed companies
+            if profile and not corporate_info.get("legal_name"):
+                corporate_info["legal_name"] = profile.name
+
+            if price_data or profile:
+                current_price = price_data.current_price if price_data else None
+                change_pct = price_data.change_pct if price_data else None
+                hi52 = price_data.fifty_two_week_high if price_data else None
+                lo52 = price_data.fifty_two_week_low if price_data else None
+                pct_from_hi = (
+                    round((current_price - hi52) / hi52 * 100, 1)
+                    if current_price and hi52 else None
+                )
+                market_info = {
+                    "ticker": ticker,
+                    "current_price": round(current_price, 2) if current_price else None,
+                    "market_cap": profile.market_cap if profile else None,
+                    "change_pct": round(change_pct, 2) if change_pct else None,
+                    "sector": profile.sector if profile else None,
+                    "industry": profile.industry if profile else None,
+                    "exchange": profile.exchange if profile else None,
+                    "fifty_two_week_high": round(hi52, 2) if hi52 else None,
+                    "fifty_two_week_low": round(lo52, 2) if lo52 else None,
+                    "pct_from_52w_high": pct_from_hi,
+                    "analyst_target": analyst.target_price if analyst else None,
+                    "analyst_recommendation": analyst.recommendation if analyst else None,
+                    "analyst_count": analyst.num_analysts if analyst else None,
+                    "description": (profile.description or "")[:300] if profile and profile.description else None,
+                }
+
+            # Institutional holder exposure
+            if holders:
+                top_holders = []
+                for h in sorted(holders, key=lambda x: x.pct_held or 0, reverse=True)[:8]:
+                    top_holders.append({
+                        "name": h.holder_name,
+                        "pct_held": round(h.pct_held * 100, 2) if h.pct_held and h.pct_held < 1 else h.pct_held,
+                        "value_usd": h.value,
+                        "is_pension": _is_pension_or_sovereign(h.holder_name),
+                    })
+                pension_holders = [h for h in top_holders if h["is_pension"]]
+                total_usd = sum(h["value_usd"] for h in top_holders if h["value_usd"])
+                exposure = {
+                    "top_holders": top_holders,
+                    "pension_count": len(pension_holders),
+                    "pension_names": [h["name"] for h in pension_holders][:3],
+                    "total_institutional_usd": total_usd if total_usd else None,
+                }
+
+        # ── Resolve authoritative country ─────────────────────────────────
+        # Priority: yfinance (actual HQ) > OC > GLEIF (may be a subsidiary's country)
+        country = yf_country or oc_country or gleif_country
+        country_iso = _country_to_iso(country)
+
+        # ── Risk indicators ───────────────────────────────────────────────
+        risk_indicators: list[dict[str, str]] = []
+
+        risk_indicators.append({
+            "label": "Sanctions",
+            "value": "DESIGNATED" if is_sanctioned else "Clear",
+            "severity": "high" if is_sanctioned else "low",
+        })
+
+        if sanction_programs:
+            risk_indicators.append({
+                "label": "OFAC Programs",
+                "value": ", ".join(sanction_programs[:3]),
+                "severity": "high",
+            })
+
+        if country:
+            sev = "high" if country_iso in _HIGH_RISK_COUNTRIES else (
+                "medium" if country_iso in _ELEVATED_RISK_COUNTRIES else "low"
+            )
+            risk_indicators.append({"label": "Jurisdiction", "value": country, "severity": sev})
+
+        if corporate_info.get("status"):
+            st = corporate_info["status"]
+            risk_indicators.append({
+                "label": "Entity Status",
+                "value": st,
+                "severity": "low" if st in ("ACTIVE", "ISSUED") else "medium",
+            })
+
+        if market_info:
+            if market_info.get("market_cap"):
+                mc = market_info["market_cap"]
+                mc_str = f"${mc / 1e12:.2f}T" if mc >= 1e12 else (f"${mc / 1e9:.1f}B" if mc >= 1e9 else f"${mc / 1e6:.0f}M")
+                risk_indicators.append({"label": "Market Cap", "value": mc_str, "severity": "low"})
+            if market_info.get("pct_from_52w_high") is not None:
+                pct = market_info["pct_from_52w_high"]
+                sev = "high" if pct < -30 else ("medium" if pct < -15 else "low")
+                risk_indicators.append({
+                    "label": "vs 52-Week High",
+                    "value": f"{pct:+.1f}%",
+                    "severity": sev,
+                })
+            if market_info.get("analyst_recommendation"):
+                risk_indicators.append({
+                    "label": "Analyst Consensus",
+                    "value": market_info["analyst_recommendation"].upper(),
+                    "severity": "low",
+                })
+
+        if exposure and exposure.get("pension_count", 0) > 0:
+            risk_indicators.append({
+                "label": "Friendly Fire",
+                "value": f"{exposure['pension_count']} US pension/sovereign fund(s) exposed",
+                "severity": "medium",
+            })
+
+        # ── Overall risk level ────────────────────────────────────────────
+        if is_sanctioned or country_iso in _HIGH_RISK_COUNTRIES or offshore_flags:
+            risk_level = "HIGH"
+        elif ofac_hits or country_iso in _ELEVATED_RISK_COUNTRIES:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+
+        # ── Narrative — feed Claude real numbers ─────────────────────────
+        narrative_data: dict[str, Any] = {
+            "name": name,
+            "entity_type": entity_type,
+            "is_sanctioned": is_sanctioned,
+            "sanction_programs": sanction_programs,
+            "sanction_details": sanction_details[:2],
+            "country": country,
+            "risk_level": risk_level,
+            "officers": officers[:3],
+            "offshore_connections": len(offshore_flags),
+            "offshore_jurisdictions": [f["jurisdiction"] for f in offshore_flags[:3]],
+        }
+        if market_info:
+            narrative_data["market_cap"] = market_info.get("market_cap")
+            narrative_data["sector"] = market_info.get("sector")
+            narrative_data["industry"] = market_info.get("industry")
+            narrative_data["current_price"] = market_info.get("current_price")
+            narrative_data["pct_from_52w_high"] = market_info.get("pct_from_52w_high")
+            narrative_data["analyst_target"] = market_info.get("analyst_target")
+            narrative_data["analyst_recommendation"] = market_info.get("analyst_recommendation")
+        if exposure:
+            narrative_data["pension_funds_exposed"] = exposure.get("pension_names")
+            narrative_data["total_institutional_usd"] = exposure.get("total_institutional_usd")
+
+        narrative_prompt = (
+            f"You are an economic warfare intelligence analyst. Write a 4-6 sentence risk "
+            f"assessment for '{name}' (type: {entity_type}) as of {date.today().isoformat()}. "
+            f"Be specific: cite real numbers from the data (market cap, price vs 52-week high, "
+            f"analyst target, pension fund names, sanction programs, offshore jurisdictions). "
+            f"Cover: (1) sanctions/designation status with any specific program names, "
+            f"(2) if publicly traded — where the stock sits relative to 52-week range and what "
+            f"analyst consensus implies about trajectory, "
+            f"(3) any offshore/corporate structure risks, "
+            f"(4) friendly-fire exposure to US/allied institutional investors if applicable. "
+            f"If data is sparse, state what the absence of derogatory findings means. "
+            f"Do not invent numbers. Use only what is in the data below.\n"
+            f"Data: {json.dumps(narrative_data)}"
+        )
+        narrative = await _generate_narrative(narrative_prompt)
+
+        sources = ["OFAC SDN", "Trade.gov CSL"]
+        if lei_records:
+            sources.append("GLEIF")
+        if oc_companies or officers:
+            sources.append("OpenCorporates")
+        if ticker and market_info:
+            sources.append("Yahoo Finance")
+
+        return JSONResponse(content={
+            "name": name,
+            "entity_type": entity_type,
+            "risk_level": risk_level,
+            "is_sanctioned": is_sanctioned,
+            "sanction_programs": sanction_programs,
+            "sanction_lists": sanction_lists,
+            "sanction_details": sanction_details[:3],
+            "country": country,
+            "corporate_info": corporate_info,
+            "officers": officers,
+            "offshore_flags": offshore_flags,
+            "market_info": market_info,
+            "exposure": exposure,
+            "risk_indicators": risk_indicators,
+            "narrative": narrative,
+            "sources": sources,
+            "generated_at": _dt.utcnow().isoformat() + "Z",
+        })
+
+    except Exception as e:
+        logger.exception("entity_risk_report error for name=%s", name)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Follow-up Q&A ---
+
+class FollowUpMessage(BaseModel):
+    role: str   # 'user' | 'assistant'
+    text: str
+
+
+class FollowUpRequest(BaseModel):
+    question: str
+    context_type: str  # 'company' | 'orchestrator'
+    context: dict[str, Any]
+    history: list[FollowUpMessage] = []
+
+
+class FollowUpResponse(BaseModel):
+    answer: str
+
+
+def _fmt_pct(v: Any) -> str:
+    if v is None:
+        return "N/A"
+    return f"{float(v):+.1f}%"
+
+
+def _fmt_mc(v: Any) -> str:
+    if not v:
+        return "N/A"
+    v = float(v)
+    if v >= 1e12:
+        return f"${v / 1e12:.2f}T"
+    if v >= 1e9:
+        return f"${v / 1e9:.1f}B"
+    if v >= 1e6:
+        return f"${v / 1e6:.0f}M"
+    return f"${v:,.0f}"
+
+
+def _build_company_followup_system(ctx: dict[str, Any]) -> str:
+    target = ctx.get("target", {})
+    proj = ctx.get("projection", {})
+    summary = proj.get("summary", {})
+    comparables = ctx.get("comparables", [])
+    control_comparables = ctx.get("control_comparables", [])
+    narrative = ctx.get("narrative", "")
+    sanctions = target.get("sanctions_status", {})
+    metadata = ctx.get("metadata", {})
+
+    # Sanctions detail
+    csl_matches = sanctions.get("csl_matches", [])
+    csl_lines = "\n".join(
+        f"    · {m.get('name')} | Source: {m.get('source')} | Programs: {', '.join(m.get('programs', [])) or 'N/A'}"
+        + (f" | Start: {m.get('start_date')}" if m.get('start_date') else "")
+        for m in csl_matches[:5]
+    )
+
+    # Comparables — full detail
+    comp_lines = "\n".join(
+        f"  [{i+1}] {c.get('name')} ({c.get('ticker')}) — sanctioned {str(c.get('sanction_date', ''))[:10]}"
+        f"\n      Type: {c.get('sanction_type') or 'N/A'} | Sector: {c.get('sector') or 'N/A'}"
+        f"\n      Context: {c.get('description') or 'N/A'}"
+        for i, c in enumerate(comparables)
+    )
+
+    ctrl_lines = "\n".join(
+        f"  - {c.get('name')} ({c.get('ticker')})"
+        for c in control_comparables
+    )
+
+    day30_range = summary.get("day_30_range")
+    day60_range = summary.get("day_60_range")
+    day90_range = summary.get("day_90_range")
+    r30 = f"({_fmt_pct(day30_range[0])} to {_fmt_pct(day30_range[1])})" if day30_range else ""
+    r60 = f"({_fmt_pct(day60_range[0])} to {_fmt_pct(day60_range[1])})" if day60_range else ""
+    r90 = f"({_fmt_pct(day90_range[0])} to {_fmt_pct(day90_range[1])})" if day90_range else ""
+
+    coherence = proj.get("coherence_score")
+    coherence_str = f"{coherence * 100:.0f}% directional agreement" if coherence is not None else "N/A"
+    sourcing = metadata.get("sourcing_method", "unknown")
+
+    return f"""You are a senior economic warfare intelligence analyst. Answer every question with a direct, confident judgment. You have the full data below — use it to give a definitive answer, not a hedge.
+
+═══ TARGET ═══
+Company:      {target.get('name')} ({target.get('ticker')})
+Sector:       {target.get('sector')} | Industry: {target.get('industry')} | Country: {target.get('country')}
+Price:        ${float(target.get('current_price') or 0):.2f} (day change: {_fmt_pct(target.get('change_pct'))})
+Market Cap:   {_fmt_mc(target.get('market_cap'))}
+Sanctioned:   {sanctions.get('is_sanctioned')}
+Programs:     {', '.join(sanctions.get('programs', [])) or 'None'}
+Lists:        {', '.join(sanctions.get('lists', [])) or 'None'}
+{f"CSL Matches:{chr(10)}{csl_lines}" if csl_lines else "CSL Matches:  None"}
+
+═══ PROJECTION (excess return vs sector ETF, based on {len(comparables)} comparable sanctions events) ═══
+  60d pre-event:  {_fmt_pct(summary.get('pre_event_decline'))}
+  30d post-event: {_fmt_pct(summary.get('day_30_post'))} {r30}
+  60d post-event: {_fmt_pct(summary.get('day_60_post'))} {r60}
+  90d post-event: {_fmt_pct(summary.get('day_90_post'))} {r90}
+  Max drawdown:   {_fmt_pct(summary.get('max_drawdown'))}
+  Coherence:      {coherence_str}
+  Sourcing:       {sourcing}
+
+═══ SANCTIONED COMPARABLE CASES ({len(comparables)}) ═══
+{comp_lines or '  None — no comparable cases were found.'}
+
+═══ CONTROL GROUP — NON-SANCTIONED PEERS ({len(control_comparables)}) ═══
+{ctrl_lines or '  None'}
+
+═══ ANALYST NARRATIVE ═══
+{narrative or 'None generated.'}
+
+─── HOW TO ANSWER ───
+• Lead with the answer. State your conclusion in the first sentence, then back it with numbers.
+• Cite exact figures, company names, dates, and programs — don't describe the data, use it.
+• When asked about trajectory or risk, state what the comparables show and commit to the most likely outcome.
+• Never hedge with phrases like "it's unclear," "we can't be certain," or "more data would be needed." Make the call from what you have.
+• Do NOT pad. Answer directly, then stop."""
+
+
+def _build_orchestrator_followup_system(ctx: dict[str, Any]) -> str:
+    query_info = ctx.get("query", {})
+    scenario = ctx.get("scenario_type", "").replace("_", " ")
+    exec_summary = ctx.get("executive_summary", "")
+    findings = ctx.get("findings", [])
+    friendly_fire = ctx.get("friendly_fire", [])
+    recommendations = ctx.get("recommendations", [])
+    confidence_summary = ctx.get("confidence_summary", {})
+    tool_results = ctx.get("tool_results", {})
+
+    findings_text = "\n".join(
+        f"  [{f.get('confidence', '?')}] {f.get('category', '')}: {f.get('finding', '')}"
+        for f in findings
+    )
+    ff_text = "\n".join(
+        f"  - {ff.get('entity')}: {ff.get('details') or [ff.get('exposure_type'), ff.get('estimated_impact')] and ' | '.join(filter(None, [ff.get('exposure_type'), ff.get('estimated_impact')])) or '—'}"
+        for ff in friendly_fire
+    )
+    rec_text = "\n".join(f"  {i+1}. {r}" for i, r in enumerate(recommendations))
+    conf_text = "\n".join(f"  {k}: {v}" for k, v in confidence_summary.items())
+
+    # Serialize raw tool results, truncated to stay within context limits
+    tool_results_json = json.dumps(tool_results, indent=2, default=str)
+    if len(tool_results_json) > 40000:
+        tool_results_json = tool_results_json[:40000] + "\n... [truncated]"
+
+    return f"""You are a senior economic warfare intelligence analyst. Answer every question with a direct, confident judgment. You have the full pipeline data below — use it to give a definitive answer, not a hedge.
+
+═══ ORIGINAL QUERY ═══
+{query_info.get('raw_query', 'N/A')}
+Scenario type: {scenario}
+
+═══ EXECUTIVE SUMMARY ═══
+{exec_summary}
+
+═══ FINDINGS ({len(findings)} total) ═══
+{findings_text or '  None'}
+
+═══ FRIENDLY FIRE ALERTS ({len(friendly_fire)}) ═══
+{ff_text or '  None'}
+
+═══ RECOMMENDATIONS ═══
+{rec_text or '  None'}
+
+═══ CONFIDENCE BY DOMAIN ═══
+{conf_text or '  None'}
+
+═══ RAW PIPELINE DATA (all tool results) ═══
+{tool_results_json or '  None collected'}
+
+─── HOW TO ANSWER ───
+• Lead with the answer. State your conclusion in the first sentence, then back it with specifics from the data.
+• Cite exact entities, figures, finding categories, and dates — don't describe the data, use it to make an argument.
+• Commit to the most supported interpretation. Do not present two equal alternatives when the data favors one.
+• Never hedge with phrases like "it's unclear," "we can't be certain," "the data is limited," or "more research is needed." Make the call from what you have.
+• Do NOT pad. Answer directly, then stop."""
+
+
+@app.post("/api/followup", response_model=FollowUpResponse)
+async def followup(req: FollowUpRequest) -> FollowUpResponse:
+    """Answer a follow-up question grounded in the current analysis context."""
+    client = _get_anthropic_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="AI not configured")
+
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    if req.context_type == "company":
+        system_prompt = _build_company_followup_system(req.context)
+    else:
+        system_prompt = _build_orchestrator_followup_system(req.context)
+
+    # Build multi-turn message list from history + current question
+    messages: list[dict[str, str]] = []
+    for msg in req.history:
+        messages.append({"role": msg.role, "content": msg.text})
+    messages.append({"role": "user", "content": question})
+
+    try:
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=config.model,
+                max_tokens=2500,
+                system=system_prompt,
+                messages=messages,
+            ),
+            timeout=60.0,
+        )
+        return FollowUpResponse(answer=response.content[0].text.strip())
+    except Exception as exc:
+        logger.warning("followup failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # --- Legacy note ---

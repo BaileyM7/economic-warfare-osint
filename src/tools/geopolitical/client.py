@@ -32,27 +32,75 @@ def _gdelt_date_range(days: int) -> str:
     return f"{start.strftime('%Y%m%d%H%M%S')}-{end.strftime('%Y%m%d%H%M%S')}"
 
 
+def _gdelt_domain(url: str) -> str:
+    """Extract the registered domain from a URL for deduplication purposes."""
+    # Strip scheme and path, keep only domain portion
+    try:
+        without_scheme = url.split("://", 1)[-1]
+        domain = without_scheme.split("/")[0].lower()
+        # Strip www. prefix for canonical domain
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
+    except Exception:
+        return url[:64]
+
+
+def _gdelt_dedup_key(article: dict[str, Any]) -> str:
+    """Generate a deduplication key from title + date, ignoring per-outlet URL differences.
+
+    GDELT returns one row per article URL, so a single real-world event covered by
+    N outlets produces N rows. We normalise to (date, normalised-title-tokens) so that
+    re-posts and near-duplicate headlines collapse to the same underlying incident.
+    """
+    date_str = article.get("seendate", "")[:8]  # YYYYMMDD
+    title = article.get("title", "")
+    # Lower-case, strip punctuation, keep only the first 8 significant tokens
+    import re
+    tokens = re.findall(r"[a-z0-9]+", title.lower())
+    # Drop stop words to prevent collisions on generic titles
+    _STOP = {"the", "a", "an", "in", "of", "and", "to", "is", "are", "for", "on", "at"}
+    sig_tokens = [t for t in tokens if t not in _STOP and len(t) > 2][:8]
+    return f"{date_str}:{'_'.join(sig_tokens)}"
+
+
 def _parse_gdelt_article(article: dict[str, Any]) -> GdeltEvent:
-    """Parse a single GDELT article/doc result into a GdeltEvent."""
+    """Parse a single GDELT article/doc result into a GdeltEvent.
+
+    NOTE: GDELT tone (-100 to +100) is a media-sentiment proxy, NOT the
+    Goldstein conflict scale (+10 to -10).  We store it in avg_tone only
+    and leave goldstein_scale as None to avoid conflating the two metrics.
+    """
     date_str = article.get("seendate", "")
     parsed_date = None
     if date_str:
         try:
             parsed_date = datetime.strptime(date_str[:8], "%Y%m%d")
         except (ValueError, IndexError):
-            pass
+            logger.debug("GDELT: could not parse date %r — skipping date for this article", date_str)
+
+    tone = article.get("tone", None)
+    # Validate tone range: GDELT tone is typically -100..+100
+    if tone is not None:
+        try:
+            tone = float(tone)
+            if not (-100.0 <= tone <= 100.0):
+                logger.debug("GDELT: tone value %r out of expected range, discarding", tone)
+                tone = None
+        except (TypeError, ValueError):
+            tone = None
 
     return GdeltEvent(
-        event_id=article.get("url", article.get("title", ""))[:128],
+        event_id=article.get("url", article.get("title", ""))[:256],
         date=parsed_date,
         actor1_name=article.get("sourcecountry", ""),
         actor1_country=article.get("sourcecountry", ""),
         actor2_name="",
         actor2_country="",
         event_code="",
-        goldstein_scale=article.get("tone", None),
+        goldstein_scale=None,   # GDELT Doc API does not return Goldstein scale; use avg_tone
         num_mentions=1,
-        avg_tone=article.get("tone", None),
+        avg_tone=tone,
         source_url=article.get("url", ""),
     )
 
@@ -83,7 +131,32 @@ async def gdelt_doc_search(
         return []
 
     articles = data.get("articles", [])
-    events = [_parse_gdelt_article(a) for a in articles]
+
+    # Deduplicate: collapse articles that are re-posts of the same underlying incident
+    # (same date + similar title tokens) keeping one representative article per domain.
+    seen_dedup_keys: dict[str, str] = {}  # dedup_key -> first domain that reported it
+    deduped_articles: list[dict[str, Any]] = []
+    for a in articles:
+        dk = _gdelt_dedup_key(a)
+        domain = _gdelt_domain(a.get("url", ""))
+        if dk not in seen_dedup_keys:
+            seen_dedup_keys[dk] = domain
+            deduped_articles.append(a)
+        # else: duplicate coverage of the same incident — skip
+
+    raw_count = len(articles)
+    deduped_count = len(deduped_articles)
+    if raw_count != deduped_count:
+        logger.info(
+            "GDELT dedup: %d raw articles → %d unique incidents (query=%r)",
+            raw_count, deduped_count, query
+        )
+
+    events = [_parse_gdelt_article(a) for a in deduped_articles]
+    # Attach deduplication metadata as a note on the first event if available
+    if events:
+        # Store raw vs deduped counts in a synthetic field for downstream use
+        events[0].num_mentions = raw_count  # repurpose num_mentions as raw article count
 
     set_cached(
         [e.model_dump(mode="json") for e in events],

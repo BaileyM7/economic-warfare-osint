@@ -70,6 +70,7 @@ class Orchestrator:
         # Step 3: Synthesize results
         _emit("[3/4] Synthesizing findings with Claude...")
         assessment = await self._synthesize(query, tool_results)
+        assessment.tool_results = tool_results
 
         # Step 4: Done
         _emit("[4/4] Analysis complete.")
@@ -189,10 +190,30 @@ class Orchestrator:
         # Determine scenario type from results
         scenario_type = "sanction_impact"  # default
 
+        # Count steps that returned only errors vs steps with real data
+        error_only_steps = [
+            k for k, v in tool_results.items()
+            if isinstance(v, dict) and set(v.keys()) <= {"error", "description"}
+        ]
+        data_steps = [k for k in tool_results if k not in error_only_steps]
+        if error_only_steps:
+            print(f"  [synthesize] {len(error_only_steps)} step(s) returned errors only: {error_only_steps}")
+
         results_text = json.dumps(tool_results, indent=2, default=str)
-        # Truncate if too long for context window
-        if len(results_text) > 50000:
-            results_text = results_text[:50000] + "\n... [truncated]"
+
+        # Truncate if too long for context window, but record what was lost
+        truncation_note = ""
+        _LIMIT = 50000
+        if len(results_text) > _LIMIT:
+            # Preserve metadata about the truncation so Claude knows data was cut
+            chars_dropped = len(results_text) - _LIMIT
+            truncation_note = (
+                f"\n\n[DATA TRUNCATED: {chars_dropped:,} characters dropped. "
+                f"{len(data_steps)} steps had data; {len(error_only_steps)} steps errored. "
+                "Findings that rely on data from truncated steps should be rated LOW confidence.]"
+            )
+            results_text = results_text[:_LIMIT] + truncation_note
+            print(f"  [synthesize] Tool results truncated: {chars_dropped:,} chars dropped")
 
         synthesis_system = SYSTEM_PROMPT + SYNTHESIS_SYSTEM_SUPPLEMENT
         response = await self.client.messages.create(
@@ -217,17 +238,59 @@ class Orchestrator:
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
-            print(f"[synthesize] JSON parse failed ({e}); response length={len(text)}. Using fallback.")
-            # Fallback: wrap raw text in assessment
-            data = {
-                "scenario_type": scenario_type,
-                "executive_summary": text[:500],
-                "findings": [],
-                "friendly_fire": [],
-                "recommendations": [],
-                "confidence_summary": {},
-                "sources_used": [],
-            }
+            print(f"[synthesize] JSON parse failed ({e}); retrying with strict JSON instruction...")
+            print(f"  [synthesize] Failed response (first 500 chars): {text[:500]!r}")
+
+            # Retry: send the broken response back and ask for clean JSON only
+            retry_response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=16000,
+                system=SYSTEM_PROMPT + SYNTHESIS_SYSTEM_SUPPLEMENT,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": SYNTHESIS_PROMPT.format(
+                            query=query,
+                            scenario_type=scenario_type,
+                            tool_results=results_text,
+                        ),
+                    },
+                    {"role": "assistant", "content": text},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your response was not valid JSON. Output ONLY the raw JSON object "
+                            "— no markdown, no prose, no explanation. Start your response with { "
+                            "and end with }."
+                        ),
+                    },
+                ],
+            )
+            retry_text = retry_response.content[0].text
+            retry_json_str = _extract_json(retry_text)
+            try:
+                data = json.loads(retry_json_str)
+                print("[synthesize] Retry succeeded.")
+            except json.JSONDecodeError as e2:
+                print(f"[synthesize] Retry also failed ({e2}). Extracting findings from raw text.")
+                # Last resort: surface the raw narrative as a single finding
+                # so the user sees something rather than a blank panel
+                summary = text[:600].strip()
+                data = {
+                    "scenario_type": scenario_type,
+                    "executive_summary": summary,
+                    "findings": [
+                        {
+                            "category": "Analysis",
+                            "finding": text[:2000].strip(),
+                            "confidence": "MEDIUM",
+                        }
+                    ],
+                    "friendly_fire": [],
+                    "recommendations": [],
+                    "confidence_summary": {},
+                    "sources_used": [],
+                }
 
         # Build ImpactAssessment
         try:
@@ -321,36 +384,84 @@ def _parse_string_tool_call(call_str: str) -> tuple[str, dict[str, Any]]:
     return tool_name, params
 
 
+def _extract_balanced_json(text: str, start: int, open_ch: str, close_ch: str) -> str | None:
+    """Extract a balanced JSON object/array from text[start:].
+
+    Properly tracks string literals so that { } [ ] inside quoted values
+    do not corrupt the bracket depth counter — the previous implementation
+    would terminate early when a finding contained curly braces in its text,
+    returning incomplete JSON that failed json.loads.
+    """
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for i in range(start, len(text)):
+        ch = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+
+    return None
+
+
 def _extract_json(text: str) -> str:
-    """Extract JSON from a response that may have markdown code blocks."""
-    # Try to find JSON in code blocks
-    if "```json" in text:
-        start = text.index("```json") + 7
-        end = text.index("```", start)
-        return text[start:end].strip()
-    if "```" in text:
-        start = text.index("```") + 3
-        end = text.index("```", start)
-        return text[start:end].strip()
-    # Try to find raw JSON (array or object) — prefer whichever container opens first
-    bracket_pos = text.find("[")
-    brace_pos = text.find("{")
-    if brace_pos != -1 and (bracket_pos == -1 or brace_pos < bracket_pos):
-        order = [("{", "}"), ("[", "]")]
-    else:
-        order = [("[", "]"), ("{", "}")]
-    for char, end_char in order:
-        if char in text:
-            start = text.index(char)
-            # Find the matching closing bracket
-            depth = 0
-            for i in range(start, len(text)):
-                if text[i] == char:
-                    depth += 1
-                elif text[i] == end_char:
-                    depth -= 1
-                if depth == 0:
-                    return text[start : i + 1]
+    """Extract the outermost JSON object from a response.
+
+    Strategy order:
+    1. Markdown ```json ... ``` code block (validate with json.loads)
+    2. Any ``` ... ``` code block (validate with json.loads)
+    3. Scan for first { that starts a parse-valid JSON object
+    4. Return the raw text as a last resort
+    """
+    # 1 & 2: code blocks
+    for prefix in ("```json", "```"):
+        if prefix in text:
+            block_start = text.index(prefix) + len(prefix)
+            block_end = text.find("```", block_start)
+            if block_end != -1:
+                candidate = text[block_start:block_end].strip()
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except json.JSONDecodeError:
+                    pass  # fall through to raw scan
+
+    # 3: scan for the first valid { ... } pair using string-aware depth tracking
+    pos = 0
+    while pos < len(text):
+        idx = text.find("{", pos)
+        if idx == -1:
+            break
+        candidate = _extract_balanced_json(text, idx, "{", "}")
+        if candidate:
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
+        pos = idx + 1
+
+    # 4: return raw text; caller will handle parse failure
     return text
 
 

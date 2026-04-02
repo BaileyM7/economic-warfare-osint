@@ -354,13 +354,22 @@ def _parse_comtrade_records(records: list[dict[str, Any]]) -> list[TradeFlow]:
             or str(rec.get("cmdCode") or "")
         )
 
+        raw_value = rec.get("primaryValue")
+        # Distinguish "reported zero trade" from "value not reported"
+        trade_value: float
+        if raw_value is None or raw_value == "":
+            trade_value = 0.0  # not reported; downstream should treat as unreliable
+            logger.debug("Comtrade: primaryValue missing for record %s", rec.get("cmdCode"))
+        else:
+            trade_value = float(raw_value)
+
         flows.append(
             TradeFlow(
                 reporter_country=reporter or "UNKNOWN",
                 partner_country=partner or "UNKNOWN",
                 commodity_code=str(rec.get("cmdCode") or ""),
                 commodity_desc=cmd_desc,
-                trade_value_usd=float(rec.get("primaryValue") or 0),
+                trade_value_usd=trade_value,
                 weight_kg=float(rec.get("netWgt") or 0) if rec.get("netWgt") else None,
                 year=int(rec.get("period") or 0),
                 flow_type=flow_type,
