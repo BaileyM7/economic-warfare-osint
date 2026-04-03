@@ -2496,7 +2496,16 @@ async def buildworkforce_poll_run(run_id: str):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
-# --- Legacy note ---
-# A previous revision had the async analysis runner disabled in this section.
-# The active implementation now lives near the /api/analyze endpoints above.
+# --- Static file catch-all (must be LAST route) ---
+# Serves root-level files from dist/ (favicon, logos) and SPA fallback
+
+@app.get("/{filename:path}")
+async def serve_static_or_spa(filename: str):
+    static_file = _DIST / filename
+    if static_file.is_file():
+        return FileResponse(str(static_file))
+    index = _DIST / "index.html"
+    if index.exists():
+        return FileResponse(str(index))
+    raise HTTPException(status_code=404)
 
