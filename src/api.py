@@ -192,9 +192,12 @@ async def _startup() -> None:
     init_db()
     if os.environ.get("EMISSARY_MOCK_DATA", "").lower() in ("1", "true", "yes"):
         seed_mock_data()
-    if not _browser_opened:
+    if not _browser_opened and not os.environ.get("RENDER"):
         _browser_opened = True
-        webbrowser.open("http://localhost:8000")
+        try:
+            webbrowser.open("http://localhost:8000")
+        except Exception:
+            pass
 
 
 # --- WebSocket connection manager for real-time monitoring ---
