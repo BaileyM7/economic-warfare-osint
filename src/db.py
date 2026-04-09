@@ -203,7 +203,7 @@ Immediate implementation of COA "Maritime Lane Asset Freeze" targeting ESC and i
 **Confidence**: HIGH (0.85) — based on corroborated SIGINT, AIS data, and HUMINT from regional maritime authorities.
 
 ---
-*Classification: UNCLASSIFIED // EXERCISE ONLY*""",
+*EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
              now, now),
             (_new_id(), "Strait of Malacca Congestion Assessment", "bda_report", "reviewing", None,
              """# Strait of Malacca Congestion — Battle Damage Assessment
@@ -241,7 +241,7 @@ Actions achieved approximately 60% reduction in target activity, consistent with
 Continued enforcement will require sustained naval presence. Risk of normalization — prolonged operations may reduce deterrent effect. Recommend 90-day reassessment window.
 
 ---
-*Classification: UNCLASSIFIED // EXERCISE ONLY*""",
+*EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
              now, now),
             (_new_id(), "Semiconductor Supply Chain Vulnerability Brief", "situation_update", "finalized", coa_samples[1][0],
              """# Semiconductor Supply Chain — Situation Update
@@ -268,7 +268,7 @@ Embargo effectiveness is projected at 18-24 month delay to PRC 5nm-equivalent ca
 Proceed with Phase 1 Semiconductor Embargo while strengthening multilateral coordination with Japan and Netherlands. Critical supplementary actions include enhanced end-use monitoring and expansion of Denied Persons List to cover identified procurement networks.
 
 ---
-*Classification: UNCLASSIFIED // EXERCISE ONLY*""",
+*EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
              now, now),
             (_new_id(), "Carrier Group 5 Fuel Logistics", "bda_report", "draft", None,
              """# Carrier Group 5 Fuel Logistics Assessment
@@ -293,7 +293,7 @@ No immediate logistics threat identified, but sustained operations at current te
 Pre-position additional fuel stocks at Diego Garcia as contingency reserve. Coordinate with Republic of Korea Navy for emergency bunkering agreements at Busan.
 
 ---
-*Classification: UNCLASSIFIED // EXERCISE ONLY*""",
+*EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
              now, now),
         ]
         for b in briefing_samples:
