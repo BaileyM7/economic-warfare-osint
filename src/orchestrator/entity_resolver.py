@@ -10,9 +10,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-import anthropic
-
 from src.common.config import config
+from src.llm import get_anthropic_client
 
 _CLASSIFIER_PROMPT = """\
 You are an entity classifier for an economic warfare OSINT system.
@@ -35,17 +34,25 @@ IMPORTANT: If the query mentions a single named entity (vessel, person, company,
 context, hypotheticals, or asks "what should we do", classify by the PRIMARY entity type, NOT as \
 orchestrator. Examples:
 - "What should I do about the Ever Given, given current events in Iran?" → vessel (Ever Given)
+- "Ever Given" → vessel (Ever Given) — well-known container ship that blocked the Suez Canal
+- "LADY M" → vessel (LADY M) — sanctioned superyacht
 - "What if we sanction TSMC?" → company (TSMC)
 - "How should we respond to Viktor Vekselberg's sanctions evasion?" → person (Viktor Vekselberg)
 - "What export controls should apply to semiconductors given China tensions?" → sector (semiconductor)
 The system will use the full question text to generate context-aware recommendations.
+
+Use your knowledge of well-known vessels, persons, companies, and sectors when classifying. \
+Famous ship names (Ever Given, Lady M, Cosco Shipping, MSC vessels, dark fleet tankers, etc.) \
+should be classified as "vessel" even without explicit "ship" or "vessel" keywords. Famous \
+sanctioned individuals (oligarchs, ministers, sanctioned business figures) should be "person".
 
 Extract the canonical entity name or identifier from the query. For vessels, return only the vessel \
 name or numeric identifier — strip command words like "track"/"find"/"show me"/"what should I do about", \
 articles like "the"/"a", and type words like "vessel"/"ship"/"tanker". For orchestrator queries, set \
 entity_name to the full query.
 
-Default to "company" if the entity is ambiguous.
+Default to "company" only if the entity is genuinely ambiguous AND you have no knowledge of it as \
+a vessel, person, or sector. Do NOT default to company for proper nouns you recognize as vessels.
 
 Query: {query}
 
@@ -62,12 +69,25 @@ class EntityResolution:
 
 
 async def resolve_entity_type(query: str) -> EntityResolution:
-    """Classify the query entity type and extract the canonical name using Claude."""
-    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    """Classify the query entity type and extract the canonical name using Claude.
+
+    Uses temperature=0 for deterministic classification — we want the same
+    query to always return the same type, not creative variation. Also uses
+    the shared client so it inherits the SDK's retry-on-overload behavior.
+    """
+    client = get_anthropic_client()
+    if client is None:
+        return EntityResolution(
+            entity_type="company",
+            entity_name=query,
+            confidence=0.0,
+            reasoning="Anthropic API not configured",
+        )
 
     response = await client.messages.create(
         model=config.model,
         max_tokens=256,
+        temperature=0,  # deterministic classification
         messages=[{"role": "user", "content": _CLASSIFIER_PROMPT.format(query=query)}],
     )
 
