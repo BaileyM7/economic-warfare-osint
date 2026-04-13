@@ -144,31 +144,31 @@ async def get_monitoring_macro():
         },
     }
 
-    # --- Brent crude + VIX via FRED ---
-    from src.tools.economic.client import FREDClient
-    fred = FREDClient()
-    if fred.api_key:
-        try:
-            brent_obs = await fred.get_series_observations("DCOILBRENTEU", limit=10)
-            vals = [float(o["value"]) for o in brent_obs if o.get("value") and o["value"] != "."]
-            if vals:
-                result["brent"] = round(vals[0], 2)
-                result["sparklines"]["capital_flight"] = [round(v, 2) for v in reversed(vals)]
-        except Exception as exc:
-            logger.warning("FRED Brent fetch failed: %s", exc)
-
-        try:
-            vix_obs = await fred.get_series_observations("VIXCLS", limit=10)
-            vals = [float(o["value"]) for o in vix_obs if o.get("value") and o["value"] != "."]
-            if vals:
-                result["vix"] = round(vals[0], 2)
-                result["sparklines"]["currency_vol"] = [round(v, 2) for v in reversed(vals)]
-        except Exception as exc:
-            logger.warning("FRED VIX fetch failed: %s", exc)
-
-    # --- ICE DXY + USD/CNY via yfinance ---
+    # --- All macro data via yfinance (real-time, no FRED publication lag) ---
     try:
         yf = YFinanceClient()
+
+        # Brent crude futures (matches publicly-reported ~$100/bbl, not FRED's stale ~$120)
+        try:
+            brent_ticker = await asyncio.to_thread(_yf_ticker_history, "BZ=F", "15d")
+            if brent_ticker is not None and len(brent_ticker) > 0:
+                closes = [float(c) for c in brent_ticker["Close"].tolist() if c == c]
+                if closes:
+                    result["brent"] = round(closes[-1], 2)
+                    result["sparklines"]["capital_flight"] = [round(c, 2) for c in closes[-10:]]
+        except Exception as exc:
+            logger.warning("yfinance Brent fetch failed: %s", exc)
+
+        # VIX
+        try:
+            vix_ticker = await asyncio.to_thread(_yf_ticker_history, "^VIX", "15d")
+            if vix_ticker is not None and len(vix_ticker) > 0:
+                closes = [float(c) for c in vix_ticker["Close"].tolist() if c == c]
+                if closes:
+                    result["vix"] = round(closes[-1], 2)
+                    result["sparklines"]["currency_vol"] = [round(c, 2) for c in closes[-10:]]
+        except Exception as exc:
+            logger.warning("yfinance VIX fetch failed: %s", exc)
 
         # ICE DXY (matches the publicly-reported ~98 value, not FRED's broad index)
         try:
