@@ -15,6 +15,13 @@ class Officer(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     nationality: str | None = None
+    # Optional linkage back to the company this officer record came from.
+    # Populated by /officers/search hits where the company is embedded;
+    # left None when the officer record is fetched standalone.
+    company_name: str | None = None
+    company_jurisdiction: str | None = None
+    company_number: str | None = None
+    company_url: str | None = None
 
 
 class CompanyRecord(BaseModel):

@@ -341,6 +341,55 @@ class SECEdgarClient:
         set_cached(data, self.CACHE_NS, action="submissions", cik=cik_padded)
         return data
 
+    async def get_insider_filings(
+        self, name: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Search EDGAR for recent Form 4 filings that mention the named individual.
+
+        Form 4 = "Statement of Changes in Beneficial Ownership" — filed whenever
+        a company officer, director, or 10%-shareholder buys or sells stock.
+        Searching by person name reveals which public companies the subject is an
+        insider at and the recency of their transaction activity.
+
+        Results are cached 1 h. Returns an empty list on any failure.
+        """
+        cached = get_cached(self.CACHE_NS, action="form4", name=name)
+        if cached is not None:
+            return cached
+
+        start_dt = (
+            datetime.utcnow() - timedelta(days=730)
+        ).strftime("%Y-%m-%d")
+
+        try:
+            data = await fetch_json(
+                "https://efts.sec.gov/LATEST/search-index",
+                params={
+                    "q": f'"{name}"',
+                    "forms": "4",
+                    "dateRange": "custom",
+                    "startdt": start_dt,
+                },
+                headers=SEC_HEADERS,
+            )
+        except Exception as exc:
+            logger.warning("EDGAR Form 4 search failed for %r: %s", name, exc)
+            return []
+
+        results: list[dict[str, Any]] = []
+        for hit in (data.get("hits", {}).get("hits", []) or [])[:limit]:
+            src = hit.get("_source", {})
+            display = src.get("display_names") or []
+            results.append({
+                "form_type": src.get("form_type", "4"),
+                "company": src.get("entity_name") or (display[0] if display else "?"),
+                "file_date": src.get("file_date"),
+                "period_of_report": src.get("period_of_report"),
+            })
+
+        set_cached(results, self.CACHE_NS, ttl=3600, action="form4", name=name)
+        return results
+
 
 # ---------------------------------------------------------------------------
 # FRED client
