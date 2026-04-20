@@ -84,6 +84,23 @@ def init_db() -> None:
                 created_at TEXT,
                 FOREIGN KEY (exercise_id) REFERENCES exercises(id)
             );
+
+            CREATE TABLE IF NOT EXISTS usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                username TEXT,
+                feature TEXT,
+                path TEXT,
+                method TEXT,
+                status_code INTEGER,
+                latency_ms INTEGER,
+                client_ip TEXT,
+                detail TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_usage_kind ON usage_events(kind);
+            CREATE INDEX IF NOT EXISTS idx_usage_username ON usage_events(username);
             """
         )
         conn.commit()
@@ -382,6 +399,105 @@ def log_activity(
             (_now(), event_type, source, message, severity, related_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def log_usage_event(
+    kind: str,
+    username: str | None = None,
+    feature: str | None = None,
+    path: str | None = None,
+    method: str | None = None,
+    status_code: int | None = None,
+    latency_ms: int | None = None,
+    client_ip: str | None = None,
+    detail: str | None = None,
+) -> None:
+    """Insert a row into usage_events. Best-effort: swallows DB errors so logging never breaks a request."""
+    try:
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO usage_events "
+                "(timestamp, kind, username, feature, path, method, status_code, latency_ms, client_ip, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (_now(), kind, username, feature, path, method, status_code, latency_ms, client_ip, detail),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def query_usage_summary(days: int = 30) -> dict:
+    """Return aggregate usage stats for the last N days."""
+    conn = get_db()
+    try:
+        cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
+        cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        logins_per_day = [
+            dict(row) for row in conn.execute(
+                "SELECT substr(timestamp, 1, 10) AS day, "
+                "       SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) AS success, "
+                "       SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) AS failure, "
+                "       COUNT(DISTINCT username) AS unique_users "
+                "FROM usage_events "
+                "WHERE kind = 'login_attempt' AND timestamp >= ? "
+                "GROUP BY day ORDER BY day",
+                (cutoff_iso,),
+            ).fetchall()
+        ]
+
+        top_features = [
+            dict(row) for row in conn.execute(
+                "SELECT feature, COUNT(*) AS hits, COUNT(DISTINCT username) AS unique_users "
+                "FROM usage_events "
+                "WHERE kind = 'api_request' AND feature IS NOT NULL AND timestamp >= ? "
+                "GROUP BY feature ORDER BY hits DESC LIMIT 20",
+                (cutoff_iso,),
+            ).fetchall()
+        ]
+
+        top_users = [
+            dict(row) for row in conn.execute(
+                "SELECT username, COUNT(*) AS events, MAX(timestamp) AS last_seen "
+                "FROM usage_events "
+                "WHERE username IS NOT NULL AND timestamp >= ? "
+                "GROUP BY username ORDER BY events DESC LIMIT 20",
+                (cutoff_iso,),
+            ).fetchall()
+        ]
+
+        recent_logins = [
+            dict(row) for row in conn.execute(
+                "SELECT timestamp, username, status_code, client_ip, detail "
+                "FROM usage_events "
+                "WHERE kind = 'login_attempt' "
+                "ORDER BY timestamp DESC LIMIT 50"
+            ).fetchall()
+        ]
+
+        top_endpoints = [
+            dict(row) for row in conn.execute(
+                "SELECT feature, method, path, COUNT(*) AS hits, COUNT(DISTINCT username) AS unique_users "
+                "FROM usage_events "
+                "WHERE kind = 'api_request' AND path IS NOT NULL AND timestamp >= ? "
+                "GROUP BY feature, method, path ORDER BY hits DESC LIMIT 50",
+                (cutoff_iso,),
+            ).fetchall()
+        ]
+
+        return {
+            "window_days": days,
+            "logins_per_day": logins_per_day,
+            "top_features": top_features,
+            "top_endpoints": top_endpoints,
+            "top_users": top_users,
+            "recent_logins": recent_logins,
+        }
     finally:
         conn.close()
 

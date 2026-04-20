@@ -28,6 +28,11 @@ from src.common.config import config
 from src.fusion.renderer import render_entity_graph
 from src.orchestrator.entity_resolver import resolve_entity_type
 from src.orchestrator.main import Orchestrator
+from src.orchestrator.person_search import (
+    build_person_network,
+    build_risk_factors,
+    search_persons,
+)
 from src.orchestrator.tool_registry import ToolRegistry
 from src.sanctions_impact import run_sanctions_impact, SANCTIONS_COMPARABLES
 from src.tools.corporate.client import (
@@ -38,11 +43,11 @@ from src.tools.corporate.client import (
     oc_search_companies,
     icij_search,
 )
-from src.tools.market.client import YFinanceClient, _is_pension_or_sovereign
+from src.tools.market.client import YFinanceClient, SECEdgarClient, _is_pension_or_sovereign
 from src.tools.geopolitical.client import refresh_acled_token, gdelt_doc_search
 from src.tools.geopolitical.server import get_bilateral_tensions
 from src.tools.sanctions.client import OFACClient, OpenSanctionsClient, SanctionsClient
-from src.tools.screening.client import search_csl
+from src.tools.screening.client import search_csl, search_pep
 from src.tools.trade.server import get_supply_chain_exposure
 from src.tools.vessels.client import vessel_find, vessel_by_mmsi, vessel_by_imo, vessel_history, vessel_port_calls, infer_port_stops
 from src.tools.vessels.geo import get_countries_from_positions
@@ -55,7 +60,9 @@ from src.routers.monitoring import router as monitoring_router
 from src.routers.briefings import router as briefings_router
 from src.routers import briefings as _briefings_mod
 from src.routers.exercises import router as exercises_router
-from src.auth import require_auth, verify_token
+from src.analytics import UsageTrackingMiddleware
+from src.auth import require_admin, require_auth, verify_token
+from src.routers.admin import router as admin_router
 from src.routers.auth import router as auth_router
 
 logger = logging.getLogger(__name__)
@@ -163,6 +170,8 @@ app = FastAPI(
     version="0.1.0",
 )
 
+app.add_middleware(UsageTrackingMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -174,6 +183,7 @@ app.add_middleware(
 # --- Include Emissary routers ---
 # Auth router is registered FIRST and is NOT gated by auth.
 app.include_router(auth_router)
+app.include_router(admin_router, dependencies=[Depends(require_admin)])
 app.include_router(coa_router, dependencies=[Depends(require_auth)])
 app.include_router(monitoring_router, dependencies=[Depends(require_auth)])
 app.include_router(briefings_router, dependencies=[Depends(require_auth)])
@@ -266,6 +276,17 @@ class EntityGraphRequest(BaseModel):
 class PersonProfileRequest(BaseModel):
     name: str
     analyst_question: str = ""
+
+
+class PersonSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
+
+
+class PersonNetworkRequest(BaseModel):
+    name: str
+    depth: int = 1                  # 1 or 2
+    max_per_node: int = 15
 
 
 class VesselTrackRequest(BaseModel):
@@ -887,11 +908,14 @@ async def person_profile(req: PersonProfileRequest):
         sanctions_client = SanctionsClient()
         ofac_client = sanctions_client.ofac
 
+        sec_client = SECEdgarClient()
         csl_task = asyncio.create_task(search_csl(name))
         ofac_task = asyncio.create_task(ofac_client.search(name, entity_type="person"))
         officers_task = asyncio.create_task(oc_search_officers(name))
         icij_task = asyncio.create_task(icij_search(name, entity_type="officer"))
         gdelt_task = asyncio.create_task(gdelt_doc_search(name, days=30))
+        pep_task = asyncio.create_task(search_pep(name))
+        edgar_task = asyncio.create_task(sec_client.get_insider_filings(name))
 
         (
             csl_hits_raw,
@@ -899,8 +923,11 @@ async def person_profile(req: PersonProfileRequest):
             officer_records,
             icij_hits,
             gdelt_events,
+            pep_hits,
+            insider_filings,
         ) = await asyncio.gather(
             csl_task, ofac_task, officers_task, icij_task, gdelt_task,
+            pep_task, edgar_task,
             return_exceptions=True,
         )
 
@@ -912,6 +939,8 @@ async def person_profile(req: PersonProfileRequest):
         officer_records = _safe(officer_records, [])
         icij_hits = _safe(icij_hits, [])
         gdelt_events = _safe(gdelt_events, {})
+        pep_hits = _safe(pep_hits, [])
+        insider_filings = _safe(insider_filings, [])
 
         sanctions_hits = sanctions_client._csl_to_entries(csl_hits_raw or [])
 
@@ -1029,13 +1058,18 @@ async def person_profile(req: PersonProfileRequest):
             ],
             "offshore_connection_count": len(offshore),
             "recent_event_count": len(recent_events),
-            "sources_searched": ["OpenSanctions", "OFAC SDN", "OpenCorporates",
-                                  "ICIJ Offshore Leaks", "GDELT"],
+            "pep_positions": [p for h in pep_hits for p in h.get("positions", [])][:4],
+            "insider_filing_count": len(insider_filings),
+            "sources_searched": [
+                "OpenSanctions", "OFAC SDN", "OpenCorporates",
+                "ICIJ Offshore Leaks", "GDELT", "Wikidata PEP", "SEC EDGAR Form 4",
+            ],
         }
         person_prompt = (
             f"You are an economic warfare analyst writing a due diligence summary for {name}. "
             f"Sources searched: OpenSanctions, OFAC SDN, OpenCorporates (corporate affiliations), "
-            f"ICIJ Offshore Leaks, GDELT (recent news). Data as of {date.today().isoformat()}.\n"
+            f"ICIJ Offshore Leaks, GDELT (recent news), Wikidata (political exposure), "
+            f"SEC EDGAR Form 4 (insider transactions). Data as of {date.today().isoformat()}.\n"
             f"Findings: {json.dumps(compact)}\n"
             f"Write 3-5 sentences characterizing this individual's risk profile. "
             f"If no derogatory findings were found, state that clearly and note what the "
@@ -1050,6 +1084,17 @@ async def person_profile(req: PersonProfileRequest):
         }
         narrative, recommendations = await asyncio.gather(narrative_task, coa_task)
 
+        risk_factors = build_risk_factors({
+            "is_sanctioned": is_sanctioned,
+            "sanction_programs": sanction_programs,
+            "sanctions_hits": sanctions_hits,
+            "ofac_hits": ofac_hits,
+            "affiliations": affiliations,
+            "offshore": offshore,
+            "recent_events": recent_events,
+            "pep_hits": pep_hits,
+        })
+
         return JSONResponse(content={
             "name": name,
             "is_sanctioned": is_sanctioned,
@@ -1063,11 +1108,66 @@ async def person_profile(req: PersonProfileRequest):
             "graph": graph_result,
             "narrative": narrative,
             "recommendations": recommendations,
-            "sources": ["OpenSanctions", "OFAC SDN", "OpenCorporates", "ICIJ Offshore Leaks", "GDELT"],
+            "risk_factors": [rf.model_dump() for rf in risk_factors],
+            "insider_filings": insider_filings,
+            "pep_hits": pep_hits,
+            "sources": [
+                "OpenSanctions", "OFAC SDN", "OpenCorporates",
+                "ICIJ Offshore Leaks", "GDELT", "Wikidata PEP", "SEC EDGAR Form 4",
+            ],
         })
 
     except Exception as e:
         logger.exception("person_profile error for name=%s", name)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Person Search (autocomplete) endpoint ---
+
+
+@app.post("/api/person/search", dependencies=[Depends(require_auth)])
+async def person_search(req: PersonSearchRequest):
+    """Lightweight candidate-disambiguation search.
+
+    Concurrent fan-out to OpenSanctions (CSL) and OpenCorporates officer
+    search; merges, dedupes, and ranks by `rank_candidates`. Returns at most
+    `req.limit` candidates. Distinct from `/api/person-profile`, which is the
+    heavy multi-source vetting run on a single canonical name.
+    """
+    query = (req.query or "").strip()
+    if len(query) < 2:
+        return JSONResponse(content=[])
+    try:
+        candidates = await search_persons(query, limit=req.limit)
+        return JSONResponse(content=[c.model_dump() for c in candidates])
+    except Exception as e:
+        logger.exception("person_search error for query=%s", query)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Person Network endpoint ---
+
+
+@app.post("/api/person/network", dependencies=[Depends(require_auth)])
+async def person_network(req: PersonNetworkRequest):
+    """Build a co-officer network around `name`.
+
+    depth=1: name -> companies they sit on -> co-officers of those companies.
+    depth=2: walks one more step from each level-1 co-officer.
+    Returns vis.js-shaped {nodes, edges} with sanctions overlay on persons.
+    """
+    name = (req.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    if req.depth not in (1, 2):
+        raise HTTPException(status_code=400, detail="depth must be 1 or 2")
+    try:
+        result = await build_person_network(
+            name=name, depth=req.depth, max_per_node=req.max_per_node,
+        )
+        return JSONResponse(content=result.model_dump(by_alias=True))
+    except Exception as e:
+        logger.exception("person_network error for name=%s depth=%s", name, req.depth)
         raise HTTPException(status_code=500, detail=str(e))
 
 
