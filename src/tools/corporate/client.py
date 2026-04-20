@@ -68,12 +68,17 @@ def _parse_company(raw: dict[str, Any]) -> CompanyRecord:
 
 def _parse_officer(raw: dict[str, Any]) -> Officer:
     o = raw.get("officer", raw)
+    company = o.get("company") or {}
     return Officer(
         name=o.get("name", ""),
         role=o.get("position", o.get("role", "")),
         start_date=_parse_date(o.get("start_date")),
         end_date=_parse_date(o.get("end_date")),
         nationality=o.get("nationality"),
+        company_name=company.get("name") or None,
+        company_jurisdiction=company.get("jurisdiction_code") or None,
+        company_number=company.get("company_number") or None,
+        company_url=company.get("opencorporates_url") or None,
     )
 
 
