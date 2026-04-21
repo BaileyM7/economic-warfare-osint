@@ -132,7 +132,7 @@ def seed_mock_data() -> None:
     conn = get_db()
     try:
         # Clear all tables
-        for table in ("injects", "exercises", "briefings", "activity_log", "coas"):
+        for table in ("briefings", "activity_log", "coas"):
             conn.execute(f"DELETE FROM {table}")
         conn.commit()
 
@@ -319,48 +319,14 @@ Pre-position additional fuel stocks at Diego Garcia as contingency reserve. Coor
                 b,
             )
 
-        # --- Exercise + Injects ---
-        exercise_id = _new_id()
-        conn.execute(
-            "INSERT INTO exercises (id, name, status, created_at) VALUES (?, ?, ?, ?)",
-            (exercise_id, "Global Sentinel 24", "active", now),
-        )
-        inject_samples = [
-            (_new_id(), exercise_id, "Intelligence Report", '["INDOPACOM"]',
-             "SIGINT intercept confirms PRC Navy South Sea Fleet conducting unscheduled live-fire exercises in disputed waters near Scarborough Shoal. Assess high probability of escalatory signaling.",
-             "08:00", "HIGH", "delivered", now),
-            (_new_id(), exercise_id, "Physical Threat Event", '["INDOPACOM", "CYBERCOM"]',
-             "Dark fleet tanker disabled in main transit lane of Strait of Malacca. AIS data suggests deliberate positioning. Regional maritime traffic diverted.",
-             "10:30", "HIGH", "delivered", now),
-            (_new_id(), exercise_id, "Diplomatic Cable", '["STATE DEPT"]',
-             "PRC Foreign Ministry issues formal demarche regarding US naval presence in Taiwan Strait. Requests immediate withdrawal of DDG assets within 72 hours.",
-             "16:45", "MED", "pending", now),
-            (_new_id(), exercise_id, "Infrastructure Failure", '["CYBERCOM", "INDOPACOM"]',
-             "Port of Singapore automated scheduling system experiencing intermittent failures consistent with cyber intrusion. Vessel berthing delays accumulating.",
-             "20:00", "HIGH", "pending", now),
-            (_new_id(), exercise_id, "Social Media Misinfo", '["STATE DEPT", "ALL"]',
-             "Coordinated social media campaign detected across Weibo and Telegram channels claiming US Navy vessel collision in South China Sea. No incident confirmed. Narrative gaining traction in regional media.",
-             "23:30", "LOW", "pending", now),
-        ]
-        for inj in inject_samples:
-            conn.execute(
-                "INSERT INTO injects (id, exercise_id, inject_type, target_groups, content, scheduled_offset, urgency, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                inj,
-            )
-
         # --- Activity Log entries ---
         activity_entries = [
             (now, "system_startup", "system", "Emissary platform initialized with mock data", "info", None),
-            (now, "exercise_created", "system", "Exercise 'Global Sentinel 24' created", "info", exercise_id),
-            (now, "exercise_status_changed", "system", "Exercise status changed to active", "info", exercise_id),
         ]
         for s in coa_samples:
             activity_entries.append((now, "coa_created", "system", f"COA '{s[1]}' created", "info", s[0]))
         for b in briefing_samples:
             activity_entries.append((now, "briefing_created", "system", f"Briefing '{b[1]}' created", "info", b[0]))
-        for inj in inject_samples[:2]:  # Only the delivered ones
-            activity_entries.append((now, "inject_created", "system", f"Inject '{inj[2]}' added at T+{inj[5]}", "info", inj[0]))
-            activity_entries.append((now, "inject_delivered", "system", f"Inject '{inj[2]}' delivered to {inj[3]}", "info", inj[0]))
         activity_entries.append((now, "alert", "monitor", "Participant deviation detected in Sector 4", "warning", None))
         activity_entries.append((now, "alert", "monitor", "Critical threshold exceeded on maritime traffic volume near Malacca Strait", "error", None))
 
@@ -371,7 +337,7 @@ Pre-position additional fuel stocks at Diego Garcia as contingency reserve. Coor
             )
 
         conn.commit()
-        print(f"Mock data seeded: {len(coa_samples)} COAs, {len(briefing_samples)} briefings, 1 exercise, {len(inject_samples)} injects, {len(activity_entries)} activity entries")
+        print(f"Mock data seeded: {len(coa_samples)} COAs, {len(briefing_samples)} briefings, {len(activity_entries)} activity entries")
     finally:
         conn.close()
 
