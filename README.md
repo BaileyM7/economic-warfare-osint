@@ -43,6 +43,21 @@ Sources that need no key: OFAC SDN, OpenSanctions, GLEIF, ICIJ Offshore Leaks, G
 uv run python -m src.orchestrator.main "What happens if we sanction Fujian Jinhua?"
 ```
 
+## Wargame Tab
+
+The `/wargame` tab (geopolitical agent simulation) requires a separately
+deployed **swarm backend** microservice. The ported frontend lives in
+[frontend/src/wargame/](frontend/src/wargame/), but the sim engine, agent
+memory, and WebSocket event stream all run out-of-process.
+
+- **Deployment guide:** [docs/wargame-deployment.md](docs/wargame-deployment.md)
+- **Smoke test script:** `scripts/check-swarm-connection.sh <swarm-url> <emissary-origin>`
+- **Env vars on the Emissary frontend build:** `VITE_SWARM_API_URL`, `VITE_SWARM_WS_URL`
+
+Without swarm deployed, the tab still loads and the **PLAY DEMO (SCRIPTED)**
+button runs a client-side scripted Taiwan 2027 scenario. Only the preset
+**Execute Simulation** and freeform **Analyze** actions require swarm.
+
 ## Data Sources
 
 - **Sanctions:** OpenSanctions.org, OFAC SDN
