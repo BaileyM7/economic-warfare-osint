@@ -1,4 +1,5 @@
 services:
+  # ─── Emissary (main app) ──────────────────────────────────────────
   - type: web
     name: emissary
     runtime: python
@@ -18,3 +19,73 @@ services:
         sync: false  # set manually in Render dashboard
       - key: FRED_API_KEY
         sync: false  # set manually in Render dashboard
+      # Wire the /wargame tab's frontend bundle at build time to the swarm
+      # microservice defined below. `property: host` resolves to the
+      # https://…onrender.com URL; we append the schemes in swarm's
+      # CORS_ORIGINS below.
+      - key: VITE_SWARM_API_URL
+        fromService:
+          type: web
+          name: swarm-api
+          property: host
+      - key: VITE_SWARM_WS_URL
+        fromService:
+          type: web
+          name: swarm-api
+          property: host
+
+  # ─── Swarm backend (separate container; runs the LangGraph sim engine) ─
+  # Same Render project, but its own Python env, its own DB, its own Redis.
+  # Zero dependency overlap with Emissary.
+  - type: web
+    name: swarm-api
+    runtime: docker
+    region: oregon
+    plan: starter  # $7/mo — free tier sleeps, which kills live WebSocket sims
+    branch: wargame-v1
+    rootDir: swarm
+    dockerfilePath: docker/backend.Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ANTHROPIC_API_KEY
+        sync: false  # set manually in Render dashboard (same value as emissary's)
+      - key: AGENT_MODEL
+        value: claude-sonnet-4-6
+      - key: ARBITER_MODEL
+        value: claude-opus-4-6
+      - key: AGENT_RUNNER_IMPL
+        value: langgraph
+      - key: CORS_ORIGINS
+        fromService:
+          type: web
+          name: emissary
+          property: host
+      - key: DATABASE_URL
+        fromDatabase:
+          name: swarm-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: swarm-redis
+          property: connectionString
+
+  # ─── Swarm Redis (world-state pub/sub during live sims) ──────────
+  - type: keyvalue
+    name: swarm-redis
+    region: oregon
+    plan: starter  # $10/mo — Render Key Value has no free tier
+    ipAllowList: []  # only reachable from services inside this project
+
+# ─── Swarm Postgres (with pgvector for agent memory RAG) ───────────
+# Separate from Emissary's SQLite — can't and shouldn't share a DB.
+databases:
+  - name: swarm-db
+    region: oregon
+    plan: basic-256mb  # cheapest tier that allows CREATE EXTENSION vector
+    postgresMajorVersion: "16"
