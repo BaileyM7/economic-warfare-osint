@@ -1,0 +1,58 @@
+# Swarm — Preset scenario: China–Taiwan 2027 quarantine contingency.
+#
+# Loaded by the sim engine and by the frontend's "Preset scenarios" menu.
+# Fields match the `ScenarioCreate` Pydantic schema.
+
+title: "China–Taiwan Quarantine 2027"
+description: |
+  In early 2027, following a series of diplomatic provocations, the People's
+  Republic of China announces a "customs quarantine" of Taiwan's shipping
+  lanes, declaring that all commercial traffic entering or leaving Taiwanese
+  ports will be subject to PLA Navy inspection.  US 7th Fleet is deployed to
+  the Western Pacific.  Allied governments weigh response options.  Markets
+  react.  The simulation runs each country agent over 10–20 turns.
+
+# Demo cut (Anthropic Tier 1 rate limit fits 5 agents × a few turns). The 5
+# most directly entangled parties in a Taiwan quarantine scenario:
+#   CHN (aggressor), TWN (target), USA (primary external / 7th Fleet),
+#   JPN (treaty ally + forward basing on Okinawa), PHL (EDCA bases, SCS exposure).
+# KOR/AUS/PRK/RUS/IND are secondary actors — add them back when on a higher tier.
+country_ids: ["CHN", "TWN", "USA", "JPN", "PHL"]
+
+max_turns: 3
+
+initial_conditions:
+  posture_overrides:
+    CHN: aggressive
+    TWN: defensive
+    USA: deterrent
+    JPN: defensive
+    PHL: defensive
+  # Seed events are injected into the world at turn 0 and streamed as
+  # sim_events so the frontend animation starts immediately.
+  seed_events:
+    - actor_country: CHN
+      target_country: TWN
+      domain: kinetic_limited
+      action_type: maritime_quarantine_declaration
+      escalation_rung: 3
+      payload:
+        area: "Taiwan Strait + 200nm Taiwan EEZ"
+        stated_justification: "anti-smuggling customs enforcement"
+        assets_deployed:
+          - "Type 055 destroyer flotilla"
+          - "Type 052D destroyers"
+          - "Coast Guard cutters"
+      rationale: |
+        PRC announces a quarantine of Taiwan's shipping lanes under the pretext
+        of anti-smuggling enforcement.  This is the inciting event of the
+        scenario.
+    - actor_country: USA
+      target_country: CHN
+      domain: diplomatic
+      action_type: condemnation_statement
+      escalation_rung: 1
+      payload:
+        message: "The United States condemns PRC coercion and reaffirms its commitment to a free and open Indo-Pacific."
+      rationale: |
+        Initial US verbal response — rhetorical, not kinetic.

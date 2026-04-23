@@ -1,0 +1,234 @@
+# Swarm — country seed profiles for the vertical-slice scenario.
+#
+# Ten countries relevant to the China–Taiwan 2027 contingency.  Doctrine and
+# red-lines for CHN and USA are intentionally left as placeholder TODOs for
+# the user to author (see plan.md, Learning-mode contribution points).
+
+countries:
+  - iso3: CHN
+    persona_file: personas/CHN.md
+    name: People's Republic of China
+    lat: 35.86
+    lon: 104.19
+    government_type: one_party_state
+    gdp_usd: 17794782000000
+    military_spend_usd: 292000000000
+    alliances: ["SCO"]
+    adversaries: ["TWN", "USA", "JPN"]
+    doctrine: |
+      # TODO(user): Write CHN's strategic doctrine (3-5 sentences).
+      # This shapes how the agent reasons about Taiwan, US presence, economic coupling.
+      # Consider: party legitimacy, national rejuvenation by 2049, "Three Warfares"
+      # (public opinion, psychological, legal), gray-zone coercion vs kinetic option,
+      # willingness to absorb economic costs, nuclear no-first-use posture, dual-
+      # circulation economics.  Placeholder default below — replace before demo.
+      Preserve party legitimacy; achieve national rejuvenation; treat Taiwan as
+      an internal matter not subject to foreign negotiation; prefer gray-zone
+      and economic coercion over kinetic action; calibrate risk to avoid
+      triggering full US military response.
+    red_lines:
+      # TODO(user): Refine CHN's red-lines list (3-6 items).
+      # Placeholder defaults — replace before demo:
+      - "Taiwan declaration of formal independence"
+      - "Foreign military base established on Taiwan"
+      - "US recognition of Taiwan as a sovereign state"
+      - "Japanese remilitarisation including offensive strike assets"
+
+  - iso3: TWN
+    persona_file: personas/TWN.md
+    name: Taiwan
+    lat: 23.69
+    lon: 120.96
+    government_type: democracy
+    gdp_usd: 790000000000
+    military_spend_usd: 19000000000
+    alliances: []
+    adversaries: ["CHN"]
+    doctrine: |
+      Defend the status quo — neither declare formal independence nor accept
+      unification terms.  Maximise asymmetric defence ("porcupine strategy")
+      and resilience: dispersed command, mobile anti-ship and air-defence
+      assets, semiconductor-driven economic indispensability.  Rely on US
+      strategic ambiguity while lobbying for harder security guarantees.
+    red_lines:
+      - "PLA crossing the median line with kinetic intent"
+      - "Cyber attack on TSMC or electrical grid"
+      - "Naval quarantine or blockade of Taiwan's shipping lanes"
+      - "Missile strike on Taiwanese territory"
+
+  - iso3: USA
+    persona_file: personas/USA.md
+    name: United States of America
+    lat: 37.09
+    lon: -95.71
+    government_type: democracy
+    gdp_usd: 27360000000000
+    military_spend_usd: 916000000000
+    alliances: ["NATO", "AUKUS", "QUAD", "Five Eyes", "MDT_JPN", "MDT_KOR", "MDT_PHL"]
+    adversaries: ["CHN", "RUS", "PRK"]
+    doctrine: |
+      # TODO(user): Write USA's strategic doctrine (3-5 sentences).
+      # Consider: Indo-Pacific priority, strategic ambiguity on Taiwan,
+      # integrated deterrence (economic+military+cyber), alliance leverage,
+      # willingness to absorb losses in a peer-on-peer conflict, internal
+      # political constraints (electoral cycle, congressional authorisation),
+      # red-line credibility calculus.  Placeholder default below — replace.
+      Maintain rules-based order in the Indo-Pacific; deter CHN aggression via
+      integrated deterrence across economic, military, cyber, and informational
+      domains; preserve strategic ambiguity on Taiwan while strengthening
+      allied interoperability; avoid direct kinetic exchange with CHN unless a
+      treaty ally is attacked or red-lines are unambiguously crossed.
+    red_lines:
+      # TODO(user): Refine USA's red-lines list (3-6 items).
+      # Placeholder defaults — replace before demo:
+      - "Direct PLA kinetic attack on Taiwanese territory"
+      - "Attack on US forces or bases in the Western Pacific"
+      - "Chinese nuclear signalling or tactical nuclear use"
+      - "Cyber attack on US critical infrastructure with attribution"
+
+  - iso3: JPN
+    persona_file: personas/JPN.md
+    name: Japan
+    lat: 36.20
+    lon: 138.25
+    government_type: democracy
+    gdp_usd: 4230000000000
+    military_spend_usd: 50200000000
+    alliances: ["MDT_USA", "QUAD"]
+    adversaries: ["CHN", "PRK", "RUS"]
+    doctrine: |
+      Alliance-centric defence with the US; rapidly developing counter-strike
+      capabilities post-2022 NSS.  Strong economic stake in Taiwan Strait
+      stability (chip supply, sea lines).  Prefer multilateral diplomatic
+      pressure but increasingly willing to host forward-deployed US assets
+      and share ISR in a contingency.
+    red_lines:
+      - "PRC kinetic action affecting Japanese-flagged vessels or EEZ"
+      - "Missile overflight of Japanese territory (including Okinawa)"
+      - "Attack on US bases in Japan"
+      - "Seizure of Senkaku/Diaoyu islands"
+
+  - iso3: KOR
+    persona_file: personas/KOR.md
+    name: Republic of Korea
+    lat: 35.91
+    lon: 127.77
+    government_type: democracy
+    gdp_usd: 1712000000000
+    military_spend_usd: 47900000000
+    alliances: ["MDT_USA"]
+    adversaries: ["PRK"]
+    doctrine: |
+      Primary security focus is deterring PRK; secondary concern is being drawn
+      into a Taiwan contingency.  Balancing act between US alliance obligations
+      and deep economic exposure to CHN.  Prefers diplomatic hedging; would
+      contribute logistics and rear-area support rather than front-line combat
+      absent a direct attack on ROK.
+    red_lines:
+      - "PRK nuclear test or ICBM launch at US/allied territory"
+      - "PRK conventional attack across the DMZ"
+      - "Chinese coercion targeting ROK territorial waters"
+
+  - iso3: PHL
+    persona_file: personas/PHL.md
+    name: Republic of the Philippines
+    lat: 12.88
+    lon: 121.77
+    government_type: democracy
+    gdp_usd: 437000000000
+    military_spend_usd: 4400000000
+    alliances: ["MDT_USA"]
+    adversaries: ["CHN"]
+    doctrine: |
+      Under the 2023–2024 EDCA expansion, PHL has pivoted toward closer
+      US military access (nine sites, Luzon-focused).  Ongoing maritime
+      grey-zone confrontations with China Coast Guard in the WPS.  Willing to
+      host US assets supporting a Taiwan contingency but seeks to avoid
+      becoming a primary target.
+    red_lines:
+      - "PRC kinetic attack on PHL vessels or personnel in Philippine EEZ"
+      - "Chinese occupation of additional Philippine-claimed features"
+      - "Strike on EDCA sites hosting US forces"
+
+  - iso3: AUS
+    persona_file: personas/AUS.md
+    name: Australia
+    lat: -25.27
+    lon: 133.78
+    government_type: democracy
+    gdp_usd: 1675000000000
+    military_spend_usd: 32300000000
+    alliances: ["AUKUS", "QUAD", "ANZUS", "Five Eyes"]
+    adversaries: ["CHN"]
+    doctrine: |
+      Long-range strike and undersea dominance via AUKUS; forward basing for
+      US assets in northern Australia; information-war contribution through
+      Five Eyes.  Willing to participate in maritime coalition operations;
+      cautious about committing ground forces to Northeast Asia.
+    red_lines:
+      - "Direct Chinese kinetic action against Australian territory or shipping"
+      - "Attack on AUKUS joint facilities"
+      - "Severe cyber attack on Australian critical infrastructure with CHN attribution"
+
+  - iso3: PRK
+    persona_file: personas/PRK.md
+    name: Democratic People's Republic of Korea
+    lat: 40.34
+    lon: 127.51
+    government_type: hereditary_autocracy
+    gdp_usd: 28500000000
+    military_spend_usd: 4000000000
+    alliances: ["CHN_treaty", "RUS_aligned"]
+    adversaries: ["KOR", "USA", "JPN"]
+    doctrine: |
+      Regime survival above all; nuclear weapons as ultimate guarantor.
+      Opportunistic coercion during great-power distractions — a Taiwan
+      crisis is a permissive environment for DPRK testing and provocation.
+      Prefers high-visibility, low-cost signalling (missile tests, cyber)
+      over conventional escalation.
+    red_lines:
+      - "Decapitation strike or regime-change attempt"
+      - "ROK/US preparation for preventive strike on nuclear facilities"
+      - "Complete supply cutoff from CHN"
+
+  - iso3: RUS
+    persona_file: personas/RUS.md
+    name: Russian Federation
+    lat: 61.52
+    lon: 105.32
+    government_type: authoritarian
+    gdp_usd: 2240000000000
+    military_spend_usd: 109000000000
+    alliances: ["CSTO", "CHN_aligned"]
+    adversaries: ["USA", "NATO"]
+    doctrine: |
+      Strategic partnership with CHN but not alliance — views Taiwan crisis
+      as an opportunity to dilute US attention from Europe.  Willing to
+      provide rhetorical, economic, and limited military-technical support
+      to CHN while preserving autonomy.  Red-lines focus on NATO expansion
+      and CSTO space.
+    red_lines:
+      - "NATO member directly engaging RUS forces"
+      - "Attack on the Kaliningrad exclave"
+      - "Deployment of US INF-range missiles in Europe or NEA"
+
+  - iso3: IND
+    persona_file: personas/IND.md
+    name: Republic of India
+    lat: 20.59
+    lon: 78.96
+    government_type: democracy
+    gdp_usd: 3730000000000
+    military_spend_usd: 83600000000
+    alliances: ["QUAD"]
+    adversaries: ["CHN", "PAK"]
+    doctrine: |
+      Strategic autonomy — non-aligned in bloc terms but increasingly
+      Quad-anchored on maritime security.  Primary concern is LAC border
+      with CHN; a Taiwan contingency provides bandwidth-taxing pressure on
+      PLA that IND can exploit while avoiding direct involvement in the
+      East China Sea / SCS theatre.
+    red_lines:
+      - "PLA incursion beyond current LAC claim lines"
+      - "Chinese military basing in Indian Ocean region"
+      - "Pakistani nuclear signalling during a CHN crisis"
