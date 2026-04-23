@@ -33,7 +33,6 @@ async def notify_monitoring(event_type: str, message: str) -> None:
             active_coas = conn.execute("SELECT COUNT(*) FROM coas WHERE status IN ('approved','executing')").fetchone()[0]
             total_coas = conn.execute("SELECT COUNT(*) FROM coas").fetchone()[0]
             total_activity = conn.execute("SELECT COUNT(*) FROM activity_log").fetchone()[0]
-            active_injects = conn.execute("SELECT COUNT(*) FROM injects WHERE status = 'delivered'").fetchone()[0]
             total_briefings = conn.execute("SELECT COUNT(*) FROM briefings").fetchone()[0]
             last_row = conn.execute("SELECT * FROM activity_log ORDER BY id DESC LIMIT 1").fetchone()
         finally:
@@ -45,7 +44,6 @@ async def notify_monitoring(event_type: str, message: str) -> None:
                 "active_coas": active_coas,
                 "total_coas": total_coas,
                 "total_activity": total_activity,
-                "active_injects": active_injects,
                 "last_event": last_row["timestamp"] if last_row else None,
                 "total_briefings": total_briefings,
             },

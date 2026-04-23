@@ -59,7 +59,6 @@ from src.routers.coa import router as coa_router
 from src.routers.monitoring import router as monitoring_router
 from src.routers.briefings import router as briefings_router
 from src.routers import briefings as _briefings_mod
-from src.routers.exercises import router as exercises_router
 from src.analytics import UsageTrackingMiddleware
 from src.auth import require_admin, require_auth, verify_token
 from src.routers.admin import router as admin_router
@@ -187,7 +186,6 @@ app.include_router(admin_router, dependencies=[Depends(require_admin)])
 app.include_router(coa_router, dependencies=[Depends(require_auth)])
 app.include_router(monitoring_router, dependencies=[Depends(require_auth)])
 app.include_router(briefings_router, dependencies=[Depends(require_auth)])
-app.include_router(exercises_router, dependencies=[Depends(require_auth)])
 
 _DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if (_DIST / "assets").exists():
