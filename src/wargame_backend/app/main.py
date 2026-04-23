@@ -222,15 +222,25 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        import os as _dbg_os
+        import traceback as _dbg_tb
         log.error("Unhandled exception", error=str(exc), exc_info=exc)
+        # When WARGAME_DEBUG_ERRORS=1, echo the real traceback back to the client.
+        # Useful for diagnosing issues without access to server logs. Unset or 0 to hide.
+        _debug_errors = _dbg_os.environ.get("WARGAME_DEBUG_ERRORS", "").lower() in {"1", "true", "yes"}
+        details: list = []
+        message: str = "An unexpected error occurred."
+        if _debug_errors:
+            message = f"{type(exc).__name__}: {exc}"
+            details = _dbg_tb.format_exception(type(exc), exc, exc.__traceback__)
         return JSONResponse(
             status_code=500,
             content={
                 "data": None,
                 "error": {
                     "code": "INTERNAL_ERROR",
-                    "message": "An unexpected error occurred.",
-                    "details": [],
+                    "message": message,
+                    "details": details,
                 },
             },
         )
