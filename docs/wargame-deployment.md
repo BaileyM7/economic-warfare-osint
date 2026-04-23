@@ -1,9 +1,9 @@
 # Wargame Deployment Guide
 
 The Emissary `/wargame` tab is a **ported frontend only** — it talks to a
-separately-deployed instance of the [swarm](https://github.com/) backend
-(the repo at `C:\Work\swarm`). This doc explains how to stand up swarm as
-a microservice and point the Emissary frontend at it.
+separately-deployed instance of the [swarm](https://github.com/BaileyM7/swarm)
+backend. This doc explains how to stand up swarm as a microservice and
+point the Emissary frontend at it.
 
 **If swarm is not deployed, demo mode still works** (client-side scripted
 Taiwan 2027), but the preset Execute button and freeform Analyze button
@@ -13,20 +13,24 @@ will fail with a network error.
 
 ## Plan
 
-1. **Choose a platform** — Fly.io (recommended), Docker on a VPS, or Render.
-2. **Provision Postgres with pgvector + Redis** — these are required dependencies.
-3. **Deploy the swarm backend container** — swarm's repo has Dockerfile +
-   `fly.toml` + `docker-compose.prod.yml` ready to go.
+1. **Choose a deploy path** — [Render Blueprint](#option-a--render-blueprint-recommended-if-emissary-is-on-render)
+   (recommended if Emissary already lives on Render),
+   [Fly.io](#option-b--flyio), or [Docker on a VPS](#option-c--docker-compose-on-a-vps).
+2. **Provision Postgres with pgvector + Redis** — non-negotiable dependencies.
+3. **Deploy the swarm backend container** — swarm's repo has the Dockerfile,
+   `fly.toml`, and `docker-compose.prod.yml` pre-configured.
 4. **Configure secrets** — `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`,
    `CORS_ORIGINS`, agent model names.
 5. **Run migrations and seed the data lake** — `alembic upgrade head` and
    the ingest runner.
-6. **Wire Emissary's frontend to swarm** — set `VITE_SWARM_API_URL` and
-   `VITE_SWARM_WS_URL` on the Emissary frontend build, redeploy Emissary.
+6. **Wire Emissary's frontend to swarm** — `VITE_SWARM_API_URL` and
+   `VITE_SWARM_WS_URL` on the Emissary frontend build. With the Blueprint
+   these are injected automatically via `fromService`.
 7. **Smoke test** — hit `/healthz`, open `/wargame`, run the Taiwan 2027
-   preset end-to-end.
+   preset end-to-end (see [scripts/check-swarm-connection.sh](../scripts/check-swarm-connection.sh)).
 
-Skip to [Option A](#option-a--flyio-recommended) if you just want to ship.
+Skip to [Option A](#option-a--render-blueprint-recommended-if-emissary-is-on-render)
+if you just want to ship.
 
 ---
 
@@ -53,7 +57,108 @@ Swarm's minimum stack requirements (non-negotiable):
 
 ---
 
-## Option A — Fly.io (recommended)
+## Option A — Render Blueprint (recommended if Emissary is on Render)
+
+**Why**: Emissary already deploys from [render.yaml](../render.yaml) on
+Render. Extending that Blueprint to include swarm gives you side-by-side
+services in one dashboard, provisioned from one YAML, with zero Python
+dependency overlap between the two apps (each builds its own container
+with its own `pyproject.toml`).
+
+**What gets provisioned alongside the existing `emissary` service:**
+
+| Service | Purpose | Render resource |
+|---|---|---|
+| `swarm-api` | LangGraph sim engine, REST + WebSocket | Web service (Docker, Starter ≈$7/mo) |
+| `swarm-redis` | World-state pub/sub | Key Value (Starter ≈$10/mo) |
+| `swarm-db` | Postgres + pgvector for agent memory | Managed Postgres (basic-256mb, free up to 1GB) |
+
+Emissary's own service, SQLite storage, and env vars are untouched. The
+only change to `emissary` is that two new build-time env vars — the
+swarm API/WS URLs — get injected automatically via Render's `fromService`
+reference, so the frontend bundle knows where to call.
+
+### Prerequisites
+
+- Swarm is pushed to a Git remote (this repo uses [BaileyM7/swarm](https://github.com/BaileyM7/swarm))
+  and is added as a submodule at `swarm/` — see `.gitmodules`.
+- You have `render blueprint` access on the account that owns the
+  existing `emissary` service.
+
+### Steps
+
+```bash
+# From inside c:/Work/economic_warfare on the wargame-v1 branch:
+
+# 1. Ensure the swarm submodule is present (already added in wargame-v1)
+git submodule update --init --recursive
+
+# 2. Confirm render.yaml describes all four resources
+grep '^\s*- name:\|^\s*- type:' render.yaml
+
+# 3. Push wargame-v1 to trigger Render's Blueprint sync, OR in the
+#    Render dashboard: Blueprint → "Sync" on the emissary repo.
+git push origin wargame-v1
+```
+
+Render will:
+1. Provision `swarm-db` (Postgres 16) and `swarm-redis`.
+2. Build `swarm-api` from the `swarm/` submodule using `swarm/docker/backend.Dockerfile`.
+3. Rebuild `emissary` with the new `VITE_SWARM_API_URL` and
+   `VITE_SWARM_WS_URL` env vars baked into the frontend bundle.
+
+### One-time post-deploy work
+
+After the first successful deploy of `swarm-api`, open the Render shell
+for that service and run:
+
+```bash
+# Enable pgvector (requires superuser on Render's Basic+ Postgres)
+psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# Apply Alembic migrations
+alembic upgrade head
+
+# Seed the data lake (free sources: GDELT, World Bank; ACLED needs a token)
+python -m src.backend.ingest.runner --sources=gdelt,worldbank
+```
+
+### Secrets to set manually in Render
+
+Both `emissary` and `swarm-api` have `ANTHROPIC_API_KEY` marked as
+`sync: false` — the Blueprint won't commit it. Set each in the Render
+dashboard (Environment → Add → `ANTHROPIC_API_KEY = sk-ant-…`). They
+can be the same value.
+
+### Verifying it worked
+
+After the deploy settles:
+
+```bash
+# From your laptop, swap these for your actual Render URLs:
+scripts/check-swarm-connection.sh \
+  https://swarm-api.onrender.com \
+  https://emissary.onrender.com
+```
+
+Expect 4 passes. Any FAIL maps to a fix in the [Common failures](#common-failures-and-fixes) table.
+
+### Updating swarm later
+
+Swarm is a submodule, so a new version means a new commit pointer:
+
+```bash
+cd swarm && git pull origin main && cd ..
+git add swarm && git commit -m "chore: bump swarm to <short-sha>"
+git push origin wargame-v1
+```
+
+Render's Blueprint sync rebuilds `swarm-api` automatically. Emissary
+itself is not rebuilt unless its own sources changed.
+
+---
+
+## Option B — Fly.io
 
 **Why**: Swarm's repo already contains `fly.toml` pre-configured with the
 correct health check, WebSocket support, and the Alembic release command.
@@ -116,10 +221,10 @@ Swarm is now live at `https://swarm-backend.fly.dev` (API) and
 
 ---
 
-## Option B — Docker Compose on a VPS
+## Option C — Docker Compose on a VPS
 
 **Why**: Maximal control, single-machine cost floor (~$6/mo on DigitalOcean/
-Hetzner). More ops work than Fly.
+Hetzner). More ops work than Fly or Render.
 
 ### Steps
 
@@ -163,30 +268,29 @@ Caddy handles Let's Encrypt + WebSocket auto-upgrade automatically.
 
 ---
 
-## Option C — Render
+## Option D — Render, manual dashboard setup
 
-**Why**: Same dashboard as Emissary. But Render's managed Postgres
-doesn't ship with pgvector — you'll need the Professional plan or
-manually install the extension. Redis is a paid add-on.
-
-### Services to create
+Use this only if you can't use the [Blueprint](#option-a--render-blueprint-recommended-if-emissary-is-on-render)
+for some reason (e.g. you don't want the swarm submodule in this repo).
+Create three resources in the Render dashboard by hand:
 
 1. **swarm-api**: Web Service, Docker runtime, pointing at
-   `docker/backend.Dockerfile` in your swarm fork. Health check path
-   `/healthz`. Use the free-tier web service only if you don't need
-   sustained WebSocket — otherwise pay for a Starter plan ($7/mo) so
-   the process doesn't sleep.
-2. **swarm-postgres**: Render Postgres. After creation, connect via psql
-   and run `CREATE EXTENSION IF NOT EXISTS vector;` (requires superuser,
-   available on paid plans only).
-3. **swarm-redis**: Render Key Value store. Starter plan $10/mo.
+   `docker/backend.Dockerfile` in your [swarm fork](https://github.com/BaileyM7/swarm).
+   Health check path `/healthz`. Starter plan ($7/mo) so the process
+   doesn't sleep on WebSocket connections.
+2. **swarm-postgres**: Render Postgres, basic-256mb+ tier. After
+   creation, connect via `psql` and run
+   `CREATE EXTENSION IF NOT EXISTS vector;`
+3. **swarm-redis**: Render Key Value store, Starter tier ($10/mo).
 
-Set the same env vars as Fly (`ANTHROPIC_API_KEY`, `DATABASE_URL`,
-`REDIS_URL`, `CORS_ORIGINS`, model names, `AGENT_RUNNER_IMPL=langgraph`).
-Deploy, then use the Render shell for `alembic upgrade head` and the
-ingest runner.
+Set `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `CORS_ORIGINS`,
+`AGENT_MODEL`, `ARBITER_MODEL`, `AGENT_RUNNER_IMPL=langgraph` on the
+swarm-api service. Deploy, then run `alembic upgrade head` and the
+ingest runner in the Render shell.
 
-This path is only worth it if you strictly want one-dashboard ops.
+You'll also need to manually add `VITE_SWARM_API_URL` and
+`VITE_SWARM_WS_URL` to the emissary service's environment. The
+Blueprint path does this for you via `fromService:`.
 
 ---
 

@@ -2,3 +2,6 @@
 	path = frontend
 	url = https://github.com/deveshkumars/economicgamingv1.git
 	branch = emissary-v1
+[submodule "swarm"]
+	path = swarm
+	url = https://github.com/BaileyM7/swarm.git
