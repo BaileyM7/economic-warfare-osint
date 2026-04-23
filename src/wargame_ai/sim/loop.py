@@ -440,7 +440,7 @@ class SimLoop:
                 # KNOWN COMPROMISE: ai.* imports from app.db.models for MemoryType.
                 # The correct long-term fix is dependency injection or a shared types module.
                 # Accepted for the prototype; see docs/architecture.md "Known compromises".
-                from app.db.models import MemoryType
+                from wargame_backend.app.db.models import MemoryType
 
                 await self.memory_store.remember(
                     sim_id=sim_id,
@@ -546,7 +546,7 @@ class SimLoop:
         try:
             # KNOWN COMPROMISE: ai.* imports from app.db.models for ORM types.
             # Accepted for the prototype; see docs/architecture.md "Known compromises".
-            from app.db.models import SimEvent as SimEventORM
+            from wargame_backend.app.db.models import SimEvent as SimEventORM
 
             row = SimEventORM(
                 id=event.id,
