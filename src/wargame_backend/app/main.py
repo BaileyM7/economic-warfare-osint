@@ -85,8 +85,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Run alembic migrations in-process (idempotent). In the embedded
     # deployment we don't have a separate release_command like fly.toml
     # uses; startup migration keeps deploys a single step.
+    #
+    # Alembic's env.py uses asyncio.run() internally, which raises when
+    # invoked from inside an already-running event loop (our lifespan).
+    # Running the sync `_run_alembic_upgrade` in a worker thread gives
+    # Alembic its own fresh loop and avoids the conflict.
+    import asyncio as _asyncio
     try:
-        _run_alembic_upgrade()
+        await _asyncio.to_thread(_run_alembic_upgrade)
         log.info("Alembic migrations applied (or already at head)")
     except Exception as exc:  # noqa: BLE001
         log.error("Alembic migration failed; continuing in case the schema is already current", error=str(exc))
