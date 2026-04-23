@@ -37,8 +37,14 @@ import wargame_backend.app.db.models  # noqa: E402, F401 — registers all mappe
 # ---------------------------------------------------------------------------
 config = context.config
 
-# Override sqlalchemy.url from the environment at runtime
+# Override sqlalchemy.url from the environment at runtime.
+# Normalize Render-style `postgres://…` to `postgresql+asyncpg://…`
+# so the async engine gets the right driver.
 _db_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://swarm:swarm@localhost:5432/swarm")
+for _prefix in ("postgres://", "postgresql://"):
+    if _db_url.startswith(_prefix) and not _db_url.startswith("postgresql+"):
+        _db_url = "postgresql+asyncpg://" + _db_url[len(_prefix):]
+        break
 config.set_main_option("sqlalchemy.url", _db_url)
 
 # Interpret the config file for Python logging if it has a [loggers] section
