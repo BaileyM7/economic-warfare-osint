@@ -213,6 +213,31 @@ if _os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
             _wargame_exc,
         )
 
+# Debug endpoint to read the wargame subapp's lifespan error over HTTP.
+# Only active when WARGAME_DEBUG_ERRORS=1.
+if _os.environ.get("WARGAME_DEBUG_ERRORS", "").lower() in {"1", "true", "yes"}:
+    @app.get("/api/wargame-debug/lifespan")
+    async def _wargame_lifespan_debug() -> dict:
+        err = None
+        try:
+            err = getattr(_wargame_app.state, "lifespan_error", None) if _wargame_app else None
+        except Exception as e:
+            err = f"could not read: {e}"
+        has_redis = False
+        has_sim_runner = False
+        try:
+            has_redis = hasattr(_wargame_app.state, "redis") if _wargame_app else False
+            has_sim_runner = hasattr(_wargame_app.state, "sim_runner") if _wargame_app else False
+        except Exception:
+            pass
+        return {
+            "wargame_app_imported": _wargame_app is not None,
+            "lifespan_cm_entered": _wargame_lifespan_cm is not None,
+            "has_redis_on_state": has_redis,
+            "has_sim_runner_on_state": has_sim_runner,
+            "lifespan_error": err,
+        }
+
 _DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if (_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
@@ -240,11 +265,19 @@ async def _startup() -> None:
             logger.info("Wargame lifespan entered (DB + Redis + SimRunner ready)")
         except Exception as exc:  # noqa: BLE001
             _wargame_lifespan_cm = None
-            logger.error(
-                "Wargame lifespan failed to enter; /api/wargame requests will 500. "
-                "Check DATABASE_URL and REDIS_URL. Error: %s",
-                exc,
-            )
+            # Log full traceback so Render logs capture the root cause.
+            # Also stash the error on the subapp state so /api/wargame/_debug
+            # can return it via HTTP when logs are flaky.
+            import traceback as _tb
+            _err_text = f"{type(exc).__name__}: {exc}\n" + "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
+            logger.error("Wargame lifespan failed to enter:\n%s", _err_text)
+            # Also write directly to stderr so it bypasses any structlog filters
+            import sys as _sys
+            print(f"[WARGAME_LIFESPAN_ERROR] {_err_text}", file=_sys.stderr, flush=True)
+            try:
+                _wargame_app.state.lifespan_error = _err_text
+            except Exception:
+                pass
 
     if not _browser_opened and not os.environ.get("RENDER"):
         _browser_opened = True
