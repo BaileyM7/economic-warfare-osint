@@ -35,7 +35,7 @@ from wargame_ai.sim.world import WorldState
 
 log = structlog.get_logger(__name__)
 
-_SEEDS_DIR = Path(__file__).resolve().parents[2] / "shared" / "seeds"
+_SEEDS_DIR = Path(__file__).resolve().parents[2] / "wargame_shared" / "seeds"
 _COUNTRIES_YAML = _SEEDS_DIR / "countries.yaml"
 
 
