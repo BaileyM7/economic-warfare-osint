@@ -1,0 +1,37 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-httpx/0.27.2
+    method: GET
+    uri: https://api.worldbank.org/v2/country/CHN/indicator/NY.GDP.MKTP.CD?format=json&per_page=5&mrv=5
+  response:
+    body:
+      string: >-
+        [{"page":1,"pages":1,"per_page":5,"total":5,"sourceid":"2","lastupdated":"2024-10-01"},
+        [{"indicator":{"id":"NY.GDP.MKTP.CD","value":"GDP (current US$)"},
+          "country":{"id":"CN","value":"China"},
+          "countryiso3code":"CHN","date":"2023","value":17794782000000.0,
+          "unit":"","obs_status":"","decimal":0},
+         {"indicator":{"id":"NY.GDP.MKTP.CD","value":"GDP (current US$)"},
+          "country":{"id":"CN","value":"China"},
+          "countryiso3code":"CHN","date":"2022","value":17963170000000.0,
+          "unit":"","obs_status":"","decimal":0},
+         {"indicator":{"id":"NY.GDP.MKTP.CD","value":"GDP (current US$)"},
+          "country":{"id":"CN","value":"China"},
+          "countryiso3code":"CHN","date":"2021","value":17734063000000.0,
+          "unit":"","obs_status":"","decimal":0}]]
+    headers:
+      Content-Type:
+      - application/json
+    status:
+      code: 200
+      message: OK
+version: 1

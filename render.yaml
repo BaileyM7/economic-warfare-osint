@@ -1,9 +1,12 @@
 services:
+  # ─── Emissary (main app, now with embedded wargame) ──────────────
+  # Single web service runs Emissary + mounts the swarm backend as a
+  # FastAPI subapp at /api/wargame (gated by WARGAME_ENABLED=1).
   - type: web
     name: emissary
     runtime: python
     region: oregon
-    plan: free
+    plan: starter  # bumped from free: sustained WebSocket + more RAM for LangGraph
     branch: emissary-v1
     buildCommand: ./build.sh
     startCommand: uvicorn src.api:app --host 0.0.0.0 --port $PORT
@@ -18,3 +21,38 @@ services:
         sync: false  # set manually in Render dashboard
       - key: FRED_API_KEY
         sync: false  # set manually in Render dashboard
+      # ── Wargame embed activation ──
+      - key: WARGAME_ENABLED
+        value: "1"
+      - key: AGENT_MODEL
+        value: claude-sonnet-4-6
+      - key: ARBITER_MODEL
+        value: claude-opus-4-6
+      - key: AGENT_RUNNER_IMPL
+        value: langgraph
+      # Wired from the managed resources below:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: swarm-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: swarm-redis
+          property: connectionString
+
+  # ─── Swarm Redis (world-state pub/sub during live sims) ──────────
+  - type: keyvalue
+    name: swarm-redis
+    region: oregon
+    plan: starter  # $10/mo — Render Key Value has no free tier
+    ipAllowList: []  # only reachable from services inside this project
+
+# ─── Swarm Postgres (with pgvector for agent memory RAG) ───────────
+# Extension must be enabled once via the Render shell:
+#   psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+databases:
+  - name: swarm-db
+    region: oregon
+    plan: basic-256mb  # cheapest tier that allows CREATE EXTENSION vector
+    postgresMajorVersion: "16"

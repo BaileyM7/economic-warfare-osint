@@ -1,0 +1,44 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-httpx/0.27.2
+    method: GET
+    uri: https://api.acleddata.com/acled/read?key=REDACTED&email=REDACTED&iso=156%3AOR%3A158%3AOR%3A840%3AOR%3A392%3AOR%3A410%3AOR%3A608%3AOR%3A36%3AOR%3A408%3AOR%3A643%3AOR%3A356&event_date=2025-01-01%7C2025-01-07&event_date_where=BETWEEN&limit=500&page=1&fields=data_id%7Cevent_id_cnty%7Cevent_date%7Cyear%7Ctime_precision%7Cevent_type%7Csub_event_type%7Cactor1%7Cassoc_actor_1%7Cinter1%7Cactor2%7Cassoc_actor_2%7Cinter2%7Cinteraction%7Ccivilian_targeting%7Ciso%7Cregion%7Ccountry%7Cadmin1%7Cadmin2%7Cadmin3%7Clocation%7Clatitude%7Clongitude%7Cgeo_precision%7Csource%7Csource_scale%7Cnotes%7Cfatalities%7Ctags%7Ctimestamp
+  response:
+    body:
+      string: >-
+        {"status":200,"success":true,"last_update":1735689600,"count":2,"data":
+        [{"data_id":"12345","event_id_cnty":"TWN2025000001","event_date":"2025-01-02",
+        "year":"2025","time_precision":"1","event_type":"Strategic developments",
+        "sub_event_type":"Looting/property destruction","actor1":"Military Forces of China",
+        "assoc_actor_1":"","inter1":"1","actor2":"","assoc_actor_2":"","inter2":"0",
+        "interaction":"10","civilian_targeting":"","iso":"158","region":"East Asia",
+        "country":"Taiwan","admin1":"","admin2":"","admin3":"","location":"Taiwan Strait",
+        "latitude":"23.5","longitude":"121.0","geo_precision":"3","source":"Reuters",
+        "source_scale":"International","notes":"Chinese military vessel transited Taiwan Strait.",
+        "fatalities":"0","tags":"","timestamp":"1735776000"},
+        {"data_id":"12346","event_id_cnty":"CHN2025000001","event_date":"2025-01-03",
+        "year":"2025","time_precision":"1","event_type":"Battles",
+        "sub_event_type":"Armed clash","actor1":"Military Forces of China",
+        "assoc_actor_1":"","inter1":"1","actor2":"Military Forces of Taiwan",
+        "assoc_actor_2":"","inter2":"1","interaction":"11","civilian_targeting":"",
+        "iso":"158","region":"East Asia","country":"Taiwan","admin1":"","admin2":"",
+        "admin3":"","location":"Kinmen","latitude":"24.43","longitude":"118.31",
+        "geo_precision":"1","source":"AP","source_scale":"International",
+        "notes":"Shots fired near Kinmen island.","fatalities":"2","tags":"",
+        "timestamp":"1735862400"}]}
+    headers:
+      Content-Type:
+      - application/json
+    status:
+      code: 200
+      message: OK
+version: 1
