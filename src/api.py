@@ -192,6 +192,8 @@ app.include_router(briefings_router, dependencies=[Depends(require_auth)])
 # when swarm's Postgres + Redis aren't provisioned. Any import-time failure
 # is caught so a broken wargame doesn't take down the rest of the app.
 import os as _os
+_wargame_app: Any = None  # populated below if import succeeds
+_wargame_lifespan_cm: Any = None  # the active lifespan context, kept for shutdown
 if _os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
     try:
         # Swarm's internal code uses bare imports (e.g. `from wargame_backend.X`).
@@ -204,6 +206,7 @@ if _os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
         app.mount("/api/wargame", _wargame_app)
         logger.info("Wargame subapp mounted at /api/wargame (%d routes)", len(_wargame_app.routes))
     except Exception as _wargame_exc:  # noqa: BLE001
+        _wargame_app = None
         logger.error(
             "Wargame subapp failed to mount; continuing without it. "
             "Set WARGAME_ENABLED=0 to silence this warning. Error: %s",
@@ -220,17 +223,49 @@ _browser_opened = False
 @app.on_event("startup")
 async def _startup() -> None:
     import os
-    global _browser_opened
+    global _browser_opened, _wargame_lifespan_cm
     await refresh_acled_token()
     init_db()
     if os.environ.get("EMISSARY_MOCK_DATA", "").lower() in ("1", "true", "yes"):
         seed_mock_data()
+
+    # Enter the swarm subapp's lifespan manually. FastAPI does NOT run a
+    # mounted sub-app's lifespan automatically — this sets up swarm's DB
+    # engine, Redis client, and SimRunner, attaching them to the subapp's
+    # state so its endpoints can reach them via request.app.state.*.
+    if _wargame_app is not None:
+        try:
+            _wargame_lifespan_cm = _wargame_app.router.lifespan_context(_wargame_app)
+            await _wargame_lifespan_cm.__aenter__()
+            logger.info("Wargame lifespan entered (DB + Redis + SimRunner ready)")
+        except Exception as exc:  # noqa: BLE001
+            _wargame_lifespan_cm = None
+            logger.error(
+                "Wargame lifespan failed to enter; /api/wargame requests will 500. "
+                "Check DATABASE_URL and REDIS_URL. Error: %s",
+                exc,
+            )
+
     if not _browser_opened and not os.environ.get("RENDER"):
         _browser_opened = True
         try:
             webbrowser.open("http://localhost:8000")
         except Exception:
             pass
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    """Cleanly exit the swarm subapp's lifespan so DB/Redis connections close."""
+    global _wargame_lifespan_cm
+    if _wargame_lifespan_cm is not None:
+        try:
+            await _wargame_lifespan_cm.__aexit__(None, None, None)
+            logger.info("Wargame lifespan exited cleanly")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Wargame lifespan exit raised: %s", exc)
+        finally:
+            _wargame_lifespan_cm = None
 
 
 # --- WebSocket connection manager for real-time monitoring ---
