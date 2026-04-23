@@ -139,6 +139,27 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return list(v)  # type: ignore[arg-type]
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_async_postgres(cls, v: object) -> object:
+        """Rewrite Render-style `postgres://…` URLs to `postgresql+asyncpg://…`.
+
+        Render (and Heroku-style) managed Postgres emits `postgres://user:pw@…`
+        as the DSN. SQLAlchemy's async engine needs the asyncpg driver prefix.
+        Normalize in one place so every environment works without manual
+        env-var editing.
+        """
+        if not isinstance(v, str) or not v:
+            return v
+        # Already correctly prefixed — leave alone.
+        if v.startswith("postgresql+asyncpg://") or v.startswith("postgresql+psycopg://"):
+            return v
+        # Rewrite bare scheme variants to the async driver form.
+        for prefix in ("postgresql://", "postgres://"):
+            if v.startswith(prefix):
+                return "postgresql+asyncpg://" + v[len(prefix):]
+        return v
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
