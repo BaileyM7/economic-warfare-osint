@@ -1,0 +1,54 @@
+"""OpenSanctions signal extractor (Phase B — implemented).
+
+OpenSanctions consolidates global sanctions / PEP / watchlist additions.
+Per-turn signal: count of new entries naming the country (as the
+sanctioning issuer OR as the country of the sanctioned entity) in the
+window.  A burst of new sanctions is a high-signal posture shift.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Event
+
+from wargame_ai.sim.signals import Signal
+from wargame_ai.sim.extractors._base import normalize_magnitude
+
+
+class OpenSanctionsExtractor:
+    source = "OpenSanctions"
+    _SOURCE_KEY = "opensanctions"
+
+    async def extract(
+        self,
+        session: AsyncSession,
+        iso3: str,
+        *,
+        window_hours: int = 24,
+    ) -> Signal | None:
+        since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        stmt = select(func.count(Event.id)).where(
+            and_(
+                Event.source == self._SOURCE_KEY,
+                Event.ingested_at >= since,
+                or_(Event.actor_iso3 == iso3, Event.target_iso3 == iso3),
+            )
+        )
+        count = (await session.execute(stmt)).scalar_one() or 0
+        if count == 0:
+            return None
+
+        magnitude = round(normalize_magnitude(count, soft_cap=10), 2)
+        if magnitude < 0.1:
+            return None
+        headline = f"{iso3}: {count} new sanctions/PEP entries (last {window_hours}h)"
+        return Signal(
+            source=self.source,
+            headline=headline[:120],
+            magnitude=magnitude,
+            direction="negative",
+        )

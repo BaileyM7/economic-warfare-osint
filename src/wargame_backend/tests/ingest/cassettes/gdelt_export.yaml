@@ -1,0 +1,28 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-httpx/0.27.2
+    method: GET
+    uri: http://data.gdeltproject.org/gdeltv2/20250101000000.export.CSV.zip
+  response:
+    body:
+      # Minimal 2-column TSV wrapped in a zip. The actual bytes are replaced
+      # by the fixture CSV file reference below. VCR replays this response.
+      string: !!binary |
+        UEsDBAoAAAAAABhbdlkAAAAAAAAAAAAAAAAQAAAAMjAyNTAxMDEwMDAwMDAAUEsFBgAAAAABAAEAPgAA
+        AB4AAAAA
+    headers:
+      Content-Type:
+      - application/zip
+    status:
+      code: 200
+      message: OK
+version: 1

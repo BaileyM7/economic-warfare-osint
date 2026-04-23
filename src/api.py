@@ -187,6 +187,29 @@ app.include_router(coa_router, dependencies=[Depends(require_auth)])
 app.include_router(monitoring_router, dependencies=[Depends(require_auth)])
 app.include_router(briefings_router, dependencies=[Depends(require_auth)])
 
+# --- Wargame subapp (embedded swarm backend) ---
+# Gated by WARGAME_ENABLED so Emissary's baseline behavior is unaffected
+# when swarm's Postgres + Redis aren't provisioned. Any import-time failure
+# is caught so a broken wargame doesn't take down the rest of the app.
+import os as _os
+if _os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
+    try:
+        # Swarm's internal code uses bare imports (e.g. `from wargame_backend.X`).
+        # Put Emissary's `src/` dir on sys.path so those resolve.
+        import sys as _sys
+        _src_dir = str(Path(__file__).parent)
+        if _src_dir not in _sys.path:
+            _sys.path.insert(0, _src_dir)
+        from wargame_backend.app.main import app as _wargame_app
+        app.mount("/api/wargame", _wargame_app)
+        logger.info("Wargame subapp mounted at /api/wargame (%d routes)", len(_wargame_app.routes))
+    except Exception as _wargame_exc:  # noqa: BLE001
+        logger.error(
+            "Wargame subapp failed to mount; continuing without it. "
+            "Set WARGAME_ENABLED=0 to silence this warning. Error: %s",
+            _wargame_exc,
+        )
+
 _DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if (_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
