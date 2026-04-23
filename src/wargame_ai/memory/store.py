@@ -24,7 +24,7 @@ import structlog
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AgentMemory, Event, MemoryType
+from wargame_backend.app.db.models import AgentMemory, Event, MemoryType
 
 from wargame_ai.memory.embeddings import Embedder
 

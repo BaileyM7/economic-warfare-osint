@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Event
+from wargame_backend.app.db.models import Event
 
 from wargame_ai.sim.signals import Signal
 

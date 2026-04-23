@@ -15,7 +15,7 @@ from typing import Sequence
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Event
+from wargame_backend.app.db.models import Event
 
 
 async def fetch_country_events(

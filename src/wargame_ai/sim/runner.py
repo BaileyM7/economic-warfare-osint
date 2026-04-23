@@ -17,11 +17,11 @@ import structlog
 import yaml
 from sqlalchemy import select
 
-from app.config import get_settings
-from app.db.models import Scenario as ScenarioORM
-from app.db.models import Simulation as SimulationORM
-from app.db.models import SimulationStatus
-from app.db.session import AsyncSessionLocal
+from wargame_backend.app.config import get_settings
+from wargame_backend.app.db.models import Scenario as ScenarioORM
+from wargame_backend.app.db.models import Simulation as SimulationORM
+from wargame_backend.app.db.models import SimulationStatus
+from wargame_backend.app.db.session import AsyncSessionLocal
 
 from wargame_ai.agents.arbiter import Arbiter
 from wargame_ai.agents.country_agent import ChatAnthropicClient, CountryAgent
