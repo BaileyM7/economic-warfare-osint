@@ -1262,6 +1262,94 @@ async def person_network(req: PersonNetworkRequest):
 
 # --- Vessel Track endpoint ---
 
+def _build_sector_sources(
+    sector: str,
+    sanctioned_count: int,
+    supply_chain_exposures: list[dict] | None,
+    geopolitical_tensions: list[dict] | None,
+) -> list[dict[str, Any]]:
+    """Structured sources list for a sector-analysis response.
+
+    Returns rich {name, url, description} dicts (not bare strings) so that
+    downstream COAs and briefings have distinct, citable provenance for each
+    data lane. We emit all four lanes unconditionally — even when a given
+    query returns empty supply_chain or geopolitical data, the LANES were
+    still consulted (a null result is itself a citable fact: "no exposures
+    found in HS-code data"). Empty data is also useful information for the
+    LLM rationale ("zero current tension pairs flagged [4]").
+    """
+    sc_desc = (
+        f"HS-code-level import/export concentrations across {len(supply_chain_exposures)} flagged exposures for {sector}"
+        if supply_chain_exposures
+        else f"HS-code-level import/export concentrations for {sector} (no high-concentration exposures flagged in current dataset)"
+    )
+    gt_desc = (
+        f"Country-pair geopolitical tone and event counts across {len(geopolitical_tensions)} active tension pairs for {sector}"
+        if geopolitical_tensions
+        else f"Country-pair geopolitical tone and event counts for {sector} (no current tension pairs flagged)"
+    )
+    return [
+        {
+            "name": "OFAC SDN",
+            "url": "https://sanctionssearch.ofac.treas.gov/",
+            "description": f"Sanctions screening across {sector} key players ({sanctioned_count} hits)",
+        },
+        {
+            "name": "OpenSanctions",
+            "url": "https://www.opensanctions.org/",
+            "description": f"Consolidated sanctions and PEP screening for {sector} entities",
+        },
+        {
+            "name": "USA Trade Online (Census)",
+            "url": "https://usatrade.census.gov/",
+            "description": sc_desc,
+        },
+        {
+            "name": "GDELT 2.0 Event Database",
+            "url": "https://www.gdeltproject.org/",
+            "description": gt_desc,
+        },
+    ]
+
+
+def _build_vessel_sources(vessel_name: str, sayari_intel: Any) -> list[dict[str, Any]]:
+    """Construct the structured sources list for a vessel-track response.
+
+    Bare-string sources used to be returned here, which downstream collapsed into
+    a single hallucinated rollup label in briefings. Returning structured dicts
+    with per-API URLs (and a Sayari record_url when entity_id is known) lets the
+    briefing pipeline cite real provenance.
+    """
+    sources: list[dict[str, Any]] = [
+        {
+            "name": "Datalastic AIS",
+            "url": "https://datalastic.com/",
+            "description": f"Vessel position, IMO/MMSI registration, and 47+ point route history for {vessel_name}",
+        },
+        {
+            "name": "OFAC SDN",
+            "url": "https://sanctionssearch.ofac.treas.gov/",
+            "description": f"Sanctions screening against {vessel_name}, owners, and operators",
+        },
+    ]
+    if sayari_intel and sayari_intel.resolved:
+        entry: dict[str, Any] = {
+            "name": "Sayari Graph",
+            "url": "https://app.sayari.com/",
+            "description": (
+                f"Beneficial ownership chain, registered owner, and trade activity for {vessel_name}"
+                + (f" (resolved as {sayari_intel.owner_name})" if getattr(sayari_intel, "owner_name", None) else "")
+            ),
+        }
+        eid = None
+        if sayari_intel.ownership and getattr(sayari_intel.ownership, "vessel_entity_id", None):
+            eid = sayari_intel.ownership.vessel_entity_id
+        if eid:
+            entry["record_url"] = f"https://app.sayari.com/entities/{eid}"
+        sources.append(entry)
+    return sources
+
+
 @app.post("/api/vessel-track", dependencies=[Depends(require_auth)])
 async def vessel_track(req: VesselTrackRequest):
     """Build a vessel intelligence profile: AIS position, route, ownership, sanctions."""
@@ -1557,9 +1645,7 @@ async def vessel_track(req: VesselTrackRequest):
             "trade_graph": trade_graph_result,
             "narrative": narrative,
             "recommendations": recommendations,
-            "sources": ["Datalastic AIS", "OFAC SDN"] + (
-                ["Sayari Graph"] if sayari_intel and sayari_intel.resolved else []
-            ),
+            "sources": _build_vessel_sources(vessel_name, sayari_intel),
         })
 
     except Exception as e:
@@ -1666,6 +1752,18 @@ _SECTOR_COMPANIES: dict[str, list[dict]] = {
         {"name": "Spire Global", "ticker": "SPIR", "country": "US"},
         {"name": "CASC (private)", "ticker": None, "country": "CN"},
     ],
+    "agriculture_commodities": [
+        {"name": "Archer Daniels Midland", "ticker": "ADM", "country": "US"},
+        {"name": "Bunge Global", "ticker": "BG", "country": "US"},
+        {"name": "Cargill (private)", "ticker": None, "country": "US"},
+        {"name": "Louis Dreyfus Company (private)", "ticker": None, "country": "NL"},
+        {"name": "Corteva", "ticker": "CTVA", "country": "US"},
+        {"name": "Deere & Company", "ticker": "DE", "country": "US"},
+        {"name": "Nutrien", "ticker": "NTR", "country": "CA"},
+        {"name": "Tyson Foods", "ticker": "TSN", "country": "US"},
+        {"name": "COFCO (private)", "ticker": None, "country": "CN"},
+        {"name": "Wilmar International", "ticker": "F34.SI", "country": "SG"},
+    ],
 }
 
 # Aliases for sector matching — maps query terms to registry keys
@@ -1703,36 +1801,90 @@ _SECTOR_ALIASES: dict[str, str] = {
     "oil": "energy",
     "gas": "energy",
     "oil and gas": "energy",
+    "agriculture": "agriculture_commodities",
+    "agricultural": "agriculture_commodities",
+    "agri": "agriculture_commodities",
+    "ag": "agriculture_commodities",
+    "farming": "agriculture_commodities",
+    "farm": "agriculture_commodities",
+    "soybean": "agriculture_commodities",
+    "soybeans": "agriculture_commodities",
+    "soy bean": "agriculture_commodities",
+    "soy beans": "agriculture_commodities",
+    "soy": "agriculture_commodities",
+    "corn": "agriculture_commodities",
+    "maize": "agriculture_commodities",
+    "wheat": "agriculture_commodities",
+    "grain": "agriculture_commodities",
+    "grains": "agriculture_commodities",
+    "cereal": "agriculture_commodities",
+    "cereals": "agriculture_commodities",
+    "livestock": "agriculture_commodities",
+    "dairy": "agriculture_commodities",
+    "fertilizer": "agriculture_commodities",
+    "fertilizers": "agriculture_commodities",
+    "fertiliser": "agriculture_commodities",
+    "fertilisers": "agriculture_commodities",
+    "commodities": "agriculture_commodities",
+    "food": "agriculture_commodities",
 }
+
+
+def _normalize_sector_query(query: str) -> list[str]:
+    """Yield normalized variants of a sector query for deterministic matching.
+
+    Order matters: most specific (exact lowercase) first, most lenient last.
+    """
+    base = query.lower().strip()
+    variants: list[str] = [base]
+
+    collapsed = " ".join(base.split())
+    if collapsed != base:
+        variants.append(collapsed)
+
+    no_space = "".join(base.split())
+    if no_space and no_space not in variants:
+        variants.append(no_space)
+
+    if base.endswith("s") and len(base) > 3:
+        variants.append(base[:-1])
+    if collapsed.endswith("s") and len(collapsed) > 3 and collapsed[:-1] not in variants:
+        variants.append(collapsed[:-1])
+
+    return variants
 
 
 def _match_sector(query: str) -> tuple[str, list[dict]]:
     """Find a sector from registry/aliases; no LLM, no generic fallback."""
-    q = query.lower().strip()
+    variants = _normalize_sector_query(query)
 
-    # 1. Exact key match
-    if q in _SECTOR_COMPANIES:
-        return q, _SECTOR_COMPANIES[q]
+    # 1. Exact key match (any normalized variant)
+    for v in variants:
+        if v in _SECTOR_COMPANIES:
+            return v, _SECTOR_COMPANIES[v]
 
-    # 2. Alias lookup
-    if q in _SECTOR_ALIASES:
-        key = _SECTOR_ALIASES[q]
-        return key, _SECTOR_COMPANIES[key]
+    # 2. Alias lookup (any normalized variant)
+    for v in variants:
+        if v in _SECTOR_ALIASES:
+            key = _SECTOR_ALIASES[v]
+            return key, _SECTOR_COMPANIES[key]
+
+    primary = variants[0]
 
     # 3. Substring match against aliases
     for alias, key in _SECTOR_ALIASES.items():
-        if alias in q or q in alias:
+        if alias in primary or primary in alias:
             return key, _SECTOR_COMPANIES[key]
 
     # 4. Substring match against registry keys
     for sector_key, companies in _SECTOR_COMPANIES.items():
-        if sector_key in q or q in sector_key:
+        if sector_key in primary or primary in sector_key:
             return sector_key, companies
 
     # 5. Word-level partial match against registry keys
     for sector_key, companies in _SECTOR_COMPANIES.items():
         words = sector_key.replace("_", " ").split()
-        if any(w in q for w in words if len(w) > 3):
+        if any(w in primary for w in words if len(w) > 3):
             return sector_key, companies
 
     return "", []
@@ -1842,6 +1994,20 @@ async def _resolve_sector(query: str) -> tuple[str, list[dict[str, Any]]]:
     return dynamic_key, dynamic_companies
 
 
+def _suggest_sector_keys(query: str, limit: int = 3) -> list[str]:
+    """Best-effort suggestion of known sector keys when matching fails."""
+    q = query.lower().strip()
+    tokens = [t for t in q.replace("_", " ").split() if len(t) > 2]
+    scored: list[tuple[int, str]] = []
+    for key in _SECTOR_COMPANIES:
+        key_words = set(key.replace("_", " ").split())
+        overlap = sum(1 for t in tokens if any(t in w or w in t for w in key_words))
+        if overlap:
+            scored.append((overlap, key))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [k for _, k in scored[:limit]]
+
+
 @app.post("/api/sector-analysis", dependencies=[Depends(require_auth)])
 async def sector_analysis(req: SectorAnalysisRequest):
     """Sector-level analysis: key players, sanctions exposure, trade dependency."""
@@ -1852,13 +2018,16 @@ async def sector_analysis(req: SectorAnalysisRequest):
     try:
         sector_key, companies = await _resolve_sector(sector)
         if not companies:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Could not resolve sector to a supported registry key and failed "
-                    "to generate a dynamic company set. Try a more specific sector phrase."
-                ),
+            suggestions = _suggest_sector_keys(sector)
+            known = ", ".join(sorted(_SECTOR_COMPANIES.keys()))
+            detail = (
+                f"Could not resolve sector '{sector}' to a supported registry key "
+                f"and failed to generate a dynamic company set."
             )
+            if suggestions:
+                detail += f" Did you mean: {', '.join(suggestions)}?"
+            detail += f" Supported sectors include: {known}."
+            raise HTTPException(status_code=422, detail=detail)
 
         # Check OFAC status for top companies in parallel
         ofac_client = OFACClient()
@@ -2003,7 +2172,7 @@ async def sector_analysis(req: SectorAnalysisRequest):
             "recommendations": recommendations,
             "supply_chain_exposures": supply_chain_exposures,
             "geopolitical_tensions": geopolitical_tensions,
-            "sources": ["OFAC SDN", "OpenSanctions"],
+            "sources": _build_sector_sources(sector, sanctioned_count, supply_chain_exposures, geopolitical_tensions),
         })
 
     except Exception as e:

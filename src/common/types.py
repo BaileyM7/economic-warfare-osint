@@ -18,7 +18,9 @@ class Confidence(str, Enum):
 class SourceReference(BaseModel):
     """Provenance tracking for a data point."""
     name: str  # e.g. "OpenSanctions", "OFAC SDN"
-    url: str | None = None
+    url: str | None = None  # API or product landing URL
+    record_url: str | None = None  # entity-specific deep link, when available
+    description: str | None = None  # short note on what was drawn from this source
     accessed_at: datetime = Field(default_factory=datetime.utcnow)
     dataset_version: str | None = None
 

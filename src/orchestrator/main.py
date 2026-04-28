@@ -307,6 +307,16 @@ class Orchestrator:
             except ValueError:
                 confidence_map[k] = Confidence.LOW
 
+        # Sources: augment LLM-derived sources_used with real ToolResponse.sources
+        # envelopes harvested from tool_results, dedup'd by (name, record_url or url).
+        # The LLM-derived list stays as a fallback safety net for pipelines that
+        # bypass the ToolResponse envelope; tool-derived entries take precedence
+        # because they carry real URLs/descriptions while LLM rollups don't.
+        merged_sources = _merge_sources(
+            tool_results,
+            llm_source_names=[str(s) for s in data.get("sources_used", []) if s],
+        )
+
         return ImpactAssessment(
             query=AnalystQuery(raw_query=query, scenario_type=st),
             scenario_type=st,
@@ -314,7 +324,7 @@ class Orchestrator:
             findings=data.get("findings", []),
             friendly_fire=data.get("friendly_fire", []),
             confidence_summary=confidence_map,
-            sources=[SourceReference(name=s) for s in data.get("sources_used", [])],
+            sources=merged_sources,
             recommendations=data.get("recommendations", []),
         )
 
@@ -346,6 +356,86 @@ class Orchestrator:
                 "depends_on": [],
             },
         ]
+
+
+def _walk_tool_sources(node: Any) -> list[dict[str, Any]]:
+    """Recursively walk a tool_results structure and collect any `sources` lists.
+
+    Tool agents return ToolResponse envelopes whose sources are surfaced as either
+    (a) SourceReference Pydantic instances or (b) plain dicts after JSON round-trip.
+    This walker handles both, plus nested step results.
+    """
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        raw = node.get("sources")
+        if isinstance(raw, list):
+            for item in raw:
+                if hasattr(item, "model_dump"):  # SourceReference instance
+                    found.append(item.model_dump(mode="json"))
+                elif isinstance(item, dict):
+                    found.append(item)
+                elif isinstance(item, str) and item.strip():
+                    found.append({"name": item.strip()})
+        for v in node.values():
+            if v is not raw:
+                found.extend(_walk_tool_sources(v))
+    elif isinstance(node, list):
+        for v in node:
+            found.extend(_walk_tool_sources(v))
+    return found
+
+
+def _merge_sources(
+    tool_results: dict[str, Any], llm_source_names: list[str]
+) -> list[SourceReference]:
+    """Combine ToolResponse-derived sources with the LLM's sources_used list.
+
+    Real tool sources take precedence (they carry URLs and descriptions). LLM
+    rollup names only contribute when no tool source already covers them.
+    Dedup key is (name lowered, record_url or url).
+    """
+    merged: dict[tuple[str, str], SourceReference] = {}
+
+    for raw in _walk_tool_sources(tool_results):
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            continue
+        url = raw.get("url") or None
+        record_url = raw.get("record_url") or None
+        key = (name.lower(), record_url or url or "")
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = SourceReference(
+                name=name,
+                url=url,
+                record_url=record_url,
+                description=raw.get("description") or None,
+                dataset_version=raw.get("dataset_version") or None,
+            )
+        else:
+            # Fill in missing fields from a richer duplicate
+            if not existing.url and url:
+                existing.url = url
+            if not existing.record_url and record_url:
+                existing.record_url = record_url
+            if not existing.description and raw.get("description"):
+                existing.description = raw["description"]
+
+    for name in llm_source_names:
+        clean = name.strip()
+        if not clean:
+            continue
+        # Suppress LLM rollup labels that look like "Vessel Intel: X assessment"
+        # — they collide with the per-API entries and add no provenance value.
+        if ":" in clean and any(w in clean.lower() for w in ("assessment", "analysis", "intel")):
+            continue
+        key = (clean.lower(), "")
+        # Don't override a tool-derived entry with the same name
+        if any(k[0] == clean.lower() for k in merged):
+            continue
+        merged[key] = SourceReference(name=clean)
+
+    return list(merged.values())
 
 
 def _compact_tool_results(results: dict[str, Any], max_list: int = 10, max_str: int = 500) -> dict[str, Any]:

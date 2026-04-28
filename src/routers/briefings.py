@@ -75,6 +75,113 @@ async def create_briefing(req: BriefingCreateRequest):
     return row_to_briefing(row)
 
 
+def _extract_sources(source_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull a structured sources list from an analysis result or COA payload.
+
+    Handles the orchestrator's `sources_used` / `sources` fields (list of strings
+    or dicts) and normalizes to a list of {name, url?, accessed_at?} dicts.
+    """
+    raw = None
+    for key in ("sources_used", "sources"):
+        if key in source_data and source_data[key]:
+            raw = source_data[key]
+            break
+    if not raw:
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, str):
+            normalized.append({"name": item})
+        elif isinstance(item, dict):
+            name = item.get("name") or item.get("source") or item.get("tool")
+            if not name:
+                continue
+            entry: dict[str, Any] = {"name": str(name)}
+            if item.get("url"):
+                entry["url"] = str(item["url"])
+            if item.get("record_url"):
+                entry["record_url"] = str(item["record_url"])
+            if item.get("accessed_at"):
+                entry["accessed_at"] = str(item["accessed_at"])
+            if item.get("description"):
+                entry["description"] = str(item["description"])
+            normalized.append(entry)
+    return normalized
+
+
+def _format_sources_for_prompt(sources: list[dict[str, Any]]) -> str:
+    """Format the sources list for the LLM prompt as `[N] Name — description` plus
+    indented URL lines. The LLM is instructed to mirror this exact shape verbatim
+    in the rendered ## Sources section so that records and APIs stay distinct.
+    """
+    if not sources:
+        return "(No structured source list provided — infer sources from the data payload below and cite them by name.)"
+    lines = []
+    for i, s in enumerate(sources, start=1):
+        head = f"[{i}] {s.get('name', 'unknown')}"
+        if s.get("description"):
+            head += f" — {s['description']}"
+        lines.append(head)
+        if s.get("url"):
+            lines.append(f"    {s['url']}")
+        if s.get("record_url"):
+            lines.append(f"    Record: {s['record_url']}")
+    return "\n".join(lines)
+
+
+_ANALYST_BRIEFING_SYSTEM_PROMPT = """You are a senior intelligence analyst producing a briefing for a customer analyst audience (NOT an executive summary). The reader is a subject-matter analyst who needs to assess confidence, trace claims to evidence, and defend conclusions to a supervisor.
+
+Produce a Markdown briefing with exactly these sections in this order:
+
+## Executive Summary
+2-4 sentences. Name specific entities, quantities, and timeframes. No filler.
+
+## Target Assessment
+The entity/sector/scenario under analysis. Include what is known with certainty vs. what is inferred.
+
+## Key Findings
+A numbered list. Each finding has this exact structure:
+  **N. [Finding title]** — [Confidence: HIGH | MEDIUM | LOW]
+  Claim: [one-sentence claim with concrete entities/numbers]
+  Evidence: [what in the source data supports this] [citation marker]
+  Reasoning: [why this evidence supports the claim; note assumptions]
+
+Use inline citation markers like `[1]`, `[2]` that reference the `## Sources` section.
+
+## Risk & Friendly Fire
+Named second-order risks and friendly-fire exposure. Each risk carries confidence and a citation.
+
+## Recommendations
+Each recommendation links back to a specific finding by number (e.g., "Per Finding 2, ..."). Avoid generic advice.
+
+## Sources
+A numbered list matching the inline `[N]` markers. **You MUST reproduce the exact source list provided in the user message verbatim** — same numbering, same names, same URLs, same record links. Do NOT invent new sources, do NOT collapse multiple distinct APIs into a single rolled-up label, and do NOT rename them.
+
+The required format for each source entry is:
+  [N] Source name — short description of what was drawn from it
+      <api or product URL>
+      Record: <entity-specific deep link>          ← include this line ONLY when the user-supplied source list provides a `Record:` URL for that entry
+
+A real example (do not copy verbatim — use whatever the user message gives you):
+  [1] Sayari Graph — Beneficial ownership chain for LUSTER MARITIME SA
+      https://app.sayari.com/
+      Record: https://app.sayari.com/entities/abc123
+  [2] OFAC SDN — Sanctions screening
+      https://sanctionssearch.ofac.treas.gov/
+
+HARD RULES:
+- Every factual claim in Key Findings and Risk & Friendly Fire MUST carry a `[N]` citation that maps to a distinct entry in the user-supplied source list.
+- If the user-supplied list contains 3 sources, you MUST use at least 3 different `[N]` markers across the briefing — do not point every claim at `[1]`.
+- Do NOT cite a source as `[N]` if it is not in the user-supplied list. If you genuinely cannot tie a claim to a provided source, omit the claim or downgrade it to LOW confidence and label it "(unsourced)".
+- Every finding and risk MUST carry a HIGH/MEDIUM/LOW confidence label.
+- Name specific entities (companies, vessels, people, ports, tickers). Never write "a company" or "the region" when a name is available in the source data.
+- Quote key numbers from the source data verbatim.
+- NO filler phrases ("It is important to note", "In conclusion", "Overall").
+- NO generic recommendations ("monitor the situation", "consider sanctions").
+- Return ONLY the Markdown. No preamble, no code fences."""
+
+
 @router.post("/briefing/generate")
 async def generate_briefing(req: BriefingGenerateRequest):
     client = get_anthropic_client()
@@ -99,24 +206,35 @@ async def generate_briefing(req: BriefingGenerateRequest):
         source_data = analysis.get("result", {})
         source_title = f"Briefing: Analysis {req.analysis_id}"
 
-    system_prompt = (
-        "You are an intelligence analyst producing a structured briefing document. "
-        "Generate a Markdown briefing with these sections:\n"
-        "## Situation\n## Analysis\n## Recommendation\n## Risk Assessment\n\n"
-        "Be concise, specific, and reference concrete data from the source material. "
-        "Use bullet points for key findings. Return ONLY the Markdown content."
+    sources = _extract_sources(source_data)
+    # Fallback: COAs created before source plumbing existed (or via the manual
+    # POST /coa path that bypasses /coa/generate) won't have sources attached.
+    # If we have a `source_analysis_id` AND that analysis is still in memory,
+    # pull sources from it. This means re-generating a briefing for an old COA
+    # produces real per-source citations as long as the underlying analysis
+    # is still cached.
+    if not sources and req.coa_id:
+        analysis_id = source_data.get("source_analysis_id")
+        if analysis_id and _analyses_ref and analysis_id in _analyses_ref:
+            cached = _analyses_ref[analysis_id].get("result", {})
+            sources = _extract_sources(cached)
+    sources_block = _format_sources_for_prompt(sources)
+
+    user_content = (
+        f"Briefing type: {req.briefing_type}\n\n"
+        f"Available sources (use these numbers as inline citations):\n{sources_block}\n\n"
+        f"Source data payload (JSON):\n{json.dumps(source_data, default=str)}"
     )
-    user_content = f"Briefing type: {req.briefing_type}\n\nSource data:\n{json.dumps(source_data, default=str)}"
 
     try:
         response = await asyncio.wait_for(
             client.messages.create(
                 model=config.model,
-                max_tokens=2000,
-                system=system_prompt,
+                max_tokens=3000,
+                system=_ANALYST_BRIEFING_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ),
-            timeout=30.0,
+            timeout=45.0,
         )
         content_md = response.content[0].text.strip()
     except Exception as exc:
@@ -127,12 +245,13 @@ async def generate_briefing(req: BriefingGenerateRequest):
     now = _now()
     briefing_id = _new_id()
     ref_id = req.coa_id or req.analysis_id
+    sources_json = json.dumps(sources)
     conn = get_db()
     try:
         conn.execute(
-            "INSERT INTO briefings (id, title, type, status, reference_id, content_markdown, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)",
-            (briefing_id, source_title, req.briefing_type, ref_id, content_md, now, now),
+            "INSERT INTO briefings (id, title, type, status, reference_id, content_markdown, sources, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)",
+            (briefing_id, source_title, req.briefing_type, ref_id, content_md, sources_json, now, now),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM briefings WHERE id = ?", (briefing_id,)).fetchone()
