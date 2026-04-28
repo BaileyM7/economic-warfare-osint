@@ -66,6 +66,50 @@ def _sources_used(oc: bool, gleif: bool, icij: bool) -> list[SourceReference]:
     return sources
 
 
+def _detailed_sources(
+    oc_records: list | None = None,
+    lei_records: list | None = None,
+    max_per_kind: int = 3,
+) -> list[SourceReference]:
+    """Emit per-record SourceReferences with deep links where the record carries one.
+
+    OpenCorporates records carry `opencorporates_url`. GLEIF records carry an
+    `lei` from which we can construct `https://www.gleif.org/en/lei/<lei>`.
+    Capped at `max_per_kind` per source to avoid swamping the briefing's Sources
+    section when a search returns 50 results.
+    """
+    out: list[SourceReference] = []
+    if oc_records:
+        for rec in oc_records[:max_per_kind]:
+            url = getattr(rec, "opencorporates_url", None)
+            if not url:
+                continue
+            out.append(
+                SourceReference(
+                    name="OpenCorporates",
+                    url="https://opencorporates.com",
+                    record_url=url,
+                    description=getattr(rec, "name", None) or "Corporate registry record",
+                    accessed_at=datetime.utcnow(),
+                )
+            )
+    if lei_records:
+        for rec in lei_records[:max_per_kind]:
+            lei = getattr(rec, "lei", None)
+            if not lei:
+                continue
+            out.append(
+                SourceReference(
+                    name="GLEIF",
+                    url="https://www.gleif.org",
+                    record_url=f"https://www.gleif.org/en/lei/{lei}",
+                    description=getattr(rec, "legal_name", None) or f"LEI {lei}",
+                    accessed_at=datetime.utcnow(),
+                )
+            )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tool: search_entity
 # ---------------------------------------------------------------------------
@@ -104,6 +148,7 @@ async def search_entity(query: str) -> dict:
 
     confidence = _assess_confidence(len(oc_results), len(gleif_results), len(icij_results))
     sources = _sources_used(bool(oc_results), bool(gleif_results), bool(icij_results))
+    sources.extend(_detailed_sources(oc_records=oc_results, lei_records=gleif_results))
 
     return ToolResponse(
         data=payload.model_dump(mode="json"),
@@ -190,6 +235,7 @@ async def get_corporate_tree(entity_name: str) -> dict:
 
     confidence = _assess_confidence(len(all_companies), len(unique_lei_records), 0)
     sources = _sources_used(bool(all_companies), bool(unique_lei_records), False)
+    sources.extend(_detailed_sources(oc_records=all_companies, lei_records=unique_lei_records))
 
     return ToolResponse(
         data=payload.model_dump(mode="json"),
@@ -259,6 +305,7 @@ async def get_beneficial_owners(entity_name: str) -> dict:
         False,
         bool(icij_results),
     )
+    sources.extend(_detailed_sources(oc_records=detailed_companies))
 
     return ToolResponse(
         data=payload.model_dump(mode="json"),
@@ -381,6 +428,7 @@ async def resolve_entity(name: str, jurisdiction: str = "") -> dict:
 
     confidence = _assess_confidence(len(oc_results), len(gleif_results), len(icij_results))
     sources = _sources_used(bool(oc_results), bool(gleif_results), bool(icij_results))
+    sources.extend(_detailed_sources(oc_records=oc_results, lei_records=gleif_results))
 
     return ToolResponse(
         data=payload.model_dump(mode="json"),

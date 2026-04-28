@@ -122,6 +122,22 @@ def init_db() -> None:
             conn.execute("ALTER TABLE exercises ADD COLUMN overall_score REAL")
         except Exception:
             pass
+        # Source provenance columns for analyst-grade briefings/COAs
+        try:
+            conn.execute("ALTER TABLE briefings ADD COLUMN sources TEXT DEFAULT '[]'")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE coas ADD COLUMN sources TEXT DEFAULT '[]'")
+        except Exception:
+            pass
+        # Analyst-grade rationale: the "why" behind the COA, with [N] cite markers
+        # mapping to entries in the sources column. Lets COAs justify their action
+        # the same way briefings justify findings.
+        try:
+            conn.execute("ALTER TABLE coas ADD COLUMN rationale TEXT DEFAULT ''")
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()
@@ -484,6 +500,7 @@ def _json_field(row: sqlite3.Row, key: str, default=None):
 
 
 def row_to_coa(row: sqlite3.Row) -> dict:
+    keys = row.keys() if hasattr(row, "keys") else []
     return {
         "id": row["id"],
         "name": row["name"],
@@ -496,6 +513,8 @@ def row_to_coa(row: sqlite3.Row) -> dict:
         "recommendations": _json_field(row, "recommendations", []),
         "friendly_fire": _json_field(row, "friendly_fire", []),
         "expected_effects": _json_field(row, "expected_effects", []),
+        "sources": _json_field(row, "sources", []) if "sources" in keys else [],
+        "rationale": (row["rationale"] if "rationale" in keys else "") or "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -531,6 +550,7 @@ def row_to_activity(row: sqlite3.Row) -> dict:
 
 
 def row_to_briefing(row: sqlite3.Row) -> dict:
+    keys = row.keys() if hasattr(row, "keys") else []
     return {
         "id": row["id"],
         "title": row["title"],
@@ -538,6 +558,7 @@ def row_to_briefing(row: sqlite3.Row) -> dict:
         "status": row["status"],
         "reference_id": row["reference_id"],
         "content_markdown": row["content_markdown"],
+        "sources": _json_field(row, "sources", []) if "sources" in keys else [],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
