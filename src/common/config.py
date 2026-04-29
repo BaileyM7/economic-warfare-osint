@@ -23,13 +23,17 @@ class Config:
     # Free-tier API keys (some sources need registration)
     fred_api_key: str = field(default_factory=lambda: os.getenv("FRED_API_KEY", ""))
     comtrade_api_key: str = field(default_factory=lambda: os.getenv("COMTRADE_API_KEY", ""))
-    opensanctions_api_key: str = field(default_factory=lambda: os.getenv("OPENSANCTIONS_API_KEY", ""))
+    opensanctions_api_key: str = field(
+        default_factory=lambda: os.getenv("OPENSANCTIONS_API_KEY", "")
+    )
     trade_gov_api_key: str = field(default_factory=lambda: os.getenv("TRADE_GOV_API_KEY", ""))
     acled_api_key: str = field(default_factory=lambda: os.getenv("ACLED_API_KEY", ""))
     acled_email: str = field(default_factory=lambda: os.getenv("ACLED_EMAIL", ""))
     acled_password: str = field(default_factory=lambda: os.getenv("ACLED_PASSWORD", ""))
     acled_refresh_token: str = field(default_factory=lambda: os.getenv("REFRESH_TOKEN", ""))
-    opencorporates_api_key: str = field(default_factory=lambda: os.getenv("OPENCORPORATES_API_KEY", ""))
+    opencorporates_api_key: str = field(
+        default_factory=lambda: os.getenv("OPENCORPORATES_API_KEY", "")
+    )
     datalastic_api_key: str = field(default_factory=lambda: os.getenv("DATALASTIC_API_KEY", ""))
     sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
     sayari_client_secret: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_SECRET", ""))
@@ -39,8 +43,18 @@ class Config:
     sayari_client_secret: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_SECRET", ""))
 
     # BuildWorkforce AI sector intelligence
-    buildworkforce_api_key: str = field(default_factory=lambda: os.getenv("BUILDWORKFORCE_API_KEY", ""))
-    buildworkforce_team_id: str = field(default_factory=lambda: os.getenv("BUILDWORKFORCE_TEAM_ID", "56487d92-a610-4875-8263-07a4d4afb6eb"))
+    buildworkforce_api_key: str = field(
+        default_factory=lambda: os.getenv("BUILDWORKFORCE_API_KEY", "")
+    )
+    buildworkforce_team_id: str = field(
+        default_factory=lambda: os.getenv(
+            "BUILDWORKFORCE_TEAM_ID", "56487d92-a610-4875-8263-07a4d4afb6eb"
+        )
+    )
+
+    # Finnhub — primary equity quote/profile source on cloud deployments where
+    # Yahoo Finance's anti-bot WAF blocks yfinance with 401 "Invalid Crumb".
+    finnhub_api_key: str = field(default_factory=lambda: os.getenv("FINNHUB_API_KEY", ""))
 
     # No key needed
     # OFAC, OpenSanctions, GLEIF, ICIJ, GDELT, IMF, World Bank, yfinance, SEC EDGAR
@@ -54,7 +68,9 @@ class Config:
     )
 
     # Model settings
-    model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514"))
+    model: str = field(
+        default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+    )
 
     def validate(self) -> list[str]:
         """Return list of missing required config values."""

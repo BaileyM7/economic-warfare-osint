@@ -54,6 +54,7 @@ PENSION_KEYWORDS = [
 # yfinance client (wrapped in asyncio.to_thread for async compat)
 # ---------------------------------------------------------------------------
 
+
 class YFinanceClient:
     """Wraps the yfinance library with caching and async support."""
 
@@ -67,7 +68,9 @@ class YFinanceClient:
 
         info = await asyncio.to_thread(self._fetch_info, ticker)
         if info.get("_data_unavailable"):
-            logger.warning("get_stock_profile: no data for %s (%s)", ticker, info.get("_reason", ""))
+            logger.warning(
+                "get_stock_profile: no data for %s (%s)", ticker, info.get("_reason", "")
+            )
         profile = StockProfile(
             ticker=ticker.upper(),
             name=info.get("longName") or info.get("shortName", ticker),
@@ -102,7 +105,11 @@ class YFinanceClient:
                 if close_val is not None:
                     # Handle both scalar and series-like values
                     try:
-                        close_float = float(close_val.iloc[0]) if hasattr(close_val, "iloc") else float(close_val)
+                        close_float = (
+                            float(close_val.iloc[0])
+                            if hasattr(close_val, "iloc")
+                            else float(close_val)
+                        )
                     except (TypeError, ValueError, IndexError):
                         continue
                     historical.append(HistoricalPrice(date=dt_str, close=round(close_float, 4)))
@@ -135,16 +142,20 @@ class YFinanceClient:
         holders: list[InstitutionalHolder] = []
         if holders_df is not None and not holders_df.empty:
             for _, row in holders_df.iterrows():
-                holders.append(InstitutionalHolder(
-                    holder_name=str(row.get("Holder", "")),
-                    shares=int(row["Shares"]) if row.get("Shares") is not None else None,
-                    value=float(row["Value"]) if row.get("Value") is not None else None,
-                    pct_held=float(row["% Out"]) if row.get("% Out") is not None else (
-                        float(row["pctHeld"]) if row.get("pctHeld") is not None else None
-                    ),
-                    date_reported=str(row.get("Date Reported", "")) or None,
-                ))
-        set_cached([h.model_dump() for h in holders], self.CACHE_NS, action="holders", ticker=ticker)
+                holders.append(
+                    InstitutionalHolder(
+                        holder_name=str(row.get("Holder", "")),
+                        shares=int(row["Shares"]) if row.get("Shares") is not None else None,
+                        value=float(row["Value"]) if row.get("Value") is not None else None,
+                        pct_held=float(row["% Out"])
+                        if row.get("% Out") is not None
+                        else (float(row["pctHeld"]) if row.get("pctHeld") is not None else None),
+                        date_reported=str(row.get("Date Reported", "")) or None,
+                    )
+                )
+        set_cached(
+            [h.model_dump() for h in holders], self.CACHE_NS, action="holders", ticker=ticker
+        )
         return holders
 
     async def get_analyst_estimate(self, ticker: str) -> AnalystEstimate:
@@ -175,7 +186,9 @@ class YFinanceClient:
         has_price = info.get("regularMarketPrice") or info.get("currentPrice")
         has_name = info.get("longName") or info.get("shortName")
         if not has_price and not has_name:
-            logger.info("Ticker %s returned no market data — likely not publicly traded or delisted", ticker)
+            logger.info(
+                "Ticker %s returned no market data — likely not publicly traded or delisted", ticker
+            )
             info["_data_unavailable"] = True
             info["_reason"] = "no price or name data returned by yfinance"
         return info
@@ -214,14 +227,22 @@ class YFinanceClient:
                 close_val = row.get("Close")
                 if close_val is not None:
                     try:
-                        close_float = float(close_val.iloc[0]) if hasattr(close_val, "iloc") else float(close_val)
+                        close_float = (
+                            float(close_val.iloc[0])
+                            if hasattr(close_val, "iloc")
+                            else float(close_val)
+                        )
                     except (TypeError, ValueError, IndexError):
                         continue
                     historical.append(HistoricalPrice(date=dt_str, close=round(close_float, 4)))
 
         set_cached(
             [h.model_dump() for h in historical],
-            self.CACHE_NS, action="hist_range", ticker=ticker, start=start, end=end,
+            self.CACHE_NS,
+            action="hist_range",
+            ticker=ticker,
+            start=start,
+            end=end,
         )
         return historical
 
@@ -236,8 +257,102 @@ class YFinanceClient:
 
 
 # ---------------------------------------------------------------------------
+# Finnhub client — primary equity quote/profile source on cloud deployments.
+#
+# Yahoo Finance's WAF blocks yfinance from cloud-IP egress (Render, AWS, GCP)
+# with HTTP 401 "Invalid Crumb" errors, leaving current_price=None. Finnhub's
+# REST API is keyed and works reliably from any IP. Free tier: 60 calls/min,
+# real-time US equities, profile + quote endpoints.
+# ---------------------------------------------------------------------------
+
+
+class FinnhubClient:
+    """Wraps Finnhub's REST API for equity quote and profile lookups."""
+
+    CACHE_NS = "finnhub"
+    BASE_URL = "https://finnhub.io/api/v1"
+
+    def __init__(self) -> None:
+        self.api_key = config.finnhub_api_key
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    async def get_quote_and_profile(self, ticker: str) -> dict[str, Any]:
+        """Fetch current price + company profile in one logical call.
+
+        Returns a dict with keys matching the relevant subset of yfinance .info
+        so callers can use either source interchangeably:
+            current_price, change_pct, prev_close, name, country, sector,
+            industry, market_cap, exchange, _data_unavailable, _reason
+
+        Falsy fields stay None rather than 0 so callers can distinguish
+        "no data" from "real zero".
+        """
+        if not self.enabled:
+            return {"_data_unavailable": True, "_reason": "FINNHUB_API_KEY not set"}
+
+        cached = get_cached(self.CACHE_NS, action="quote_profile", ticker=ticker)
+        if cached is not None:
+            return cached
+
+        try:
+            quote, profile = await asyncio.gather(
+                fetch_json(
+                    f"{self.BASE_URL}/quote",
+                    params={"symbol": ticker, "token": self.api_key},
+                ),
+                fetch_json(
+                    f"{self.BASE_URL}/stock/profile2",
+                    params={"symbol": ticker, "token": self.api_key},
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Finnhub fetch failed for %s: %s", ticker, exc)
+            return {"_data_unavailable": True, "_reason": str(exc)}
+
+        # Finnhub returns {"c":0,"d":null,"dp":null,"h":0,"l":0,"o":0,"pc":0,"t":0}
+        # for unknown tickers — every field zero. Treat that as unavailable.
+        current = quote.get("c") if isinstance(quote, dict) else None
+        prev_close = quote.get("pc") if isinstance(quote, dict) else None
+        change_pct = quote.get("dp") if isinstance(quote, dict) else None
+        if not current:
+            logger.info("Finnhub returned no live price for %s", ticker)
+            return {"_data_unavailable": True, "_reason": "no quote data returned"}
+
+        result = {
+            "current_price": float(current),
+            "prev_close": float(prev_close) if prev_close else None,
+            "change_pct": float(change_pct) if change_pct is not None else None,
+            "name": (profile.get("name") if isinstance(profile, dict) else None),
+            "country": (profile.get("country") if isinstance(profile, dict) else None),
+            "industry": (profile.get("finnhubIndustry") if isinstance(profile, dict) else None),
+            # Finnhub returns marketCapitalization in MILLIONS — normalize to absolute USD
+            # so it matches yfinance's `marketCap` shape used elsewhere.
+            "market_cap": (
+                float(profile["marketCapitalization"]) * 1_000_000
+                if isinstance(profile, dict) and profile.get("marketCapitalization")
+                else None
+            ),
+            "exchange": (profile.get("exchange") if isinstance(profile, dict) else None),
+        }
+        # Finnhub's free tier doesn't expose sector — only finnhubIndustry. Map
+        # industry into both sector and industry slots so downstream code that
+        # keys off `sector` still has something to display.
+        if result["industry"]:
+            result["sector"] = result["industry"]
+        else:
+            result["sector"] = None
+
+        set_cached(result, self.CACHE_NS, action="quote_profile", ticker=ticker)
+        return result
+
+
+# ---------------------------------------------------------------------------
 # SEC EDGAR client
 # ---------------------------------------------------------------------------
+
 
 class SECEdgarClient:
     """Client for the SEC EDGAR full-text search and XBRL APIs."""
@@ -264,22 +379,22 @@ class SECEdgarClient:
 
         # Try the company_tickers.json file (lightweight, comprehensive)
         try:
-            tickers_data = await fetch_json(
-                self.COMPANY_TICKERS_URL, headers=SEC_HEADERS
-            )
+            tickers_data = await fetch_json(self.COMPANY_TICKERS_URL, headers=SEC_HEADERS)
             query_lower = query.lower()
             for _key, entry in tickers_data.items():
                 name = entry.get("title", "")
                 tick = entry.get("ticker", "")
                 if query_lower in name.lower() or query_lower in tick.lower():
                     cik_raw = entry.get("cik_str", "")
-                    results.append(MarketEntityResult(
-                        name=name,
-                        ticker=tick,
-                        cik=str(cik_raw).zfill(10),
-                        source="sec_edgar",
-                        exchange=None,
-                    ))
+                    results.append(
+                        MarketEntityResult(
+                            name=name,
+                            ticker=tick,
+                            cik=str(cik_raw).zfill(10),
+                            source="sec_edgar",
+                            exchange=None,
+                        )
+                    )
                 if len(results) >= 20:
                     break
         except Exception:
@@ -295,12 +410,14 @@ class SECEdgarClient:
                 )
                 for hit in (data.get("hits", {}).get("hits", []) or [])[:15]:
                     src = hit.get("_source", {})
-                    results.append(MarketEntityResult(
-                        name=src.get("entity_name", src.get("display_names", [query])[0]),
-                        ticker=None,
-                        cik=src.get("entity_id"),
-                        source="sec_edgar",
-                    ))
+                    results.append(
+                        MarketEntityResult(
+                            name=src.get("entity_name", src.get("display_names", [query])[0]),
+                            ticker=None,
+                            cik=src.get("entity_id"),
+                            source="sec_edgar",
+                        )
+                    )
             except Exception:
                 logger.warning("SEC EFTS search failed for '%s'", query, exc_info=True)
 
@@ -341,9 +458,7 @@ class SECEdgarClient:
         set_cached(data, self.CACHE_NS, action="submissions", cik=cik_padded)
         return data
 
-    async def get_insider_filings(
-        self, name: str, limit: int = 5
-    ) -> list[dict[str, Any]]:
+    async def get_insider_filings(self, name: str, limit: int = 5) -> list[dict[str, Any]]:
         """Search EDGAR for recent Form 4 filings that mention the named individual.
 
         Form 4 = "Statement of Changes in Beneficial Ownership" — filed whenever
@@ -357,9 +472,7 @@ class SECEdgarClient:
         if cached is not None:
             return cached
 
-        start_dt = (
-            datetime.utcnow() - timedelta(days=730)
-        ).strftime("%Y-%m-%d")
+        start_dt = (datetime.utcnow() - timedelta(days=730)).strftime("%Y-%m-%d")
 
         try:
             data = await fetch_json(
@@ -380,12 +493,14 @@ class SECEdgarClient:
         for hit in (data.get("hits", {}).get("hits", []) or [])[:limit]:
             src = hit.get("_source", {})
             display = src.get("display_names") or []
-            results.append({
-                "form_type": src.get("form_type", "4"),
-                "company": src.get("entity_name") or (display[0] if display else "?"),
-                "file_date": src.get("file_date"),
-                "period_of_report": src.get("period_of_report"),
-            })
+            results.append(
+                {
+                    "form_type": src.get("form_type", "4"),
+                    "company": src.get("entity_name") or (display[0] if display else "?"),
+                    "file_date": src.get("file_date"),
+                    "period_of_report": src.get("period_of_report"),
+                }
+            )
 
         set_cached(results, self.CACHE_NS, ttl=3600, action="form4", name=name)
         return results
@@ -394,6 +509,7 @@ class SECEdgarClient:
 # ---------------------------------------------------------------------------
 # FRED client
 # ---------------------------------------------------------------------------
+
 
 class FREDClient:
     """Client for the Federal Reserve Economic Data (FRED) API."""
@@ -473,7 +589,9 @@ class FREDClient:
             frequency=frequency,
             observations=observations,
         )
-        set_cached(series.model_dump(), self.CACHE_NS, action="series", series_id=series_id, period=period)
+        set_cached(
+            series.model_dump(), self.CACHE_NS, action="series", series_id=series_id, period=period
+        )
         return series
 
     async def search_series(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -495,13 +613,15 @@ class FREDClient:
                 },
             )
             for s in data.get("seriess", []):
-                results.append({
-                    "series_id": s.get("id"),
-                    "title": s.get("title"),
-                    "units": s.get("units"),
-                    "frequency": s.get("frequency"),
-                    "popularity": s.get("popularity"),
-                })
+                results.append(
+                    {
+                        "series_id": s.get("id"),
+                        "title": s.get("title"),
+                        "units": s.get("units"),
+                        "frequency": s.get("frequency"),
+                        "popularity": s.get("popularity"),
+                    }
+                )
         except Exception:
             logger.warning("FRED series search failed for '%s'", query, exc_info=True)
 
@@ -530,6 +650,7 @@ class FREDClient:
 # ---------------------------------------------------------------------------
 # Exposure analysis helper
 # ---------------------------------------------------------------------------
+
 
 def _is_pension_or_sovereign(name: str) -> bool:
     """Heuristic check if an institutional holder name looks like a pension/sovereign fund."""

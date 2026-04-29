@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .comparable_sourcer import get_dynamic_comparables, get_target_control_peers
-from .tools.market.client import YFinanceClient
+from .tools.market.client import FinnhubClient, YFinanceClient
 from .tools.sanctions.client import SanctionsClient
 from .tools.screening.client import search_csl
 
@@ -24,9 +24,18 @@ logger = logging.getLogger(__name__)
 # Color palette for chart lines
 # ---------------------------------------------------------------------------
 CHART_COLORS = [
-    "#58a6ff", "#f0883e", "#a371f7", "#3fb950", "#f85149",
-    "#db61a2", "#79c0ff", "#d2a8ff", "#56d4dd", "#e3b341",
-    "#ff7b72", "#7ee787",
+    "#58a6ff",
+    "#f0883e",
+    "#a371f7",
+    "#3fb950",
+    "#f85149",
+    "#db61a2",
+    "#79c0ff",
+    "#d2a8ff",
+    "#56d4dd",
+    "#e3b341",
+    "#ff7b72",
+    "#7ee787",
 ]
 
 # ---------------------------------------------------------------------------
@@ -176,23 +185,65 @@ _DEFAULT_BENCHMARK = "SPY"
 # Core functions
 # ---------------------------------------------------------------------------
 
+
 async def get_target_info(ticker: str) -> dict[str, Any]:
-    """Fetch target company profile and current price data."""
+    """Fetch target company profile and current price data.
+
+    Strategy: try Finnhub first for live price + profile (works from cloud
+    egress). Fall back to yfinance, which is unreliable on Render due to
+    Yahoo's WAF blocking cloud IPs but still works locally and provides the
+    historical sparkline series Finnhub's free tier doesn't include. The
+    `price_unavailable` flag in the returned dict signals to the UI when
+    no live price was obtainable from either source.
+    """
     yf = YFinanceClient()
-    profile, price = await asyncio.gather(
+    finnhub = FinnhubClient()
+
+    # Always pull yfinance's historical series (free, used for the sparkline
+    # and 30-day window). On Render this often returns an empty list; that's
+    # fine — the projection chart degrades gracefully.
+    yf_profile, yf_price = await asyncio.gather(
         yf.get_stock_profile(ticker),
         yf.get_price_data(ticker, period="1y"),
     )
-    recent_prices_30d = [hp.close for hp in price.historical[-30:]] if price.historical else []
+
+    # Live price + profile: prefer Finnhub when configured.
+    fh_data = await finnhub.get_quote_and_profile(ticker) if finnhub.enabled else {}
+    fh_ok = bool(fh_data) and not fh_data.get("_data_unavailable")
+
+    current_price = (fh_data.get("current_price") if fh_ok else None) or yf_price.current_price
+    change_pct = fh_data.get("change_pct") if fh_ok else None
+    if change_pct is None:
+        change_pct = yf_price.change_pct
+    name = (fh_data.get("name") if fh_ok else None) or yf_profile.name
+    sector = (fh_data.get("sector") if fh_ok else None) or yf_profile.sector
+    industry = (fh_data.get("industry") if fh_ok else None) or yf_profile.industry
+    country = (fh_data.get("country") if fh_ok else None) or yf_profile.country
+    market_cap = (fh_data.get("market_cap") if fh_ok else None) or yf_profile.market_cap
+
+    recent_prices_30d = (
+        [hp.close for hp in yf_price.historical[-30:]] if yf_price.historical else []
+    )
+    price_unavailable = current_price is None
+    if price_unavailable:
+        logger.warning(
+            "get_target_info(%s): no live price from Finnhub or yfinance " "(finnhub_reason=%s)",
+            ticker,
+            fh_data.get("_reason") if fh_data else "not configured",
+        )
+
     return {
         "ticker": ticker.upper(),
-        "name": profile.name,
-        "sector": profile.sector,
-        "industry": profile.industry,
-        "country": profile.country,
-        "market_cap": profile.market_cap,
-        "current_price": price.current_price,
-        "change_pct": price.change_pct,
+        "name": name,
+        "sector": sector,
+        "industry": industry,
+        "country": country,
+        "market_cap": market_cap,
+        "current_price": current_price,
+        "change_pct": change_pct,
+        # UI guardrail: when True, the frontend hides "$0.00" displays and shows
+        # a "Live data temporarily unavailable" notice instead.
+        "price_unavailable": price_unavailable,
         # Internal use only — popped in run_sanctions_impact before API response
         "_recent_prices_30d": recent_prices_30d,
     }
@@ -239,9 +290,7 @@ async def get_sanctions_context(ticker: str, company_name: str) -> dict[str, Any
     return result
 
 
-async def _fetch_comparable_curve(
-    comp: dict[str, Any], color: str
-) -> dict[str, Any] | None:
+async def _fetch_comparable_curve(comp: dict[str, Any], color: str) -> dict[str, Any] | None:
     """Fetch market-adjusted (excess return) price curve for a single comparable.
 
     Raw price returns are subtracted by the sector benchmark ETF return over the
@@ -278,8 +327,9 @@ async def _fetch_comparable_curve(
         return None
 
     if not historical or len(historical) < 20:
-        logger.warning("Insufficient data for %s (%d points)", ticker,
-                       len(historical) if historical else 0)
+        logger.warning(
+            "Insufficient data for %s (%d points)", ticker, len(historical) if historical else 0
+        )
         return None
 
     # Build date→price mappings
@@ -338,7 +388,9 @@ async def _fetch_comparable_curve(
                     last_known_bench = bench_price
                 # Use last known benchmark price (forward-fill) if today is missing
                 if last_known_bench and last_known_bench != 0:
-                    benchmark_pct = ((last_known_bench - benchmark_event_price) / benchmark_event_price) * 100
+                    benchmark_pct = (
+                        (last_known_bench - benchmark_event_price) / benchmark_event_price
+                    ) * 100
                     excess_pct = raw_pct - benchmark_pct
                 else:
                     excess_pct = raw_pct
@@ -374,10 +426,7 @@ async def get_comparable_curves(
     """
     # Sub-filter by chip industry type when relevant (cheap, no API cost)
     if industry_filter:
-        industry_filtered = [
-            c for c in comparables
-            if c.get("industry", "") == industry_filter
-        ]
+        industry_filtered = [c for c in comparables if c.get("industry", "") == industry_filter]
         if len(industry_filtered) >= 3:
             comparables = industry_filtered
 
@@ -522,21 +571,24 @@ async def get_control_curves(
         ]
 
         ref = ticker_curves[0]
-        aggregated.append({
-            "name": ticker_str,
-            "ticker": ticker_str,
-            "sanction_date": "",          # not meaningful for an averaged curve
-            "description": f"Non-sanctioned peer (avg {len(ticker_curves)} windows)",
-            "sector": ref.get("sector", ""),
-            "sanction_type": "",
-            "industry": "",
-            "color": ref["color"],
-            "curve": avg_curve,
-        })
+        aggregated.append(
+            {
+                "name": ticker_str,
+                "ticker": ticker_str,
+                "sanction_date": "",  # not meaningful for an averaged curve
+                "description": f"Non-sanctioned peer (avg {len(ticker_curves)} windows)",
+                "sector": ref.get("sector", ""),
+                "sanction_type": "",
+                "industry": "",
+                "color": ref["color"],
+                "curve": avg_curve,
+            }
+        )
 
     logger.debug(
         "Control group: %d raw curves → %d aggregated peers",
-        len(raw_curves), len(aggregated),
+        len(raw_curves),
+        len(aggregated),
     )
     return aggregated
 
@@ -621,9 +673,8 @@ def compute_projection(
     today = datetime.utcnow().date()
 
     from collections import Counter
-    date_cluster_counts: Counter = Counter(
-        c.get("sanction_date", "") for c in comparable_curves
-    )
+
+    date_cluster_counts: Counter = Counter(c.get("sanction_date", "") for c in comparable_curves)
 
     # Per-curve weight components: (base_w, sev_w)
     # base_w includes everything except severity so the per-day loop can apply
@@ -638,7 +689,11 @@ def compute_projection(
         recency = math.exp(-0.10 * years)
 
         sector_w = 1.0 if (target_sector and curve_data.get("sector") == target_sector) else 0.5
-        type_w   = 1.0 if (target_sanction_type and curve_data.get("sanction_type") == target_sanction_type) else 0.5
+        type_w = (
+            1.0
+            if (target_sanction_type and curve_data.get("sanction_type") == target_sanction_type)
+            else 0.5
+        )
 
         cluster_n = date_cluster_counts.get(curve_data.get("sanction_date", ""), 1)
         cluster_w = 1.0 / max(cluster_n, 1)
@@ -659,9 +714,9 @@ def compute_projection(
 
         n = len(comparable_curves)
         trim = max(1, n // 5)
-        keep = set(sorted(range(n), key=lambda i: day30_vals[i])[trim: n - trim])
-        comparable_curves   = [c for i, c in enumerate(comparable_curves)   if i in keep]
-        curve_weight_parts  = [w for i, w in enumerate(curve_weight_parts)  if i in keep]
+        keep = set(sorted(range(n), key=lambda i: day30_vals[i])[trim : n - trim])
+        comparable_curves = [c for i, c in enumerate(comparable_curves) if i in keep]
+        curve_weight_parts = [w for i, w in enumerate(curve_weight_parts) if i in keep]
 
     # --- Coherence score ---
     coherence_score = 1.0
@@ -719,7 +774,7 @@ def compute_projection(
         pct_list: list[float] = []
         for curve_idx, pct in entries:
             base_w, sev_w = curve_weight_parts[curve_idx]
-            raw_w_list.append(base_w * (sev_w ** sev_exp))
+            raw_w_list.append(base_w * (sev_w**sev_exp))
             pct_list.append(pct)
 
         day_total = sum(raw_w_list) or 1.0
@@ -734,21 +789,27 @@ def compute_projection(
         upper_price = target_current_price * (1 + (mean_pct + scaled_std) / 100)
         lower_price = target_current_price * (1 + (mean_pct - scaled_std) / 100)
 
-        mean_curve.append({
-            "day": day,
-            "pct": round(mean_pct, 2),
-            "price": round(projected_price, 2),
-        })
-        upper_band.append({
-            "day": day,
-            "pct": round(mean_pct + scaled_std, 2),
-            "price": round(upper_price, 2),
-        })
-        lower_band.append({
-            "day": day,
-            "pct": round(mean_pct - scaled_std, 2),
-            "price": round(lower_price, 2),
-        })
+        mean_curve.append(
+            {
+                "day": day,
+                "pct": round(mean_pct, 2),
+                "price": round(projected_price, 2),
+            }
+        )
+        upper_band.append(
+            {
+                "day": day,
+                "pct": round(mean_pct + scaled_std, 2),
+                "price": round(upper_price, 2),
+            }
+        )
+        lower_band.append(
+            {
+                "day": day,
+                "pct": round(mean_pct - scaled_std, 2),
+                "price": round(lower_price, 2),
+            }
+        )
 
     # --- Summary ---
     pre_pcts = [p["pct"] for p in mean_curve if p["day"] < 0]
@@ -813,7 +874,9 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
         target_info = await get_target_info(ticker)
     except Exception as e:
         logger.error("Failed to fetch target info for %s: %s", ticker, e)
-        raise ValueError(f"Could not find data for ticker '{ticker}'. Check the symbol and try again.") from e
+        raise ValueError(
+            f"Could not find data for ticker '{ticker}'. Check the symbol and try again."
+        ) from e
     company_name = target_info.get("name", ticker)
 
     sanctions_task = get_sanctions_context(ticker, company_name)
@@ -840,9 +903,25 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
     inferred_sanction_type: str | None = None
 
     def _is_western(c: str) -> bool:
-        return any(k in c for k in ("united states", "netherlands", "germany", "france",
-                                    "united kingdom", "japan", "korea", "taiwan", "australia",
-                                    "canada", "israel", "sweden", "finland", "singapore"))
+        return any(
+            k in c
+            for k in (
+                "united states",
+                "netherlands",
+                "germany",
+                "france",
+                "united kingdom",
+                "japan",
+                "korea",
+                "taiwan",
+                "australia",
+                "canada",
+                "israel",
+                "sweden",
+                "finland",
+                "singapore",
+            )
+        )
 
     def _is_chinese(c: str) -> bool:
         return "china" in c or c in ("hong kong", "hk")
@@ -858,7 +937,10 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
         inferred_sanction_type = "sectoral"
     elif _is_chinese(country_raw) and (
         mapped_sector in ("tech", "telecom", "semiconductors", "surveillance")
-        or any(k in industry_raw for k in ("internet", "software", "e-commerce", "electronic", "semiconductor"))
+        or any(
+            k in industry_raw
+            for k in ("internet", "software", "e-commerce", "electronic", "semiconductor")
+        )
     ):
         inferred_sanction_type = "ofac_ccmc"
     elif _is_western(country_raw) and mapped_sector in ("semiconductors", "tech", "telecom"):
@@ -869,7 +951,10 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
     csl_sources = [m.get("source", "").lower() for m in sanctions_context.get("csl_matches", [])]
     if any("entity list" in s or "bis" in s for s in csl_sources):
         inferred_sanction_type = "us_export_control"
-    elif any(p in programs for p in ["UKRAINE-EO13661", "RUSSIA-EO14024", "IRAN", "CUBA", "DPRK", "SYRIA"]):
+    elif any(
+        p in programs
+        for p in ["UKRAINE-EO13661", "RUSSIA-EO14024", "IRAN", "CUBA", "DPRK", "SYRIA"]
+    ):
         inferred_sanction_type = "sectoral"
     elif any("swift" in p.lower() for p in programs):
         inferred_sanction_type = "swift_cutoff"
@@ -880,17 +965,43 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
     # can always narrow to the right reference class when ≥3 matching comparables exist.
     inferred_industry: str | None = None
     if mapped_sector == "semiconductors" or "semiconductor" in industry_raw:
-        _FOUNDRY_KEYWORDS = ("foundry", "contract manufactur", "wafer fabricat", "wafer foundry",
-                              "logic foundry", "fab ", "fabrication services")
-        _EQUIPMENT_KEYWORDS = ("equipment", "materials", "systems", "instruments", "photonics",
-                                "laser", "lithograph", "etch", "deposition", "metrology")
-        _DESIGNER_KEYWORDS = ("semiconductor", "computing", "microelectronics", "fabless",
-                               "integrated circuit", "chip design", "ic design")
+        _FOUNDRY_KEYWORDS = (
+            "foundry",
+            "contract manufactur",
+            "wafer fabricat",
+            "wafer foundry",
+            "logic foundry",
+            "fab ",
+            "fabrication services",
+        )
+        _EQUIPMENT_KEYWORDS = (
+            "equipment",
+            "materials",
+            "systems",
+            "instruments",
+            "photonics",
+            "laser",
+            "lithograph",
+            "etch",
+            "deposition",
+            "metrology",
+        )
+        _DESIGNER_KEYWORDS = (
+            "semiconductor",
+            "computing",
+            "microelectronics",
+            "fabless",
+            "integrated circuit",
+            "chip design",
+            "ic design",
+        )
         if any(k in industry_raw for k in _FOUNDRY_KEYWORDS):
             inferred_industry = "chip_foundry"
         elif any(k in industry_raw for k in _EQUIPMENT_KEYWORDS):
             inferred_industry = "chip_equipment"
-        elif any(k in industry_raw for k in _DESIGNER_KEYWORDS) or mapped_sector == "semiconductors":
+        elif (
+            any(k in industry_raw for k in _DESIGNER_KEYWORDS) or mapped_sector == "semiconductors"
+        ):
             inferred_industry = "chip_designer"
 
     recent_prices_30d: list[float] = target_info.pop("_recent_prices_30d", [])
@@ -905,7 +1016,10 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
         else:
             inferred_severity = "regulatory_crackdown"
     elif inferred_sanction_type == "us_export_control":
-        if any("entity list" in s for s in [m.get("source", "").lower() for m in sanctions_context.get("csl_matches", [])]):
+        if any(
+            "entity list" in s
+            for s in [m.get("source", "").lower() for m in sanctions_context.get("csl_matches", [])]
+        ):
             inferred_severity = "entity_list"
         else:
             inferred_severity = "sectoral"
@@ -930,9 +1044,7 @@ async def run_sanctions_impact(ticker: str) -> dict[str, Any]:
 
     # Collect sanctioned comparable tickers for cross-list dedup
     used_tickers: set[str] = {
-        (c.get("ticker") or "").upper()
-        for c in raw_comparables
-        if c.get("ticker")
+        (c.get("ticker") or "").upper() for c in raw_comparables if c.get("ticker")
     }
 
     # Build a short sanctions context string for the peers prompt
