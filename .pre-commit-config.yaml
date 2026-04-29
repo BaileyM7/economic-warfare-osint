@@ -1,0 +1,28 @@
+# Pre-commit hooks for economic-warfare-osint (parent repo).
+#
+# Setup: install dev extras, then install the git hook:
+#   uv sync --extra dev
+#   uv run pre-commit install
+#
+# To bypass in a genuine emergency:
+#   git commit --no-verify
+#
+# Ruff config lives in pyproject.toml under [tool.ruff].
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]

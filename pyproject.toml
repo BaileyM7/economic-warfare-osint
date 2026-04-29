@@ -37,6 +37,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
     "ruff>=0.4",
+    "pre-commit>=4.6.0",
 ]
 # Swarm-embed deps — install only when running the /api/wargame subapp.
 # Gated at runtime by the WARGAME_ENABLED env var (see src/api.py).
