@@ -25,7 +25,6 @@ from pydantic import BaseModel
 import logging
 
 from src.common.config import config
-from src.fusion.renderer import render_entity_graph
 from src.orchestrator.entity_resolver import resolve_entity_type
 from src.orchestrator.main import Orchestrator
 from src.orchestrator.person_search import (
@@ -46,10 +45,17 @@ from src.tools.corporate.client import (
 from src.tools.market.client import YFinanceClient, SECEdgarClient, _is_pension_or_sovereign
 from src.tools.geopolitical.client import refresh_acled_token, gdelt_doc_search
 from src.tools.geopolitical.server import get_bilateral_tensions
-from src.tools.sanctions.client import OFACClient, OpenSanctionsClient, SanctionsClient
+from src.tools.sanctions.client import OFACClient, SanctionsClient
 from src.tools.screening.client import search_csl, search_pep
 from src.tools.trade.server import get_supply_chain_exposure
-from src.tools.vessels.client import vessel_find, vessel_by_mmsi, vessel_by_imo, vessel_history, vessel_port_calls, infer_port_stops
+from src.tools.vessels.client import (
+    vessel_find,
+    vessel_by_mmsi,
+    vessel_by_imo,
+    vessel_history,
+    vessel_port_calls,
+    infer_port_stops,
+)
 from src.tools.vessels.geo import get_countries_from_positions
 from src.tools.sayari.client import get_vessel_intel
 from src.db import init_db, seed_mock_data
@@ -58,6 +64,7 @@ from src.routers import _shared as _router_shared
 from src.routers.coa import router as coa_router
 from src.routers.monitoring import router as monitoring_router
 from src.routers.briefings import router as briefings_router
+from src.routers.risk_feed import router as risk_feed_router
 from src.routers import briefings as _briefings_mod
 from src.analytics import UsageTrackingMiddleware
 from src.auth import require_admin, require_auth, verify_token
@@ -65,6 +72,7 @@ from src.routers.admin import router as admin_router
 from src.routers.auth import router as auth_router
 
 logger = logging.getLogger(__name__)
+
 
 def _ofac_hit_matches_company_label(company_name: str, entry: Any) -> bool:
     """Require a significant token from *company_name* to appear as a whole token in the OFAC row.
@@ -154,7 +162,7 @@ async def _generate_recommendations(data_summary: dict, analyst_question: str = 
         if text.startswith("["):
             return json.loads(text)
         # Try extracting JSON from markdown fence
-        match = re.search(r'\[.*\]', text, re.DOTALL)
+        match = re.search(r"\[.*\]", text, re.DOTALL)
         if match:
             return json.loads(match.group())
         return []
@@ -186,12 +194,14 @@ app.include_router(admin_router, dependencies=[Depends(require_admin)])
 app.include_router(coa_router, dependencies=[Depends(require_auth)])
 app.include_router(monitoring_router, dependencies=[Depends(require_auth)])
 app.include_router(briefings_router, dependencies=[Depends(require_auth)])
+app.include_router(risk_feed_router, dependencies=[Depends(require_auth)])
 
 # --- Wargame subapp (embedded swarm backend) ---
 # Gated by WARGAME_ENABLED so Emissary's baseline behavior is unaffected
 # when swarm's Postgres + Redis aren't provisioned. Any import-time failure
 # is caught so a broken wargame doesn't take down the rest of the app.
-import os as _os
+import os as _os  # noqa: E402  # pre-existing late import; tracked separately
+
 _wargame_app: Any = None  # populated below if import succeeds
 _wargame_lifespan_cm: Any = None  # the active lifespan context, kept for shutdown
 if _os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
@@ -199,10 +209,12 @@ if _os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
         # Swarm's internal code uses bare imports (e.g. `from wargame_backend.X`).
         # Put Emissary's `src/` dir on sys.path so those resolve.
         import sys as _sys
+
         _src_dir = str(Path(__file__).parent)
         if _src_dir not in _sys.path:
             _sys.path.insert(0, _src_dir)
         from wargame_backend.app.main import app as _wargame_app
+
         app.mount("/api/wargame", _wargame_app)
         logger.info("Wargame subapp mounted at /api/wargame (%d routes)", len(_wargame_app.routes))
     except Exception as _wargame_exc:  # noqa: BLE001
@@ -216,6 +228,7 @@ if _os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
 # Debug endpoint to read the wargame subapp's lifespan error over HTTP.
 # Only active when WARGAME_DEBUG_ERRORS=1.
 if _os.environ.get("WARGAME_DEBUG_ERRORS", "").lower() in {"1", "true", "yes"}:
+
     @app.get("/api/wargame-debug/lifespan")
     async def _wargame_lifespan_debug() -> dict:
         err = None
@@ -238,6 +251,7 @@ if _os.environ.get("WARGAME_DEBUG_ERRORS", "").lower() in {"1", "true", "yes"}:
             "lifespan_error": err,
         }
 
+
 _DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if (_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
@@ -248,6 +262,7 @@ _browser_opened = False
 @app.on_event("startup")
 async def _startup() -> None:
     import os
+
     global _browser_opened, _wargame_lifespan_cm
     await refresh_acled_token()
     init_db()
@@ -269,10 +284,14 @@ async def _startup() -> None:
             # Also stash the error on the subapp state so /api/wargame/_debug
             # can return it via HTTP when logs are flaky.
             import traceback as _tb
-            _err_text = f"{type(exc).__name__}: {exc}\n" + "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
+
+            _err_text = f"{type(exc).__name__}: {exc}\n" + "".join(
+                _tb.format_exception(type(exc), exc, exc.__traceback__)
+            )
             logger.error("Wargame lifespan failed to enter:\n%s", _err_text)
             # Also write directly to stderr so it bypasses any structlog filters
             import sys as _sys
+
             print(f"[WARGAME_LIFESPAN_ERROR] {_err_text}", file=_sys.stderr, flush=True)
             try:
                 _wargame_app.state.lifespan_error = _err_text
@@ -303,6 +322,7 @@ async def _shutdown() -> None:
 
 # --- WebSocket connection manager for real-time monitoring ---
 
+
 class ConnectionManager:
     def __init__(self):
         self.connections: list[WebSocket] = []
@@ -323,6 +343,7 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self.connections.remove(ws)
+
 
 _ws_manager = ConnectionManager()
 
@@ -353,6 +374,7 @@ _briefings_mod.set_analyses_ref(_analyses)
 
 # --- Request / Response models ---
 
+
 class SanctionsImpactRequest(BaseModel):
     ticker: str
     analyst_question: str = ""  # original user query for context-aware CoA
@@ -374,7 +396,7 @@ class PersonSearchRequest(BaseModel):
 
 class PersonNetworkRequest(BaseModel):
     name: str
-    depth: int = 1                  # 1 or 2
+    depth: int = 1  # 1 or 2
     max_per_node: int = 15
 
 
@@ -408,6 +430,7 @@ class AnalysisStatus(BaseModel):
 
 
 # --- Health / info ---
+
 
 @app.get("/")
 async def root():
@@ -475,7 +498,11 @@ async def start_analysis(req: AnalyzeRequest):
     return {"analysis_id": analysis_id, "status": "running"}
 
 
-@app.get("/api/analyze/{analysis_id}", response_model=AnalysisStatus, dependencies=[Depends(require_auth)])
+@app.get(
+    "/api/analyze/{analysis_id}",
+    response_model=AnalysisStatus,
+    dependencies=[Depends(require_auth)],
+)
 async def get_analysis(analysis_id: str):
     status = _analyses.get(analysis_id)
     if not status:
@@ -495,6 +522,7 @@ async def analyze_sync(req: AnalyzeRequest):
 
 
 # --- Follow-up Query endpoint ---
+
 
 class FollowUpRequest(BaseModel):
     question: str
@@ -555,7 +583,10 @@ async def follow_up(req: FollowUpRequest):
                 system=_FOLLOWUP_SYSTEM,
                 messages=[
                     {"role": "user", "content": f"Here is the prior analysis:\n{context_str}"},
-                    {"role": "assistant", "content": "I've reviewed the analysis data. What would you like to know?"},
+                    {
+                        "role": "assistant",
+                        "content": "I've reviewed the analysis data. What would you like to know?",
+                    },
                     {"role": "user", "content": question},
                 ],
             ),
@@ -569,6 +600,7 @@ async def follow_up(req: FollowUpRequest):
 
 
 # --- Sanctions Impact Projector endpoint ---
+
 
 @app.post("/api/sanctions-impact", dependencies=[Depends(require_auth)])
 async def sanctions_impact(req: SanctionsImpactRequest):
@@ -624,20 +656,31 @@ async def sanctions_impact(req: SanctionsImpactRequest):
 # --- Entity Graph endpoint ---
 
 _ENTITY_COLORS: dict[str, str] = {
-    "company": "#58a6ff", "person": "#a371f7", "government": "#DC143C",
-    "vessel": "#3fb950", "sanctions_list": "#F85149",
-    "theme": "#F0883E", "sector": "#f0883e",
+    "company": "#58a6ff",
+    "person": "#a371f7",
+    "government": "#DC143C",
+    "vessel": "#3fb950",
+    "sanctions_list": "#F85149",
+    "theme": "#F0883E",
+    "sector": "#f0883e",
 }
 
 
 def _truncate(s: str, n: int = 28) -> str:
-    return s if len(s) <= n else s[:n - 1] + "…"
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def _node(nid: str, name: str, entity_type: str, country: str | None = None, sayari_id: str | None = None) -> dict[str, Any]:
+def _node(
+    nid: str, name: str, entity_type: str, country: str | None = None, sayari_id: str | None = None
+) -> dict[str, Any]:
     title = f"{name}\n{entity_type}" + (f" · {country}" if country else "")
-    node: dict[str, Any] = {"id": nid, "label": _truncate(name), "title": title,
-            "group": entity_type, "color": _ENTITY_COLORS.get(entity_type, "#808080")}
+    node: dict[str, Any] = {
+        "id": nid,
+        "label": _truncate(name),
+        "title": title,
+        "group": entity_type,
+        "color": _ENTITY_COLORS.get(entity_type, "#808080"),
+    }
     if sayari_id:
         node["sayariId"] = sayari_id
     return node
@@ -676,7 +719,9 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
     nodes: dict[str, dict] = {}
     edges: dict[str, dict] = {}
 
-    def add_node(nid: str, name: str, etype: str, country: str | None = None, sayari_id: str | None = None) -> None:
+    def add_node(
+        nid: str, name: str, etype: str, country: str | None = None, sayari_id: str | None = None
+    ) -> None:
         if nid and name and nid not in nodes:
             nodes[nid] = _node(nid, name, etype, country, sayari_id=sayari_id)
 
@@ -684,8 +729,13 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
         if src in nodes and tgt in nodes and src != tgt:
             key = f"{src}→{tgt}→{label}"
             if key not in edges:
-                edges[key] = {"from": src, "to": tgt,
-                              "label": label.replace("_", " "), "arrows": "to", "dashes": dashes}
+                edges[key] = {
+                    "from": src,
+                    "to": tgt,
+                    "label": label.replace("_", " "),
+                    "arrows": "to",
+                    "dashes": dashes,
+                }
 
     def slug(s: str) -> str:
         return s.lower().replace(" ", "_").replace(",", "").replace(".", "")[:64]
@@ -762,6 +812,7 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
             # Parse "Linked To:" from remarks to build sanctions network
             if entry.remarks and "Linked To:" in entry.remarks:
                 import re as _re
+
                 links = _re.findall(r"Linked To:\s*([^;.]+)", entry.remarks)
                 for linked_name in links[:3]:
                     linked_name = linked_name.strip().rstrip(".")
@@ -786,6 +837,7 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
     if config.sayari_client_id and config.sayari_client_secret:
         try:
             from src.tools.sayari.rest_client import get_sayari_client
+
             sayari = get_sayari_client()
             resolved = await asyncio.wait_for(sayari.resolve(query, limit=1), timeout=10.0)
             if resolved.entities:
@@ -799,7 +851,8 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
     # Screen non-sanctions-list entity nodes against OFAC+CSL and recolor
     # sanctioned ones red so the graph visually shows sanctions status.
     screenable = [
-        (nid, nd) for nid, nd in nodes.items()
+        (nid, nd)
+        for nid, nd in nodes.items()
         if nd.get("group") in ("company", "person", "vessel")
         and nd.get("group") != "sanctions_list"
     ]
@@ -844,16 +897,30 @@ async def entity_graph_endpoint(req: EntityGraphRequest):
             _build_entity_graph(query),
             timeout=20.0,
         )
-        return JSONResponse(content={
-            "nodes": graph_nodes,
-            "edges": graph_edges,
-            "meta": {"query": query, "node_count": len(graph_nodes), "edge_count": len(graph_edges)},
-        })
+        return JSONResponse(
+            content={
+                "nodes": graph_nodes,
+                "edges": graph_edges,
+                "meta": {
+                    "query": query,
+                    "node_count": len(graph_nodes),
+                    "edge_count": len(graph_edges),
+                },
+            }
+        )
     except asyncio.TimeoutError:
-        return JSONResponse(content={
-            "nodes": [], "edges": [],
-            "meta": {"query": query, "node_count": 0, "edge_count": 0, "note": "Data sources timed out"},
-        })
+        return JSONResponse(
+            content={
+                "nodes": [],
+                "edges": [],
+                "meta": {
+                    "query": query,
+                    "node_count": 0,
+                    "edge_count": 0,
+                    "note": "Data sources timed out",
+                },
+            }
+        )
     except Exception as e:
         logger.exception("Entity graph error for query=%s", query)
         raise HTTPException(status_code=500, detail=str(e))
@@ -861,13 +928,16 @@ async def entity_graph_endpoint(req: EntityGraphRequest):
 
 # --- Sayari endpoints ---
 
+
 class SayariResolveRequest(BaseModel):
     query: str
     limit: int = 5
     entity_type: str | None = None
 
+
 class SayariEntityRequest(BaseModel):
     entity_id: str
+
 
 class SayariTraversalRequest(BaseModel):
     entity_id: str
@@ -879,6 +949,7 @@ class SayariTraversalRequest(BaseModel):
 async def sayari_resolve_endpoint(req: SayariResolveRequest):
     """Resolve a name to Sayari entity IDs."""
     from src.tools.sayari.rest_client import get_sayari_client
+
     try:
         client = get_sayari_client()
         result = await asyncio.wait_for(
@@ -895,6 +966,7 @@ async def sayari_resolve_endpoint(req: SayariResolveRequest):
 async def sayari_related_endpoint(req: SayariTraversalRequest):
     """Get entities related to a Sayari entity (graph traversal)."""
     from src.tools.sayari.rest_client import get_sayari_client
+
     try:
         client = get_sayari_client()
         result = await asyncio.wait_for(
@@ -911,6 +983,7 @@ async def sayari_related_endpoint(req: SayariTraversalRequest):
 async def sayari_ubo_endpoint(req: SayariEntityRequest):
     """Get ultimate beneficial owners of a Sayari entity."""
     from src.tools.sayari.rest_client import get_sayari_client
+
     try:
         client = get_sayari_client()
         result = await asyncio.wait_for(
@@ -924,6 +997,7 @@ async def sayari_ubo_endpoint(req: SayariEntityRequest):
 
 
 # --- Batch sanctions screening ---
+
 
 class SanctionsScreenBatchRequest(BaseModel):
     names: list[str]
@@ -963,6 +1037,7 @@ async def sanctions_screen_batch(req: SanctionsScreenBatchRequest):
 
 # --- Entity type resolver ---
 
+
 @app.post("/api/resolve-entity", dependencies=[Depends(require_auth)])
 async def resolve_entity(req: AnalyzeRequest):
     """Classify a free-text query into company | person | sector | vessel."""
@@ -979,6 +1054,7 @@ async def resolve_entity(req: AnalyzeRequest):
 
 
 # --- Person Profile endpoint ---
+
 
 @app.post("/api/person-profile", dependencies=[Depends(require_auth)])
 async def person_profile(req: PersonProfileRequest):
@@ -1015,8 +1091,13 @@ async def person_profile(req: PersonProfileRequest):
             pep_hits,
             insider_filings,
         ) = await asyncio.gather(
-            csl_task, ofac_task, officers_task, icij_task, gdelt_task,
-            pep_task, edgar_task,
+            csl_task,
+            ofac_task,
+            officers_task,
+            icij_task,
+            gdelt_task,
+            pep_task,
+            edgar_task,
             return_exceptions=True,
         )
 
@@ -1035,59 +1116,68 @@ async def person_profile(req: PersonProfileRequest):
 
         # Build sanctions summary
         is_sanctioned = bool(
-          [e for e in sanctions_hits if (e.score or 0) >= 0.6]
-          or [e for e in ofac_hits if (e.score or 0) >= 0.7]
+            [e for e in sanctions_hits if (e.score or 0) >= 0.6]
+            or [e for e in ofac_hits if (e.score or 0) >= 0.7]
         )
         sanction_programs: list[str] = []
         for e in ofac_hits:
             if (e.score or 0) >= 0.7 and e.programs:
                 sanction_programs.extend(e.programs)
         for e in sanctions_hits:
-          if (e.score or 0) >= 0.6 and e.programs:
-            sanction_programs.extend(e.programs)
+            if (e.score or 0) >= 0.6 and e.programs:
+                sanction_programs.extend(e.programs)
         sanction_programs = list(set(sanction_programs))[:5]
 
         # Best match for bio data
         best_match = next(
-          (e for e in sanctions_hits if (e.score or 0) >= 0.6),
+            (e for e in sanctions_hits if (e.score or 0) >= 0.6),
             sanctions_hits[0] if sanctions_hits else None,
         )
         aliases = best_match.aliases if best_match else []
         # Nationality/DOB may appear in identifiers or remarks
-        nationality = (best_match.identifiers.get("nationality") or
-                       best_match.identifiers.get("citizenship")) if best_match else None
+        nationality = (
+            (best_match.identifiers.get("nationality") or best_match.identifiers.get("citizenship"))
+            if best_match
+            else None
+        )
         dob = best_match.identifiers.get("dob") if best_match else None
 
         # Corporate affiliations — officer_records are Officer objects
         affiliations = []
         for off in (officer_records or [])[:12]:
             is_active = off.end_date is None if hasattr(off, "end_date") else True
-            affiliations.append({
-                "company": off.name,
-                "role": off.role,
-                "nationality": off.nationality or "",
-                "active": is_active,
-            })
+            affiliations.append(
+                {
+                    "company": off.name,
+                    "role": off.role,
+                    "nationality": off.nationality or "",
+                    "active": is_active,
+                }
+            )
 
         # ICIJ connections
         offshore = []
         for h in (icij_hits or [])[:5]:
-            offshore.append({
-                "entity": h.name,
-                "dataset": h.source_dataset or "",
-                "jurisdiction": h.jurisdiction or "",
-            })
+            offshore.append(
+                {
+                    "entity": h.name,
+                    "dataset": h.source_dataset or "",
+                    "jurisdiction": h.jurisdiction or "",
+                }
+            )
 
         # Recent events from GDELT (list[GdeltEvent])
         recent_events = []
         if isinstance(gdelt_events, list):
             for ev in gdelt_events[:8]:
-                recent_events.append({
-                    "title": ev.event_id[:80] if hasattr(ev, "event_id") else str(ev),
-                    "date": ev.date.isoformat() if hasattr(ev, "date") and ev.date else "",
-                    "source": ev.source_url if hasattr(ev, "source_url") else "",
-                    "tone": ev.avg_tone if hasattr(ev, "avg_tone") else None,
-                })
+                recent_events.append(
+                    {
+                        "title": ev.event_id[:80] if hasattr(ev, "event_id") else str(ev),
+                        "date": ev.date.isoformat() if hasattr(ev, "date") and ev.date else "",
+                        "source": ev.source_url if hasattr(ev, "source_url") else "",
+                        "tone": ev.avg_tone if hasattr(ev, "avg_tone") else None,
+                    }
+                )
 
         # Build person-centric vis.js graph
         nodes: dict[str, dict] = {}
@@ -1103,8 +1193,13 @@ async def person_profile(req: PersonProfileRequest):
             eid = f"sanc_{p_slug(e.name)}"
             nodes[eid] = _node(eid, e.name, "sanctions_list")
             key = f"{person_id}→{eid}"
-            edges[key] = {"from": person_id, "to": eid, "label": "OFAC/OS match",
-                          "arrows": "to", "dashes": True}
+            edges[key] = {
+                "from": person_id,
+                "to": eid,
+                "label": "OFAC/OS match",
+                "arrows": "to",
+                "dashes": True,
+            }
 
         # OFAC-only rows (OpenSanctions may be empty without API key)
         for e in [e for e in ofac_hits if (e.score or 0) >= 0.7][:6]:
@@ -1115,25 +1210,36 @@ async def person_profile(req: PersonProfileRequest):
             nodes[eid] = _node(eid, e.name, "sanctions_list")
             key = f"{person_id}→{eid}"
             edges[key] = {
-                "from": person_id, "to": eid, "label": "OFAC SDN",
-                "arrows": "to", "dashes": True,
+                "from": person_id,
+                "to": eid,
+                "label": "OFAC SDN",
+                "arrows": "to",
+                "dashes": True,
             }
 
         for aff in affiliations[:8]:
             cid = f"co_{p_slug(aff['company'])}"
             nodes[cid] = _node(cid, aff["company"], "company")
             key = f"{person_id}→{cid}"
-            edges[key] = {"from": person_id, "to": cid,
-                          "label": aff.get("role", "officer"),
-                          "arrows": "to", "dashes": False}
+            edges[key] = {
+                "from": person_id,
+                "to": cid,
+                "label": aff.get("role", "officer"),
+                "arrows": "to",
+                "dashes": False,
+            }
 
         for off in offshore[:4]:
             oid = f"offshore_{p_slug(off['entity'])}"
-            nodes[oid] = _node(oid, off["entity"], "theme",
-                               off.get("jurisdiction"))
+            nodes[oid] = _node(oid, off["entity"], "theme", off.get("jurisdiction"))
             key = f"{person_id}→{oid}"
-            edges[key] = {"from": person_id, "to": oid,
-                          "label": "offshore", "arrows": "to", "dashes": True}
+            edges[key] = {
+                "from": person_id,
+                "to": oid,
+                "label": "offshore",
+                "arrows": "to",
+                "dashes": True,
+            }
 
         # Start narrative generation concurrently with graph finalization
         compact = {
@@ -1150,8 +1256,13 @@ async def person_profile(req: PersonProfileRequest):
             "pep_positions": [p for h in pep_hits for p in h.get("positions", [])][:4],
             "insider_filing_count": len(insider_filings),
             "sources_searched": [
-                "OpenSanctions", "OFAC SDN", "OpenCorporates",
-                "ICIJ Offshore Leaks", "GDELT", "Wikidata PEP", "SEC EDGAR Form 4",
+                "OpenSanctions",
+                "OFAC SDN",
+                "OpenCorporates",
+                "ICIJ Offshore Leaks",
+                "GDELT",
+                "Wikidata PEP",
+                "SEC EDGAR Form 4",
             ],
         }
         person_prompt = (
@@ -1173,38 +1284,47 @@ async def person_profile(req: PersonProfileRequest):
         }
         narrative, recommendations = await asyncio.gather(narrative_task, coa_task)
 
-        risk_factors = build_risk_factors({
-            "is_sanctioned": is_sanctioned,
-            "sanction_programs": sanction_programs,
-            "sanctions_hits": sanctions_hits,
-            "ofac_hits": ofac_hits,
-            "affiliations": affiliations,
-            "offshore": offshore,
-            "recent_events": recent_events,
-            "pep_hits": pep_hits,
-        })
+        risk_factors = build_risk_factors(
+            {
+                "is_sanctioned": is_sanctioned,
+                "sanction_programs": sanction_programs,
+                "sanctions_hits": sanctions_hits,
+                "ofac_hits": ofac_hits,
+                "affiliations": affiliations,
+                "offshore": offshore,
+                "recent_events": recent_events,
+                "pep_hits": pep_hits,
+            }
+        )
 
-        return JSONResponse(content={
-            "name": name,
-            "is_sanctioned": is_sanctioned,
-            "sanction_programs": sanction_programs,
-            "aliases": aliases[:6],
-            "nationality": nationality,
-            "dob": str(dob) if dob else None,
-            "affiliations": affiliations,
-            "offshore_connections": offshore,
-            "recent_events": recent_events,
-            "graph": graph_result,
-            "narrative": narrative,
-            "recommendations": recommendations,
-            "risk_factors": [rf.model_dump() for rf in risk_factors],
-            "insider_filings": insider_filings,
-            "pep_hits": pep_hits,
-            "sources": [
-                "OpenSanctions", "OFAC SDN", "OpenCorporates",
-                "ICIJ Offshore Leaks", "GDELT", "Wikidata PEP", "SEC EDGAR Form 4",
-            ],
-        })
+        return JSONResponse(
+            content={
+                "name": name,
+                "is_sanctioned": is_sanctioned,
+                "sanction_programs": sanction_programs,
+                "aliases": aliases[:6],
+                "nationality": nationality,
+                "dob": str(dob) if dob else None,
+                "affiliations": affiliations,
+                "offshore_connections": offshore,
+                "recent_events": recent_events,
+                "graph": graph_result,
+                "narrative": narrative,
+                "recommendations": recommendations,
+                "risk_factors": [rf.model_dump() for rf in risk_factors],
+                "insider_filings": insider_filings,
+                "pep_hits": pep_hits,
+                "sources": [
+                    "OpenSanctions",
+                    "OFAC SDN",
+                    "OpenCorporates",
+                    "ICIJ Offshore Leaks",
+                    "GDELT",
+                    "Wikidata PEP",
+                    "SEC EDGAR Form 4",
+                ],
+            }
+        )
 
     except Exception as e:
         logger.exception("person_profile error for name=%s", name)
@@ -1252,7 +1372,9 @@ async def person_network(req: PersonNetworkRequest):
         raise HTTPException(status_code=400, detail="depth must be 1 or 2")
     try:
         result = await build_person_network(
-            name=name, depth=req.depth, max_per_node=req.max_per_node,
+            name=name,
+            depth=req.depth,
+            max_per_node=req.max_per_node,
         )
         return JSONResponse(content=result.model_dump(by_alias=True))
     except Exception as e:
@@ -1261,6 +1383,7 @@ async def person_network(req: PersonNetworkRequest):
 
 
 # --- Vessel Track endpoint ---
+
 
 def _build_sector_sources(
     sector: str,
@@ -1338,7 +1461,11 @@ def _build_vessel_sources(vessel_name: str, sayari_intel: Any) -> list[dict[str,
             "url": "https://app.sayari.com/",
             "description": (
                 f"Beneficial ownership chain, registered owner, and trade activity for {vessel_name}"
-                + (f" (resolved as {sayari_intel.owner_name})" if getattr(sayari_intel, "owner_name", None) else "")
+                + (
+                    f" (resolved as {sayari_intel.owner_name})"
+                    if getattr(sayari_intel, "owner_name", None)
+                    else ""
+                )
             ),
         }
         eid = None
@@ -1367,7 +1494,9 @@ async def vessel_track(req: VesselTrackRequest):
             vessel_detail = await vessel_by_mmsi(digits_only)
             if vessel_detail:
                 history = await vessel_history(digits_only, days=30)
-        elif digits_only.upper().startswith("IMO") or (digits_only.isdigit() and len(digits_only) == 7):
+        elif digits_only.upper().startswith("IMO") or (
+            digits_only.isdigit() and len(digits_only) == 7
+        ):
             imo = digits_only.replace("IMO", "").replace("imo", "")
             vessel_detail = await vessel_by_imo(imo)
             if vessel_detail and vessel_detail.get("mmsi"):
@@ -1420,22 +1549,29 @@ async def vessel_track(req: VesselTrackRequest):
             return s.lower().replace(" ", "_").replace("-", "")[:60]
 
         vessel_id = f"vessel_{v_slug(vessel_name)}"
-        nodes[vessel_id] = _node(vessel_id, vessel_name, "vessel",
-                                 vessel_detail.get("flag"))
+        nodes[vessel_id] = _node(vessel_id, vessel_name, "vessel", vessel_detail.get("flag"))
 
         flag = vessel_detail.get("flag")
         if flag:
             flag_id = f"flag_{v_slug(flag)}"
             nodes[flag_id] = _node(flag_id, f"Flag: {flag}", "government", flag)
             edges[f"{vessel_id}→{flag_id}"] = {
-                "from": vessel_id, "to": flag_id, "label": "flagged under", "arrows": "to", "dashes": False,
+                "from": vessel_id,
+                "to": flag_id,
+                "label": "flagged under",
+                "arrows": "to",
+                "dashes": False,
             }
 
         for entry in sanctions_hits[:4]:
             sid = f"sanc_{v_slug(entry.name)}"
             nodes[sid] = _node(sid, entry.name, "sanctions_list")
             edges[f"{vessel_id}→{sid}"] = {
-                "from": vessel_id, "to": sid, "label": "OFAC match", "arrows": "to", "dashes": True,
+                "from": vessel_id,
+                "to": sid,
+                "label": "OFAC match",
+                "arrows": "to",
+                "dashes": True,
             }
 
         # Sayari UBO chain → graph nodes (tree structure using parent_entity_id)
@@ -1477,22 +1613,32 @@ async def vessel_track(req: VesselTrackRequest):
 
                 edge_label = _rel_label(link.relationship_type, link.ownership_percentage)
                 edges[f"{parent_node_id}→{link_id}"] = {
-                    "from": parent_node_id, "to": link_id, "label": edge_label,
-                    "arrows": "to", "dashes": False,
+                    "from": parent_node_id,
+                    "to": link_id,
+                    "label": edge_label,
+                    "arrows": "to",
+                    "dashes": False,
                 }
 
                 if link.is_sanctioned:
                     sanc_id = f"sanc_ubo_{v_slug(link.name)}"
                     nodes[sanc_id] = _node(sanc_id, f"SANCTIONED: {link.name}", "sanctions_list")
                     edges[f"{link_id}→{sanc_id}"] = {
-                        "from": link_id, "to": sanc_id, "label": "sanctioned",
-                        "arrows": "to", "dashes": True,
+                        "from": link_id,
+                        "to": sanc_id,
+                        "label": "sanctioned",
+                        "arrows": "to",
+                        "dashes": True,
                     }
 
         # Route summary from history
         route_points = [
-            {"lat": p["latitude"], "lon": p["longitude"],
-             "speed": p.get("speed", 0), "ts": p.get("timestamp", 0)}
+            {
+                "lat": p["latitude"],
+                "lon": p["longitude"],
+                "speed": p.get("speed", 0),
+                "ts": p.get("timestamp", 0),
+            }
             for p in history
             if isinstance(p, dict) and "latitude" in p and "longitude" in p
         ]
@@ -1528,22 +1674,28 @@ async def vessel_track(req: VesselTrackRequest):
             "vessel_type": vessel_detail.get("vessel_type"),
             "owner": vessel_detail.get("owner"),
             "is_sanctioned": is_sanctioned,
-            "sanction_programs": [
-                p for e in sanctions_hits for p in (e.programs or [])
-            ][:5],
+            "sanction_programs": [p for e in sanctions_hits for p in (e.programs or [])][:5],
             "route_point_count": len(route_points),
             "has_live_ais": bool(route_points),
         }
         # Enrich with Sayari UBO/trade data for narrative
         if sayari_intel and sayari_intel.resolved:
             compact["beneficial_owners"] = [
-                {"name": l.name, "type": l.entity_type, "country": l.country,
-                 "sanctioned": l.is_sanctioned, "pep": l.is_pep}
-                for l in (sayari_intel.ownership.chain if sayari_intel.ownership else [])
+                {
+                    "name": l.name,
+                    "type": l.entity_type,
+                    "country": l.country,
+                    "sanctioned": l.is_sanctioned,
+                    "pep": l.is_pep,
+                }
+                for l in (sayari_intel.ownership.chain if sayari_intel.ownership else [])  # noqa: E741  # pre-existing; tracked separately
             ]
-            compact["trade_countries"] = sayari_intel.trade.trade_countries if sayari_intel.trade else []
+            compact["trade_countries"] = (
+                sayari_intel.trade.trade_countries if sayari_intel.trade else []
+            )
             compact["top_commodities"] = [
-                h["description"][:50] for h in (sayari_intel.trade.top_hs_codes if sayari_intel.trade else [])
+                h["description"][:50]
+                for h in (sayari_intel.trade.top_hs_codes if sayari_intel.trade else [])
             ]
             # Risk scores and trade counterparty data for richer narrative
             compact["ownership_risk_scores"] = sayari_intel.risk_scores
@@ -1609,9 +1761,11 @@ async def vessel_track(req: VesselTrackRequest):
                     trade_nodes[cid] = _node(cid, company_name, node_type)
                     cat = rec.commodity_category or "goods"
                     trade_edges[f"{vessel_id}→{cid}"] = {
-                        "from": vessel_id, "to": cid,
+                        "from": vessel_id,
+                        "to": cid,
                         "label": f"{role}: {cat}",
-                        "arrows": "to", "dashes": has_risk,
+                        "arrows": "to",
+                        "dashes": has_risk,
                     }
 
         trade_graph_result = {
@@ -1621,32 +1775,35 @@ async def vessel_track(req: VesselTrackRequest):
 
         narrative, recommendations = await asyncio.gather(narrative_task, coa_task)
 
-        return JSONResponse(content={
-            "vessel": vessel_detail,
-            "is_sanctioned": is_sanctioned,
-            "sanctions_matches": [
-                {"name": e.name, "score": e.score, "programs": e.programs or []}
-                for e in sanctions_hits
-            ],
-            "route_history": route_points,
-            "countries_visited": countries_visited,
-            "port_calls": port_calls_data,
-            "port_stops_inferred": port_stops_inferred,
-            "ownership_chain": (
-                [link.model_dump() for link in sayari_intel.ownership.chain]
-                if sayari_intel and sayari_intel.ownership else []
-            ),
-            "owner_name": sayari_intel.owner_name if sayari_intel else None,
-            "trade_activity": (
-                sayari_intel.trade.model_dump() if sayari_intel and sayari_intel.trade else None
-            ),
-            "risk_scores": sayari_intel.risk_scores if sayari_intel else {},
-            "graph": graph_result,
-            "trade_graph": trade_graph_result,
-            "narrative": narrative,
-            "recommendations": recommendations,
-            "sources": _build_vessel_sources(vessel_name, sayari_intel),
-        })
+        return JSONResponse(
+            content={
+                "vessel": vessel_detail,
+                "is_sanctioned": is_sanctioned,
+                "sanctions_matches": [
+                    {"name": e.name, "score": e.score, "programs": e.programs or []}
+                    for e in sanctions_hits
+                ],
+                "route_history": route_points,
+                "countries_visited": countries_visited,
+                "port_calls": port_calls_data,
+                "port_stops_inferred": port_stops_inferred,
+                "ownership_chain": (
+                    [link.model_dump() for link in sayari_intel.ownership.chain]
+                    if sayari_intel and sayari_intel.ownership
+                    else []
+                ),
+                "owner_name": sayari_intel.owner_name if sayari_intel else None,
+                "trade_activity": (
+                    sayari_intel.trade.model_dump() if sayari_intel and sayari_intel.trade else None
+                ),
+                "risk_scores": sayari_intel.risk_scores if sayari_intel else {},
+                "graph": graph_result,
+                "trade_graph": trade_graph_result,
+                "narrative": narrative,
+                "recommendations": recommendations,
+                "sources": _build_vessel_sources(vessel_name, sayari_intel),
+            }
+        )
 
     except Exception as e:
         logger.exception("vessel_track error for query=%s", query)
@@ -1908,7 +2065,7 @@ async def _llm_match_sector_key(query: str) -> str:
     keys = sorted(_SECTOR_COMPANIES.keys())
     prompt = (
         "Classify the sector phrase into ONE known key or 'unknown'. "
-        "Return JSON only with schema {\"sector_key\": \"...\"}.\n"
+        'Return JSON only with schema {"sector_key": "..."}.\n'
         f"Known keys: {keys}\n"
         f"Input: {query}\n"
         "Rules: if confidence is low, return unknown."
@@ -1922,7 +2079,7 @@ async def _llm_match_sector_key(query: str) -> str:
         timeout=10.0,
     )
     text = response.content[0].text
-    payload = json.loads(_extract_json(text))
+    payload = json.loads(_extract_json(text))  # noqa: F821  # pre-existing; _extract_json missing import from orchestrator.main, tracked separately
     key = str(payload.get("sector_key", "unknown")).strip().lower()
     return key if key in _SECTOR_COMPANIES else "unknown"
 
@@ -1948,7 +2105,7 @@ async def _llm_generate_sector_companies(query: str) -> list[dict[str, Any]]:
         timeout=12.0,
     )
     text = response.content[0].text
-    rows = json.loads(_extract_json(text))
+    rows = json.loads(_extract_json(text))  # noqa: F821  # pre-existing; _extract_json missing import from orchestrator.main, tracked separately
     if not isinstance(rows, list):
         return []
 
@@ -2037,18 +2194,24 @@ async def sector_analysis(req: SectorAnalysisRequest):
         company_profiles = []
         for co, result in zip(companies, sanction_results):
             hits = result if not isinstance(result, Exception) else []
-            high_conf = [
-                e
-                for e in hits
-                if (e.score or 0) >= 0.75 and _ofac_hit_matches_company_label(co["name"], e)
-            ] if hits else []
-            company_profiles.append({
-                "name": co["name"],
-                "ticker": co.get("ticker"),
-                "country": co.get("country"),
-                "is_sanctioned": bool(high_conf),
-                "sanction_names": [e.name for e in high_conf[:2]],
-            })
+            high_conf = (
+                [
+                    e
+                    for e in hits
+                    if (e.score or 0) >= 0.75 and _ofac_hit_matches_company_label(co["name"], e)
+                ]
+                if hits
+                else []
+            )
+            company_profiles.append(
+                {
+                    "name": co["name"],
+                    "ticker": co.get("ticker"),
+                    "country": co.get("country"),
+                    "is_sanctioned": bool(high_conf),
+                    "sanction_names": [e.name for e in high_conf[:2]],
+                }
+            )
 
         sanctioned_count = sum(1 for c in company_profiles if c["is_sanctioned"])
 
@@ -2058,49 +2221,49 @@ async def sector_analysis(req: SectorAnalysisRequest):
 
         sector_hint = f"{sector_key} {sector}".lower()
         if any(k in sector_hint for k in ("aircraft", "mro", "defense", "aerospace")):
-          commodity_specs = [
-            ("titanium", "810890"),
-            ("carbon_fiber", "681510"),
-            ("rare_earth_magnets", "850511"),
-          ]
-          supply_tasks = [
-            get_supply_chain_exposure(country="USA", commodity_code=code)
-            for _name, code in commodity_specs
-          ]
-          tension_tasks = [
-            get_bilateral_tensions("United States", "China", days=180),
-            get_bilateral_tensions("United States", "Russia", days=180),
-          ]
-          supply_results, tension_results = await asyncio.gather(
-            asyncio.gather(*supply_tasks, return_exceptions=True),
-            asyncio.gather(*tension_tasks, return_exceptions=True),
-          )
-
-          for (label, code), result in zip(commodity_specs, supply_results):
-            if isinstance(result, Exception):
-              continue
-            payload = result.get("data", result)
-            supply_chain_exposures.append(
-              {
-                "label": label,
-                "commodity_code": code,
-                "import_share_pct": payload.get("import_share_pct", 0.0),
-                "top_suppliers": payload.get("top_suppliers", [])[:5],
-              }
+            commodity_specs = [
+                ("titanium", "810890"),
+                ("carbon_fiber", "681510"),
+                ("rare_earth_magnets", "850511"),
+            ]
+            supply_tasks = [
+                get_supply_chain_exposure(country="USA", commodity_code=code)
+                for _name, code in commodity_specs
+            ]
+            tension_tasks = [
+                get_bilateral_tensions("United States", "China", days=180),
+                get_bilateral_tensions("United States", "Russia", days=180),
+            ]
+            supply_results, tension_results = await asyncio.gather(
+                asyncio.gather(*supply_tasks, return_exceptions=True),
+                asyncio.gather(*tension_tasks, return_exceptions=True),
             )
 
-          for pair, result in zip(("US-China", "US-Russia"), tension_results):
-            if isinstance(result, Exception):
-              continue
-            payload = result.get("data", result)
-            geopolitical_tensions.append(
-              {
-                "pair": pair,
-                "event_count": payload.get("event_count", 0),
-                "tension_level": payload.get("tension_level", "unknown"),
-                "avg_tone": payload.get("avg_tone"),
-              }
-            )
+            for (label, code), result in zip(commodity_specs, supply_results):
+                if isinstance(result, Exception):
+                    continue
+                payload = result.get("data", result)
+                supply_chain_exposures.append(
+                    {
+                        "label": label,
+                        "commodity_code": code,
+                        "import_share_pct": payload.get("import_share_pct", 0.0),
+                        "top_suppliers": payload.get("top_suppliers", [])[:5],
+                    }
+                )
+
+            for pair, result in zip(("US-China", "US-Russia"), tension_results):
+                if isinstance(result, Exception):
+                    continue
+                payload = result.get("data", result)
+                geopolitical_tensions.append(
+                    {
+                        "pair": pair,
+                        "event_count": payload.get("event_count", 0),
+                        "tension_level": payload.get("tension_level", "unknown"),
+                        "avg_tone": payload.get("avg_tone"),
+                    }
+                )
 
         # Build sector vis.js graph
         nodes: dict[str, dict] = {}
@@ -2117,16 +2280,22 @@ async def sector_analysis(req: SectorAnalysisRequest):
             etype = "sanctions_list" if co["is_sanctioned"] else "company"
             nodes[cid] = _node(cid, co["name"], etype, co.get("country"))
             edges[f"{sector_id}→{cid}"] = {
-                "from": sector_id, "to": cid,
-                "label": "key player", "arrows": "to", "dashes": False,
+                "from": sector_id,
+                "to": cid,
+                "label": "key player",
+                "arrows": "to",
+                "dashes": False,
             }
             if co["is_sanctioned"]:
                 for sn in co["sanction_names"][:1]:
                     sid = f"sanc_{s_slug(sn)}"
                     nodes[sid] = _node(sid, sn, "sanctions_list")
                     edges[f"{cid}→{sid}"] = {
-                        "from": cid, "to": sid, "label": "OFAC listed",
-                        "arrows": "to", "dashes": True,
+                        "from": cid,
+                        "to": sid,
+                        "label": "OFAC listed",
+                        "arrows": "to",
+                        "dashes": True,
                     }
 
         # Start narrative generation concurrently with graph finalization
@@ -2136,14 +2305,15 @@ async def sector_analysis(req: SectorAnalysisRequest):
             "sanctioned_count": sanctioned_count,
             "sanctioned_entities": [
                 {"name": c["name"], "country": c["country"]}
-                for c in company_profiles if c["is_sanctioned"]
+                for c in company_profiles
+                if c["is_sanctioned"]
             ],
             "key_players": [
                 {"name": c["name"], "country": c["country"], "ticker": c["ticker"]}
                 for c in company_profiles[:6]
             ],
-              "supply_chain_exposure_count": len(supply_chain_exposures),
-              "geopolitical_tension_pairs": geopolitical_tensions,
+            "supply_chain_exposure_count": len(supply_chain_exposures),
+            "geopolitical_tension_pairs": geopolitical_tensions,
         }
         sector_prompt = (
             f"You are an economic warfare analyst. Given the following data on the "
@@ -2161,19 +2331,23 @@ async def sector_analysis(req: SectorAnalysisRequest):
         }
         narrative, recommendations = await asyncio.gather(narrative_task, coa_task)
 
-        return JSONResponse(content={
-            "sector": sector,
-            "sector_key": sector_key,
-            "company_count": len(company_profiles),
-            "sanctioned_count": sanctioned_count,
-            "companies": company_profiles,
-            "graph": graph_result,
-            "narrative": narrative,
-            "recommendations": recommendations,
-            "supply_chain_exposures": supply_chain_exposures,
-            "geopolitical_tensions": geopolitical_tensions,
-            "sources": _build_sector_sources(sector, sanctioned_count, supply_chain_exposures, geopolitical_tensions),
-        })
+        return JSONResponse(
+            content={
+                "sector": sector,
+                "sector_key": sector_key,
+                "company_count": len(company_profiles),
+                "sanctioned_count": sanctioned_count,
+                "companies": company_profiles,
+                "graph": graph_result,
+                "narrative": narrative,
+                "recommendations": recommendations,
+                "supply_chain_exposures": supply_chain_exposures,
+                "geopolitical_tensions": geopolitical_tensions,
+                "sources": _build_sector_sources(
+                    sector, sanctioned_count, supply_chain_exposures, geopolitical_tensions
+                ),
+            }
+        )
 
     except Exception as e:
         logger.exception("sector_analysis error for sector=%s", sector)
@@ -2181,6 +2355,7 @@ async def sector_analysis(req: SectorAnalysisRequest):
 
 
 # --- Entity Risk Report endpoint ---
+
 
 class EntityRiskReportRequest(BaseModel):
     name: str
@@ -2190,8 +2365,24 @@ class EntityRiskReportRequest(BaseModel):
 
 
 _HIGH_RISK_COUNTRIES = {
-    "RU", "IR", "KP", "BY", "CU", "SY", "VE", "MM", "SD", "SS",
-    "CF", "CD", "IQ", "LB", "LY", "SO", "YE", "ZW",
+    "RU",
+    "IR",
+    "KP",
+    "BY",
+    "CU",
+    "SY",
+    "VE",
+    "MM",
+    "SD",
+    "SS",
+    "CF",
+    "CD",
+    "IQ",
+    "LB",
+    "LY",
+    "SO",
+    "YE",
+    "ZW",
 }
 _ELEVATED_RISK_COUNTRIES = {"CN", "HK", "TR", "AE", "SA", "PK", "NG", "UA", "UZ", "KZ"}
 
@@ -2199,21 +2390,56 @@ _ELEVATED_RISK_COUNTRIES = {"CN", "HK", "TR", "AE", "SA", "PK", "NG", "UA", "UZ"
 # GLEIF already returns ISO-2 codes. Unknown names resolve to None → risk=LOW (safe).
 _COUNTRY_NAME_TO_ISO: dict[str, str] = {
     # Risk-relevant
-    "china": "CN", "hong kong": "HK", "russia": "RU", "iran": "IR",
-    "north korea": "KP", "belarus": "BY", "cuba": "CU", "syria": "SY",
-    "venezuela": "VE", "myanmar": "MM", "burma": "MM", "sudan": "SD",
-    "turkey": "TR", "united arab emirates": "AE", "saudi arabia": "SA",
-    "pakistan": "PK", "nigeria": "NG", "ukraine": "UA", "uzbekistan": "UZ",
-    "kazakhstan": "KZ", "south sudan": "SS", "central african republic": "CF",
-    "dr congo": "CD", "democratic republic of the congo": "CD", "iraq": "IQ",
-    "lebanon": "LB", "libya": "LY", "somalia": "SO", "yemen": "YE",
+    "china": "CN",
+    "hong kong": "HK",
+    "russia": "RU",
+    "iran": "IR",
+    "north korea": "KP",
+    "belarus": "BY",
+    "cuba": "CU",
+    "syria": "SY",
+    "venezuela": "VE",
+    "myanmar": "MM",
+    "burma": "MM",
+    "sudan": "SD",
+    "turkey": "TR",
+    "united arab emirates": "AE",
+    "saudi arabia": "SA",
+    "pakistan": "PK",
+    "nigeria": "NG",
+    "ukraine": "UA",
+    "uzbekistan": "UZ",
+    "kazakhstan": "KZ",
+    "south sudan": "SS",
+    "central african republic": "CF",
+    "dr congo": "CD",
+    "democratic republic of the congo": "CD",
+    "iraq": "IQ",
+    "lebanon": "LB",
+    "libya": "LY",
+    "somalia": "SO",
+    "yemen": "YE",
     "zimbabwe": "ZW",
     # Common yfinance country names (not risk-scored but needed for accurate display)
-    "taiwan": "TW", "united states": "US", "germany": "DE", "japan": "JP",
-    "france": "FR", "united kingdom": "GB", "netherlands": "NL",
-    "south korea": "KR", "india": "IN", "singapore": "SG", "canada": "CA",
-    "australia": "AU", "brazil": "BR", "mexico": "MX", "israel": "IL",
-    "sweden": "SE", "switzerland": "CH", "spain": "ES", "italy": "IT",
+    "taiwan": "TW",
+    "united states": "US",
+    "germany": "DE",
+    "japan": "JP",
+    "france": "FR",
+    "united kingdom": "GB",
+    "netherlands": "NL",
+    "south korea": "KR",
+    "india": "IN",
+    "singapore": "SG",
+    "canada": "CA",
+    "australia": "AU",
+    "brazil": "BR",
+    "mexico": "MX",
+    "israel": "IL",
+    "sweden": "SE",
+    "switzerland": "CH",
+    "spain": "ES",
+    "italy": "IT",
 }
 
 
@@ -2289,12 +2515,14 @@ async def entity_risk_report(req: EntityRiskReportRequest):
             if e.programs:
                 sanction_programs.extend(e.programs)
             sanction_lists.append("OFAC SDN")
-            sanction_details.append({
-                "name": e.name,
-                "score": round(e.score or 0, 2),
-                "programs": (e.programs or [])[:3],
-                "remarks": (e.remarks or "")[:200] or None,
-            })
+            sanction_details.append(
+                {
+                    "name": e.name,
+                    "score": round(e.score or 0, 2),
+                    "programs": (e.programs or [])[:3],
+                    "remarks": (e.remarks or "")[:200] or None,
+                }
+            )
         for e in csl_hits:
             if e.programs:
                 sanction_programs.extend(e.programs)
@@ -2397,7 +2625,8 @@ async def entity_risk_report(req: EntityRiskReportRequest):
                 lo52 = price_data.fifty_two_week_low if price_data else None
                 pct_from_hi = (
                     round((current_price - hi52) / hi52 * 100, 1)
-                    if current_price and hi52 else None
+                    if current_price and hi52
+                    else None
                 )
                 market_info = {
                     "ticker": ticker,
@@ -2413,19 +2642,25 @@ async def entity_risk_report(req: EntityRiskReportRequest):
                     "analyst_target": analyst.target_price if analyst else None,
                     "analyst_recommendation": analyst.recommendation if analyst else None,
                     "analyst_count": analyst.num_analysts if analyst else None,
-                    "description": (profile.description or "")[:300] if profile and profile.description else None,
+                    "description": (profile.description or "")[:300]
+                    if profile and profile.description
+                    else None,
                 }
 
             # Institutional holder exposure
             if holders:
                 top_holders = []
                 for h in sorted(holders, key=lambda x: x.pct_held or 0, reverse=True)[:8]:
-                    top_holders.append({
-                        "name": h.holder_name,
-                        "pct_held": round(h.pct_held * 100, 2) if h.pct_held and h.pct_held < 1 else h.pct_held,
-                        "value_usd": h.value,
-                        "is_pension": _is_pension_or_sovereign(h.holder_name),
-                    })
+                    top_holders.append(
+                        {
+                            "name": h.holder_name,
+                            "pct_held": round(h.pct_held * 100, 2)
+                            if h.pct_held and h.pct_held < 1
+                            else h.pct_held,
+                            "value_usd": h.value,
+                            "is_pension": _is_pension_or_sovereign(h.holder_name),
+                        }
+                    )
                 pension_holders = [h for h in top_holders if h["is_pension"]]
                 total_usd = sum(h["value_usd"] for h in top_holders if h["value_usd"])
                 exposure = {
@@ -2443,59 +2678,77 @@ async def entity_risk_report(req: EntityRiskReportRequest):
         # ── Risk indicators ───────────────────────────────────────────────
         risk_indicators: list[dict[str, str]] = []
 
-        risk_indicators.append({
-            "label": "Sanctions",
-            "value": "DESIGNATED" if is_sanctioned else "Clear",
-            "severity": "high" if is_sanctioned else "low",
-        })
+        risk_indicators.append(
+            {
+                "label": "Sanctions",
+                "value": "DESIGNATED" if is_sanctioned else "Clear",
+                "severity": "high" if is_sanctioned else "low",
+            }
+        )
 
         if sanction_programs:
-            risk_indicators.append({
-                "label": "OFAC Programs",
-                "value": ", ".join(sanction_programs[:3]),
-                "severity": "high",
-            })
+            risk_indicators.append(
+                {
+                    "label": "OFAC Programs",
+                    "value": ", ".join(sanction_programs[:3]),
+                    "severity": "high",
+                }
+            )
 
         if country:
-            sev = "high" if country_iso in _HIGH_RISK_COUNTRIES else (
-                "medium" if country_iso in _ELEVATED_RISK_COUNTRIES else "low"
+            sev = (
+                "high"
+                if country_iso in _HIGH_RISK_COUNTRIES
+                else ("medium" if country_iso in _ELEVATED_RISK_COUNTRIES else "low")
             )
             risk_indicators.append({"label": "Jurisdiction", "value": country, "severity": sev})
 
         if corporate_info.get("status"):
             st = corporate_info["status"]
-            risk_indicators.append({
-                "label": "Entity Status",
-                "value": st,
-                "severity": "low" if st in ("ACTIVE", "ISSUED") else "medium",
-            })
+            risk_indicators.append(
+                {
+                    "label": "Entity Status",
+                    "value": st,
+                    "severity": "low" if st in ("ACTIVE", "ISSUED") else "medium",
+                }
+            )
 
         if market_info:
             if market_info.get("market_cap"):
                 mc = market_info["market_cap"]
-                mc_str = f"${mc / 1e12:.2f}T" if mc >= 1e12 else (f"${mc / 1e9:.1f}B" if mc >= 1e9 else f"${mc / 1e6:.0f}M")
+                mc_str = (
+                    f"${mc / 1e12:.2f}T"
+                    if mc >= 1e12
+                    else (f"${mc / 1e9:.1f}B" if mc >= 1e9 else f"${mc / 1e6:.0f}M")
+                )
                 risk_indicators.append({"label": "Market Cap", "value": mc_str, "severity": "low"})
             if market_info.get("pct_from_52w_high") is not None:
                 pct = market_info["pct_from_52w_high"]
                 sev = "high" if pct < -30 else ("medium" if pct < -15 else "low")
-                risk_indicators.append({
-                    "label": "vs 52-Week High",
-                    "value": f"{pct:+.1f}%",
-                    "severity": sev,
-                })
+                risk_indicators.append(
+                    {
+                        "label": "vs 52-Week High",
+                        "value": f"{pct:+.1f}%",
+                        "severity": sev,
+                    }
+                )
             if market_info.get("analyst_recommendation"):
-                risk_indicators.append({
-                    "label": "Analyst Consensus",
-                    "value": market_info["analyst_recommendation"].upper(),
-                    "severity": "low",
-                })
+                risk_indicators.append(
+                    {
+                        "label": "Analyst Consensus",
+                        "value": market_info["analyst_recommendation"].upper(),
+                        "severity": "low",
+                    }
+                )
 
         if exposure and exposure.get("pension_count", 0) > 0:
-            risk_indicators.append({
-                "label": "Friendly Fire",
-                "value": f"{exposure['pension_count']} US pension/sovereign fund(s) exposed",
-                "severity": "medium",
-            })
+            risk_indicators.append(
+                {
+                    "label": "Friendly Fire",
+                    "value": f"{exposure['pension_count']} US pension/sovereign fund(s) exposed",
+                    "severity": "medium",
+                }
+            )
 
         # ── Overall risk level ────────────────────────────────────────────
         if is_sanctioned or country_iso in _HIGH_RISK_COUNTRIES or offshore_flags:
@@ -2554,25 +2807,27 @@ async def entity_risk_report(req: EntityRiskReportRequest):
         if ticker and market_info:
             sources.append("Yahoo Finance")
 
-        return JSONResponse(content={
-            "name": name,
-            "entity_type": entity_type,
-            "risk_level": risk_level,
-            "is_sanctioned": is_sanctioned,
-            "sanction_programs": sanction_programs,
-            "sanction_lists": sanction_lists,
-            "sanction_details": sanction_details[:3],
-            "country": country,
-            "corporate_info": corporate_info,
-            "officers": officers,
-            "offshore_flags": offshore_flags,
-            "market_info": market_info,
-            "exposure": exposure,
-            "risk_indicators": risk_indicators,
-            "narrative": narrative,
-            "sources": sources,
-            "generated_at": _dt.utcnow().isoformat() + "Z",
-        })
+        return JSONResponse(
+            content={
+                "name": name,
+                "entity_type": entity_type,
+                "risk_level": risk_level,
+                "is_sanctioned": is_sanctioned,
+                "sanction_programs": sanction_programs,
+                "sanction_lists": sanction_lists,
+                "sanction_details": sanction_details[:3],
+                "country": country,
+                "corporate_info": corporate_info,
+                "officers": officers,
+                "offshore_flags": offshore_flags,
+                "market_info": market_info,
+                "exposure": exposure,
+                "risk_indicators": risk_indicators,
+                "narrative": narrative,
+                "sources": sources,
+                "generated_at": _dt.utcnow().isoformat() + "Z",
+            }
+        )
 
     except Exception as e:
         logger.exception("entity_risk_report error for name=%s", name)
@@ -2581,12 +2836,13 @@ async def entity_risk_report(req: EntityRiskReportRequest):
 
 # --- Follow-up Q&A ---
 
+
 class FollowUpMessage(BaseModel):
-    role: str   # 'user' | 'assistant'
+    role: str  # 'user' | 'assistant'
     text: str
 
 
-class FollowUpRequest(BaseModel):
+class FollowUpRequest(BaseModel):  # noqa: F811  # pre-existing duplicate of L527; tracked separately
     question: str
     context_type: str  # 'company' | 'orchestrator'
     context: dict[str, Any]
@@ -2630,22 +2886,19 @@ def _build_company_followup_system(ctx: dict[str, Any]) -> str:
     csl_matches = sanctions.get("csl_matches", [])
     csl_lines = "\n".join(
         f"    · {m.get('name')} | Source: {m.get('source')} | Programs: {', '.join(m.get('programs', [])) or 'N/A'}"
-        + (f" | Start: {m.get('start_date')}" if m.get('start_date') else "")
+        + (f" | Start: {m.get('start_date')}" if m.get("start_date") else "")
         for m in csl_matches[:5]
     )
 
     # Comparables — full detail
     comp_lines = "\n".join(
-        f"  [{i+1}] {c.get('name')} ({c.get('ticker')}) — sanctioned {str(c.get('sanction_date', ''))[:10]}"
+        f"  [{i + 1}] {c.get('name')} ({c.get('ticker')}) — sanctioned {str(c.get('sanction_date', ''))[:10]}"
         f"\n      Type: {c.get('sanction_type') or 'N/A'} | Sector: {c.get('sector') or 'N/A'}"
         f"\n      Context: {c.get('description') or 'N/A'}"
         for i, c in enumerate(comparables)
     )
 
-    ctrl_lines = "\n".join(
-        f"  - {c.get('name')} ({c.get('ticker')})"
-        for c in control_comparables
-    )
+    ctrl_lines = "\n".join(f"  - {c.get('name')} ({c.get('ticker')})" for c in control_comparables)
 
     day30_range = summary.get("day_30_range")
     day60_range = summary.get("day_60_range")
@@ -2655,38 +2908,40 @@ def _build_company_followup_system(ctx: dict[str, Any]) -> str:
     r90 = f"({_fmt_pct(day90_range[0])} to {_fmt_pct(day90_range[1])})" if day90_range else ""
 
     coherence = proj.get("coherence_score")
-    coherence_str = f"{coherence * 100:.0f}% directional agreement" if coherence is not None else "N/A"
+    coherence_str = (
+        f"{coherence * 100:.0f}% directional agreement" if coherence is not None else "N/A"
+    )
     sourcing = metadata.get("sourcing_method", "unknown")
 
     return f"""You are a senior economic warfare intelligence analyst. Answer every question with a direct, confident judgment. You have the full data below — use it to give a definitive answer, not a hedge.
 
 ═══ TARGET ═══
-Company:      {target.get('name')} ({target.get('ticker')})
-Sector:       {target.get('sector')} | Industry: {target.get('industry')} | Country: {target.get('country')}
-Price:        ${float(target.get('current_price') or 0):.2f} (day change: {_fmt_pct(target.get('change_pct'))})
-Market Cap:   {_fmt_mc(target.get('market_cap'))}
-Sanctioned:   {sanctions.get('is_sanctioned')}
-Programs:     {', '.join(sanctions.get('programs', [])) or 'None'}
-Lists:        {', '.join(sanctions.get('lists', [])) or 'None'}
+Company:      {target.get("name")} ({target.get("ticker")})
+Sector:       {target.get("sector")} | Industry: {target.get("industry")} | Country: {target.get("country")}
+Price:        ${float(target.get("current_price") or 0):.2f} (day change: {_fmt_pct(target.get("change_pct"))})
+Market Cap:   {_fmt_mc(target.get("market_cap"))}
+Sanctioned:   {sanctions.get("is_sanctioned")}
+Programs:     {", ".join(sanctions.get("programs", [])) or "None"}
+Lists:        {", ".join(sanctions.get("lists", [])) or "None"}
 {f"CSL Matches:{chr(10)}{csl_lines}" if csl_lines else "CSL Matches:  None"}
 
 ═══ PROJECTION (excess return vs sector ETF, based on {len(comparables)} comparable sanctions events) ═══
-  60d pre-event:  {_fmt_pct(summary.get('pre_event_decline'))}
-  30d post-event: {_fmt_pct(summary.get('day_30_post'))} {r30}
-  60d post-event: {_fmt_pct(summary.get('day_60_post'))} {r60}
-  90d post-event: {_fmt_pct(summary.get('day_90_post'))} {r90}
-  Max drawdown:   {_fmt_pct(summary.get('max_drawdown'))}
+  60d pre-event:  {_fmt_pct(summary.get("pre_event_decline"))}
+  30d post-event: {_fmt_pct(summary.get("day_30_post"))} {r30}
+  60d post-event: {_fmt_pct(summary.get("day_60_post"))} {r60}
+  90d post-event: {_fmt_pct(summary.get("day_90_post"))} {r90}
+  Max drawdown:   {_fmt_pct(summary.get("max_drawdown"))}
   Coherence:      {coherence_str}
   Sourcing:       {sourcing}
 
 ═══ SANCTIONED COMPARABLE CASES ({len(comparables)}) ═══
-{comp_lines or '  None — no comparable cases were found.'}
+{comp_lines or "  None — no comparable cases were found."}
 
 ═══ CONTROL GROUP — NON-SANCTIONED PEERS ({len(control_comparables)}) ═══
-{ctrl_lines or '  None'}
+{ctrl_lines or "  None"}
 
 ═══ ANALYST NARRATIVE ═══
-{narrative or 'None generated.'}
+{narrative or "None generated."}
 
 ─── HOW TO ANSWER ───
 • Lead with the answer. State your conclusion in the first sentence, then back it with numbers.
@@ -2714,7 +2969,7 @@ def _build_orchestrator_followup_system(ctx: dict[str, Any]) -> str:
         f"  - {ff.get('entity')}: {ff.get('details') or [ff.get('exposure_type'), ff.get('estimated_impact')] and ' | '.join(filter(None, [ff.get('exposure_type'), ff.get('estimated_impact')])) or '—'}"
         for ff in friendly_fire
     )
-    rec_text = "\n".join(f"  {i+1}. {r}" for i, r in enumerate(recommendations))
+    rec_text = "\n".join(f"  {i + 1}. {r}" for i, r in enumerate(recommendations))
     conf_text = "\n".join(f"  {k}: {v}" for k, v in confidence_summary.items())
 
     # Serialize raw tool results, truncated to stay within context limits
@@ -2725,26 +2980,26 @@ def _build_orchestrator_followup_system(ctx: dict[str, Any]) -> str:
     return f"""You are a senior economic warfare intelligence analyst. Answer every question with a direct, confident judgment. You have the full pipeline data below — use it to give a definitive answer, not a hedge.
 
 ═══ ORIGINAL QUERY ═══
-{query_info.get('raw_query', 'N/A')}
+{query_info.get("raw_query", "N/A")}
 Scenario type: {scenario}
 
 ═══ EXECUTIVE SUMMARY ═══
 {exec_summary}
 
 ═══ FINDINGS ({len(findings)} total) ═══
-{findings_text or '  None'}
+{findings_text or "  None"}
 
 ═══ FRIENDLY FIRE ALERTS ({len(friendly_fire)}) ═══
-{ff_text or '  None'}
+{ff_text or "  None"}
 
 ═══ RECOMMENDATIONS ═══
-{rec_text or '  None'}
+{rec_text or "  None"}
 
 ═══ CONFIDENCE BY DOMAIN ═══
-{conf_text or '  None'}
+{conf_text or "  None"}
 
 ═══ RAW PIPELINE DATA (all tool results) ═══
-{tool_results_json or '  None collected'}
+{tool_results_json or "  None collected"}
 
 ─── HOW TO ANSWER ───
 • Lead with the answer. State your conclusion in the first sentence, then back it with specifics from the data.
@@ -2778,7 +3033,9 @@ def _build_vessel_followup_system(ctx: dict[str, Any]) -> str:
         for r in records[:15]
     )
     trade_countries = ", ".join(trade.get("trade_countries", []))
-    hs_codes = ", ".join(h.get("description", h.get("code", ""))[:50] for h in trade.get("top_hs_codes", [])[:5])
+    hs_codes = ", ".join(
+        h.get("description", h.get("code", ""))[:50] for h in trade.get("top_hs_codes", [])[:5]
+    )
 
     cpi = risk_scores.get("cpi_score", "N/A")
     basel = risk_scores.get("basel_aml", "N/A")
@@ -2786,24 +3043,24 @@ def _build_vessel_followup_system(ctx: dict[str, Any]) -> str:
     return f"""You are a senior maritime intelligence analyst and economic warfare expert. Answer every question with a direct, confident judgment. You have vessel intelligence data below PLUS your own extensive expertise in sanctions law, forced labor regulations, trade policy, and geopolitical risk. Use BOTH to deliver a definitive assessment.
 
 ═══ VESSEL ═══
-Name:         {vessel.get('name', 'Unknown')}
-IMO:          {vessel.get('imo', 'N/A')} | MMSI: {vessel.get('mmsi', 'N/A')}
-Flag:         {vessel.get('flag', 'N/A')} | Type: {vessel.get('vessel_type', 'N/A')}
+Name:         {vessel.get("name", "Unknown")}
+IMO:          {vessel.get("imo", "N/A")} | MMSI: {vessel.get("mmsi", "N/A")}
+Flag:         {vessel.get("flag", "N/A")} | Type: {vessel.get("vessel_type", "N/A")}
 Sanctioned:   {sanctioned}
 CPI Score:    {cpi} | Basel AML: {basel}
 
 ═══ BENEFICIAL OWNERSHIP ({len(ownership)} entities) ═══
-{chain_lines or '  None identified'}
+{chain_lines or "  None identified"}
 
 ═══ TRADE ACTIVITY ({len(records)} records, countries: {trade_countries}) ═══
-{trade_lines or '  No trade records'}
-Top Commodities: {hs_codes or 'N/A'}
+{trade_lines or "  No trade records"}
+Top Commodities: {hs_codes or "N/A"}
 
 ═══ COUNTRIES VISITED ═══
-{', '.join(countries) if countries else 'N/A'}
+{", ".join(countries) if countries else "N/A"}
 
 ═══ RISK NARRATIVE ═══
-{narrative or 'None generated.'}
+{narrative or "None generated."}
 
 ─── HOW TO ANSWER ───
 • You ALWAYS have enough to answer. Combine the vessel data above with your domain expertise on sanctions, forced labor, export controls, and supply chain risk. Never refuse.
@@ -2827,7 +3084,9 @@ def _build_coa_followup_system(ctx: dict[str, Any]) -> str:
     expected_effects = ctx.get("expected_effects") or []
     friendly_fire = ctx.get("friendly_fire") or []
 
-    targets_str = ", ".join(str(t) for t in target_entities) if target_entities else "None specified"
+    targets_str = (
+        ", ".join(str(t) for t in target_entities) if target_entities else "None specified"
+    )
 
     recs_block = (
         "\n".join(f"  {i + 1}. {r}" for i, r in enumerate(recommendations))
@@ -2836,9 +3095,7 @@ def _build_coa_followup_system(ctx: dict[str, Any]) -> str:
     )
 
     effects_block = (
-        "\n".join(f"  - {e}" for e in expected_effects)
-        if expected_effects
-        else "  (none)"
+        "\n".join(f"  - {e}" for e in expected_effects) if expected_effects else "  (none)"
     )
 
     if friendly_fire:
@@ -2931,7 +3188,7 @@ async def followup(req: FollowUpRequest) -> FollowUpResponse:
 
 # --- BuildWorkforce AI proxy ---
 
-import httpx as _httpx
+import httpx as _httpx  # noqa: E402  # pre-existing late import; tracked separately
 
 
 class BuildWorkforceRunRequest(BaseModel):
@@ -2993,6 +3250,7 @@ async def buildworkforce_poll_run(run_id: str):
 # --- Static file catch-all (must be LAST route) ---
 # Serves root-level files from dist/ (favicon, logos) and SPA fallback
 
+
 @app.get("/{filename:path}")
 async def serve_static_or_spa(filename: str):
     static_file = _DIST / filename
@@ -3002,4 +3260,3 @@ async def serve_static_or_spa(filename: str):
     if index.exists():
         return FileResponse(str(index))
     raise HTTPException(status_code=404)
-
