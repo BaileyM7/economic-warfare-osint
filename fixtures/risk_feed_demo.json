@@ -1,0 +1,299 @@
+{
+  "_comment": "Demo-mode fallback for the Risk Feed POC. Each item ships a synthetic_payload that POSTs directly to /coa/generate (no orchestrator). Categories: company_sanctions, people_sanctions, markets.",
+  "generated_at": "2026-04-29T00:00:00Z",
+  "items": [
+    {
+      "id": "demo-cs-001",
+      "category": "company_sanctions",
+      "severity": "high",
+      "headline": "OFAC adds Sinno Electronics Co. Ltd. to SDN list under SDGT program",
+      "entity": "Sinno Electronics Co. Ltd.",
+      "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42531",
+      "fetched_at": "2026-04-29T08:15:00Z",
+      "synthetic_payload": {
+        "scenario_type": "sanctions_designation",
+        "executive_summary": "OFAC added Sinno Electronics Co. Ltd. (Shenzhen, China) to the SDN list on 2026-04-28 under the SDGT (Specially Designated Global Terrorist) program for facilitating procurement of dual-use semiconductor components for sanctioned end-users in Iran.",
+        "target_entities": ["Sinno Electronics Co. Ltd.", "Sinno Holdings HK"],
+        "key_findings": [
+          "SDN program codes: SDGT, IRAN-EO13902",
+          "Listed address: Futian District, Shenzhen, Guangdong, China",
+          "Aliases: Sinno Electronics; Sinno HK; SHENZHEN SINNO",
+          "Reported HK subsidiary acts as procurement front per Treasury press release"
+        ],
+        "sources_used": [
+          {
+            "name": "OFAC SDN List",
+            "url": "https://www.treasury.gov/ofac/downloads/sdn.csv",
+            "record_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42531",
+            "description": "U.S. Treasury Specially Designated Nationals List — added 2026-04-28 under SDGT/IRAN-EO13902"
+          },
+          {
+            "name": "Treasury Press Release",
+            "url": "https://home.treasury.gov/news/press-releases/jy-sinno-2026",
+            "description": "Treasury announcement detailing procurement network for Iranian end-users"
+          }
+        ],
+        "confidence": 0.95
+      }
+    },
+    {
+      "id": "demo-cs-002",
+      "category": "company_sanctions",
+      "severity": "medium",
+      "headline": "OFAC designates Volga-Dnepr Gulf FZE for sanctions evasion via UAE re-export",
+      "entity": "Volga-Dnepr Gulf FZE",
+      "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42547",
+      "fetched_at": "2026-04-29T08:15:10Z",
+      "synthetic_payload": {
+        "scenario_type": "sanctions_designation",
+        "executive_summary": "OFAC designated Volga-Dnepr Gulf FZE (Sharjah, UAE) on 2026-04-28 under RUSSIA-EO14024 for serving as a re-export hub moving sanctioned aerospace components to Russian state aviation entities.",
+        "target_entities": ["Volga-Dnepr Gulf FZE", "Volga-Dnepr Group"],
+        "key_findings": [
+          "SDN program codes: RUSSIA-EO14024",
+          "Listed address: Sharjah Airport International Free Zone, UAE",
+          "Linked to parent Volga-Dnepr Group already on SSI list since 2022"
+        ],
+        "sources_used": [
+          {
+            "name": "OFAC SDN List",
+            "url": "https://www.treasury.gov/ofac/downloads/sdn.csv",
+            "record_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42547",
+            "description": "U.S. Treasury SDN — added 2026-04-28 under RUSSIA-EO14024"
+          },
+          {
+            "name": "Treasury Russia Sanctions Action Notice",
+            "url": "https://home.treasury.gov/news/press-releases/jy-russia-aviation-2026",
+            "description": "Treasury notice describing UAE re-export pipeline to Russian aerospace"
+          }
+        ],
+        "confidence": 0.92
+      }
+    },
+    {
+      "id": "demo-cs-003",
+      "category": "company_sanctions",
+      "severity": "medium",
+      "headline": "OFAC adds Pearl Harvest Trading (HK) to SDN under NK-related program",
+      "entity": "Pearl Harvest Trading (HK) Ltd.",
+      "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42561",
+      "fetched_at": "2026-04-29T08:15:20Z",
+      "synthetic_payload": {
+        "scenario_type": "sanctions_designation",
+        "executive_summary": "OFAC added Pearl Harvest Trading (HK) Ltd. on 2026-04-28 under DPRK-EO13722 for laundering proceeds of North Korean cyber operations through Hong Kong virtual asset service providers.",
+        "target_entities": ["Pearl Harvest Trading (HK) Ltd."],
+        "key_findings": [
+          "SDN program codes: DPRK-EO13722, CYBER2",
+          "Listed address: Causeway Bay, Hong Kong",
+          "Sanctions cite >$45M in laundered virtual asset volume FY24-FY25"
+        ],
+        "sources_used": [
+          {
+            "name": "OFAC SDN List",
+            "url": "https://www.treasury.gov/ofac/downloads/sdn.csv",
+            "record_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42561",
+            "description": "U.S. Treasury SDN — added 2026-04-28 under DPRK-EO13722"
+          },
+          {
+            "name": "Treasury DPRK Cyber Action",
+            "url": "https://home.treasury.gov/news/press-releases/jy-dprk-cyber-2026",
+            "description": "Joint Treasury-DOJ action targeting DPRK virtual asset laundering"
+          }
+        ],
+        "confidence": 0.9
+      }
+    },
+    {
+      "id": "demo-ps-001",
+      "category": "people_sanctions",
+      "severity": "high",
+      "headline": "OFAC sanctions Mahmoud Hassan Khalil, IRGC-QF financial facilitator",
+      "entity": "Mahmoud Hassan Khalil",
+      "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42572",
+      "fetched_at": "2026-04-29T08:16:00Z",
+      "synthetic_payload": {
+        "scenario_type": "sanctions_designation",
+        "executive_summary": "OFAC designated Mahmoud Hassan Khalil on 2026-04-28 under SDGT and IRGC-related authorities for moving Iranian crude oil revenue to Hizballah procurement networks via Lebanese exchange houses.",
+        "target_entities": ["Mahmoud Hassan Khalil", "Hassan Khalil Exchange S.A.L."],
+        "key_findings": [
+          "SDN program codes: SDGT, IFSR",
+          "Listed nationality: Lebanon; DOB 1971",
+          "Treasury alleges role as IRGC-QF Beirut financial facilitator since 2019"
+        ],
+        "sources_used": [
+          {
+            "name": "OFAC SDN List",
+            "url": "https://www.treasury.gov/ofac/downloads/sdn.csv",
+            "record_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42572",
+            "description": "U.S. Treasury SDN — individual added 2026-04-28 under SDGT/IFSR"
+          },
+          {
+            "name": "Treasury IRGC-QF Action",
+            "url": "https://home.treasury.gov/news/press-releases/jy-irgc-qf-beirut-2026",
+            "description": "Treasury announcement targeting IRGC-QF Beirut financial network"
+          }
+        ],
+        "confidence": 0.93
+      }
+    },
+    {
+      "id": "demo-ps-002",
+      "category": "people_sanctions",
+      "severity": "medium",
+      "headline": "OFAC adds two Russian oligarchs to SDN under EO14024",
+      "entity": "Igor Petrovich Volkov",
+      "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42583",
+      "fetched_at": "2026-04-29T08:16:10Z",
+      "synthetic_payload": {
+        "scenario_type": "sanctions_designation",
+        "executive_summary": "OFAC sanctioned Igor Petrovich Volkov on 2026-04-28 under RUSSIA-EO14024 for ongoing material support to the Russian Federation's defense-industrial base via privately held metallurgy holdings.",
+        "target_entities": ["Igor Petrovich Volkov", "Volkov Holdings LLC"],
+        "key_findings": [
+          "SDN program codes: RUSSIA-EO14024",
+          "Listed nationality: Russia; DOB 1962",
+          "Reported beneficial ownership of two metallurgy plants supplying Rostec subsidiaries"
+        ],
+        "sources_used": [
+          {
+            "name": "OFAC SDN List",
+            "url": "https://www.treasury.gov/ofac/downloads/sdn.csv",
+            "record_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42583",
+            "description": "U.S. Treasury SDN — individual added 2026-04-28 under RUSSIA-EO14024"
+          }
+        ],
+        "confidence": 0.88
+      }
+    },
+    {
+      "id": "demo-ps-003",
+      "category": "people_sanctions",
+      "severity": "medium",
+      "headline": "Treasury designates Venezuelan judge for corruption under GLOMAG",
+      "entity": "Carmen Elena Briceno Rivas",
+      "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42596",
+      "fetched_at": "2026-04-29T08:16:20Z",
+      "synthetic_payload": {
+        "scenario_type": "sanctions_designation",
+        "executive_summary": "OFAC sanctioned Venezuelan judge Carmen Elena Briceno Rivas on 2026-04-28 under the Global Magnitsky (GLOMAG) authority for issuing rulings shielding Maduro-aligned officials from corruption probes.",
+        "target_entities": ["Carmen Elena Briceno Rivas"],
+        "key_findings": [
+          "SDN program codes: GLOMAG",
+          "Listed nationality: Venezuela; DOB 1968",
+          "State Department parallel visa restrictions announced same day"
+        ],
+        "sources_used": [
+          {
+            "name": "OFAC SDN List",
+            "url": "https://www.treasury.gov/ofac/downloads/sdn.csv",
+            "record_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42596",
+            "description": "U.S. Treasury SDN — individual added 2026-04-28 under GLOMAG"
+          },
+          {
+            "name": "Treasury GLOMAG Action Notice",
+            "url": "https://home.treasury.gov/news/press-releases/jy-glomag-venezuela-2026",
+            "description": "Treasury announcement on Venezuelan judicial corruption"
+          }
+        ],
+        "confidence": 0.86
+      }
+    },
+    {
+      "id": "demo-mk-001",
+      "category": "markets",
+      "severity": "high",
+      "headline": "ASML drops 6.4% intraday on China export-license curtailment headlines",
+      "entity": "ASML Holding NV (ASML)",
+      "source_url": "https://www.reuters.com/technology/asml-china-export-license-2026-04-29/",
+      "fetched_at": "2026-04-29T13:35:00Z",
+      "synthetic_payload": {
+        "scenario_type": "market_shift",
+        "executive_summary": "ASML shares fell 6.4% on 2026-04-29 after Reuters reported the Dutch government will not renew DUV export licenses to two Chinese fab customers, reigniting semiconductor decoupling concerns.",
+        "target_entities": ["ASML Holding NV", "SMIC", "Hua Hong Semiconductor"],
+        "key_findings": [
+          "Intraday move: -6.4% on 3.1x average volume",
+          "Reuters reports Dutch government decision affects two named Chinese customers",
+          "Sector spillover: SOX index -2.1% on the session",
+          "GDELT tone for ASML coverage: -3.8 (vs. trailing 30-day mean of -0.4)"
+        ],
+        "sources_used": [
+          {
+            "name": "Reuters — ASML China license",
+            "url": "https://www.reuters.com/technology/asml-china-export-license-2026-04-29/",
+            "description": "Reuters article reporting non-renewal of Dutch DUV export licenses to Chinese fabs"
+          },
+          {
+            "name": "yfinance — ASML intraday",
+            "url": "https://finance.yahoo.com/quote/ASML",
+            "description": "Intraday price/volume snapshot for ASML on 2026-04-29"
+          }
+        ],
+        "confidence": 0.85
+      }
+    },
+    {
+      "id": "demo-mk-002",
+      "category": "markets",
+      "severity": "medium",
+      "headline": "Brent crude up 4.2% on reports of Strait of Hormuz tanker incidents",
+      "entity": "Brent Crude (BZ=F)",
+      "source_url": "https://www.bloomberg.com/news/articles/2026-04-29/brent-hormuz-tanker-incidents",
+      "fetched_at": "2026-04-29T13:35:30Z",
+      "synthetic_payload": {
+        "scenario_type": "market_shift",
+        "executive_summary": "Brent crude rose 4.2% on 2026-04-29 amid wire reports of two tanker hull-puncture incidents near the Strait of Hormuz, sharpening concerns over Gulf shipping insurance and Iran-aligned harassment.",
+        "target_entities": ["Brent Crude", "Strait of Hormuz shipping lanes"],
+        "key_findings": [
+          "Intraday move: +4.2% in front-month Brent contract",
+          "Two tanker incidents reported within 18 hours per Bloomberg",
+          "GDELT tone for 'Hormuz' coverage: -4.6 vs trailing 30-day mean -1.1",
+          "P&I insurance premia for Gulf transits reportedly +35% week-over-week"
+        ],
+        "sources_used": [
+          {
+            "name": "Bloomberg — Hormuz incidents",
+            "url": "https://www.bloomberg.com/news/articles/2026-04-29/brent-hormuz-tanker-incidents",
+            "description": "Bloomberg coverage of two reported tanker incidents in Strait of Hormuz approach"
+          },
+          {
+            "name": "yfinance — BZ=F",
+            "url": "https://finance.yahoo.com/quote/BZ%3DF",
+            "description": "Brent crude front-month intraday on 2026-04-29"
+          }
+        ],
+        "confidence": 0.78
+      }
+    },
+    {
+      "id": "demo-mk-003",
+      "category": "markets",
+      "severity": "medium",
+      "headline": "Lockheed Martin (LMT) +3.8% after House passes supplemental defense package",
+      "entity": "Lockheed Martin Corporation (LMT)",
+      "source_url": "https://www.wsj.com/articles/defense-supplemental-house-vote-2026-04-29",
+      "fetched_at": "2026-04-29T13:36:00Z",
+      "synthetic_payload": {
+        "scenario_type": "market_shift",
+        "executive_summary": "Lockheed Martin shares rose 3.8% on 2026-04-29 after the U.S. House passed a $42B supplemental defense package emphasizing Patriot, JASSM, and HIMARS production restocking.",
+        "target_entities": ["Lockheed Martin Corporation", "RTX Corporation"],
+        "key_findings": [
+          "Intraday move: LMT +3.8%, RTX +2.4%, GD +2.1%",
+          "Bill text earmarks Patriot interceptor and JASSM-ER lots",
+          "Vote margin: 312-119 (House)",
+          "Senate passage expected mid-week per WSJ"
+        ],
+        "sources_used": [
+          {
+            "name": "WSJ — Defense supplemental House vote",
+            "url": "https://www.wsj.com/articles/defense-supplemental-house-vote-2026-04-29",
+            "description": "WSJ reporting on House passage of supplemental defense package"
+          },
+          {
+            "name": "yfinance — LMT",
+            "url": "https://finance.yahoo.com/quote/LMT",
+            "description": "Lockheed Martin intraday price on 2026-04-29"
+          }
+        ],
+        "confidence": 0.82
+      }
+    }
+  ]
+}
