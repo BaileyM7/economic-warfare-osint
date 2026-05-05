@@ -50,8 +50,12 @@ async def search_csl(
         return []
 
     cached = get_cached(
-        _CACHE_NS, action="search", q=query, limit=limit,
-        sources=sources, countries=countries,
+        _CACHE_NS,
+        action="search",
+        q=query,
+        limit=limit,
+        sources=sources,
+        countries=countries,
     )
     if cached is not None:
         return cached
@@ -74,24 +78,32 @@ async def search_csl(
 
     results: list[dict[str, Any]] = []
     for hit in data.get("results", []):
-        results.append({
-            "name": hit.get("name", ""),
-            "source": hit.get("source", ""),
-            "programs": hit.get("programs", []),
-            "start_date": hit.get("start_date"),
-            "end_date": hit.get("end_date"),
-            "remarks": hit.get("remarks"),
-            "source_list_url": hit.get("source_list_url"),
-            "addresses": hit.get("addresses", []),
-            "alt_names": hit.get("alt_names", []),
-            "ids": hit.get("ids", []),
-            "entity_number": hit.get("entity_number"),
-            "type": hit.get("type"),
-        })
+        results.append(
+            {
+                "name": hit.get("name", ""),
+                "source": hit.get("source", ""),
+                "programs": hit.get("programs", []),
+                "start_date": hit.get("start_date"),
+                "end_date": hit.get("end_date"),
+                "remarks": hit.get("remarks"),
+                "source_list_url": hit.get("source_list_url"),
+                "addresses": hit.get("addresses", []),
+                "alt_names": hit.get("alt_names", []),
+                "ids": hit.get("ids", []),
+                "entity_number": hit.get("entity_number"),
+                "type": hit.get("type"),
+            }
+        )
 
     set_cached(
-        results, _CACHE_NS, ttl=_CACHE_TTL, action="search", q=query,
-        limit=limit, sources=sources, countries=countries,
+        results,
+        _CACHE_NS,
+        ttl=_CACHE_TTL,
+        action="search",
+        q=query,
+        limit=limit,
+        sources=sources,
+        countries=countries,
     )
     return results
 
@@ -161,7 +173,7 @@ LIMIT {limit * 6}
         person_uri = row.get("person", {}).get("value", "")
         if not person_uri:
             continue
-        qid = person_uri.rsplit("/", 1)[-1]   # e.g. "Q12345"
+        qid = person_uri.rsplit("/", 1)[-1]  # e.g. "Q12345"
 
         if qid not in by_person:
             by_person[qid] = {
@@ -191,10 +203,7 @@ LIMIT {limit * 6}
             entry["countries"].append(country_label)
 
     # Return only entries that have at least one PEP indicator.
-    results = [
-        p for p in by_person.values()
-        if p["positions"] or p["parties"]
-    ][:limit]
+    results = [p for p in by_person.values() if p["positions"] or p["parties"]][:limit]
 
     set_cached(results, _CACHE_NS_PEP, ttl=_CACHE_TTL_PEP, action="pep", q=name)
     return results

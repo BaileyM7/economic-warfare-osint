@@ -6,7 +6,6 @@ Run standalone:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 
@@ -217,9 +216,7 @@ async def get_trade_partners(
         data = summary.model_dump()
         total = summary.total_imports_usd + summary.total_exports_usd
         has_values = total > 0
-        confidence = _assess_confidence(
-            len(summary.top_commodities), has_values
-        )
+        confidence = _assess_confidence(len(summary.top_commodities), has_values)
     else:
         data = {
             "country": resolve_country(country),

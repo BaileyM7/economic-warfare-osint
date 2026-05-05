@@ -157,7 +157,7 @@ class Settings(BaseSettings):
         # Rewrite bare scheme variants to the async driver form.
         for prefix in ("postgresql://", "postgres://"):
             if v.startswith(prefix):
-                return "postgresql+asyncpg://" + v[len(prefix):]
+                return "postgresql+asyncpg://" + v[len(prefix) :]
         return v
 
 

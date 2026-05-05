@@ -35,8 +35,16 @@ _API_URL = "https://api.gleif.org/api/v1/lei-records"
 
 # GLEIF uses ISO2 country codes for the legal-jurisdiction filter.
 _ISO3_TO_ISO2: dict[str, str] = {
-    "CHN": "CN", "TWN": "TW", "USA": "US", "JPN": "JP", "KOR": "KR",
-    "PHL": "PH", "AUS": "AU", "PRK": "KP", "RUS": "RU", "IND": "IN",
+    "CHN": "CN",
+    "TWN": "TW",
+    "USA": "US",
+    "JPN": "JP",
+    "KOR": "KR",
+    "PHL": "PH",
+    "AUS": "AU",
+    "PRK": "KP",
+    "RUS": "RU",
+    "IND": "IN",
 }
 
 
@@ -68,9 +76,7 @@ class GLEIFSource(Source):
     name: ClassVar[str] = "gleif"
     display_name: ClassVar[str] = "GLEIF LEI Registry"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         for iso3, iso2 in _ISO3_TO_ISO2.items():
             # GLEIF's JSON:API implementation does NOT accept nested-operator
             # filters like filter[lastUpdateDate][gte].  We pull the most

@@ -88,8 +88,8 @@ def _entry_to_raw(entry: ET.Element) -> OFACSDNRawRecord | None:
     if uid_el is None or not uid_el.text:
         return None
 
-    last = (entry.find("ofac:lastName", _OFAC_NS) or entry.find("lastName"))
-    first = (entry.find("ofac:firstName", _OFAC_NS) or entry.find("firstName"))
+    last = entry.find("ofac:lastName", _OFAC_NS) or entry.find("lastName")
+    first = entry.find("ofac:firstName", _OFAC_NS) or entry.find("firstName")
     name_parts = [
         (first.text.strip() if first is not None and first.text else ""),
         (last.text.strip() if last is not None and last.text else ""),
@@ -99,22 +99,19 @@ def _entry_to_raw(entry: ET.Element) -> OFACSDNRawRecord | None:
     sdn_type_el = entry.find("ofac:sdnType", _OFAC_NS) or entry.find("sdnType")
     sdn_type = (sdn_type_el.text or "").strip() if sdn_type_el is not None else ""
 
-    program_el = (
-        entry.find("ofac:programList/ofac:program", _OFAC_NS)
-        or entry.find("programList/program")
+    program_el = entry.find("ofac:programList/ofac:program", _OFAC_NS) or entry.find(
+        "programList/program"
     )
     program = (program_el.text or "").strip() if program_el is not None else None
 
     # First listed country, if any (entries can list multiple addresses).
-    country_el = (
-        entry.find("ofac:addressList/ofac:address/ofac:country", _OFAC_NS)
-        or entry.find("addressList/address/country")
+    country_el = entry.find("ofac:addressList/ofac:address/ofac:country", _OFAC_NS) or entry.find(
+        "addressList/address/country"
     )
     country = (country_el.text or "").strip() if country_el is not None else None
 
-    pub_el = (
-        entry.find("ofac:publishInformation/ofac:Publish_Date", _OFAC_NS)
-        or entry.find("publishInformation/Publish_Date")
+    pub_el = entry.find("ofac:publishInformation/ofac:Publish_Date", _OFAC_NS) or entry.find(
+        "publishInformation/Publish_Date"
     )
     publish_date = _parse_publish_date(pub_el.text if pub_el is not None else None)
 
@@ -142,9 +139,7 @@ class OFACSDNSource(Source):
     name: ClassVar[str] = "ofac_sdn"
     display_name: ClassVar[str] = "OFAC SDN List"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         try:
             response = await self._get(_OFAC_SDN_URL)
         except Exception as exc:  # noqa: BLE001
@@ -198,9 +193,7 @@ class OFACSDNSource(Source):
                 "sdn_type": raw.sdn_type,
                 "country": raw.country,
                 "program": raw.program,
-                "publish_date": (
-                    raw.publish_date.isoformat() if raw.publish_date else None
-                ),
+                "publish_date": (raw.publish_date.isoformat() if raw.publish_date else None),
             },
             raw_text=f"OFAC SDN: {raw.name} ({raw.sdn_type}, {raw.program or '?'})",
         )

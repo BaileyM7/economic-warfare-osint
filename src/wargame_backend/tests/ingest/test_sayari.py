@@ -32,9 +32,7 @@ class TestNormalize:
         assert event.actor_iso3 == "CHN"
         assert event.domain is EventDomain.economic
         assert event.event_type == "sayari_entity_company"
-        assert event.payload["_dedup_key"] == (
-            "sayari:sayari-ent-9001:2026-04-15"
-        )
+        assert event.payload["_dedup_key"] == ("sayari:sayari-ent-9001:2026-04-15")
 
     def test_disabled_when_credentials_missing(self, monkeypatch) -> None:
         monkeypatch.delenv("SAYARI_API_KEY", raising=False)

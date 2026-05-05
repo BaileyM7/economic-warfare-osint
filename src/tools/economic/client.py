@@ -150,6 +150,7 @@ def _resolve_country(country: str) -> dict[str, str]:
 # FRED Client
 # ============================================================================
 
+
 class FREDClient:
     """Client for the Federal Reserve Economic Data (FRED) API."""
 
@@ -307,6 +308,7 @@ class FREDClient:
 # IMF Client
 # ============================================================================
 
+
 class IMFClient:
     """Client for the IMF DataMapper API."""
 
@@ -323,9 +325,7 @@ class IMFClient:
 
         Returns dict like {"2020": 14.72, "2021": 17.73, ...} (year -> value).
         """
-        cached = get_cached(
-            self.CACHE_NS, indicator=indicator, country=country_code
-        )
+        cached = get_cached(self.CACHE_NS, indicator=indicator, country=country_code)
         if cached is not None:
             return cached
 
@@ -333,11 +333,7 @@ class IMFClient:
         data = await fetch_json(url)
 
         # Response shape: {"values": {"<indicator>": {"<country>": {"<year>": value}}}}
-        values = (
-            data.get("values", {})
-            .get(indicator, {})
-            .get(country_code, {})
-        )
+        values = data.get("values", {}).get(indicator, {}).get(country_code, {})
 
         set_cached(
             values,
@@ -412,6 +408,7 @@ class IMFClient:
 # ============================================================================
 # World Bank Client
 # ============================================================================
+
 
 class WorldBankClient:
     """Client for the World Bank Open Data API."""
@@ -519,6 +516,7 @@ class WorldBankClient:
 # ============================================================================
 # Unified helpers used by the server
 # ============================================================================
+
 
 async def build_country_profile(country: str) -> CountryEconomicProfile:
     """Assemble a country economic profile from IMF + World Bank data.

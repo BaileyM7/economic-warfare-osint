@@ -34,6 +34,4 @@ class TestNormalize:
         assert event.target_iso3 is None
         assert event.domain is EventDomain.economic
         assert event.event_type == "lei_record_update"
-        assert event.payload["_dedup_key"] == (
-            "gleif:529900T8BM49AURSDO55:2026-04-15"
-        )
+        assert event.payload["_dedup_key"] == ("gleif:529900T8BM49AURSDO55:2026-04-15")

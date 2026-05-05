@@ -13,8 +13,8 @@ def render_markdown(assessment: ImpactAssessment) -> str:
     """Render an ImpactAssessment as a structured Markdown report."""
     lines: list[str] = []
 
-    lines.append(f"# Economic Warfare Impact Assessment")
-    lines.append(f"")
+    lines.append("# Economic Warfare Impact Assessment")
+    lines.append("")
     lines.append(f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     lines.append(f"**Scenario Type:** {assessment.scenario_type.value.replace('_', ' ').title()}")
     lines.append(f"**Query:** {assessment.query.raw_query}")
@@ -48,7 +48,7 @@ def render_markdown(assessment: ImpactAssessment) -> str:
             if finding.get("data"):
                 lines.append("")
                 lines.append("**Supporting Data:**")
-                lines.append(f"```json")
+                lines.append("```json")
                 lines.append(json.dumps(finding["data"], indent=2, default=str))
                 lines.append("```")
             lines.append("")
@@ -77,7 +77,9 @@ def render_markdown(assessment: ImpactAssessment) -> str:
         lines.append("| Domain | Confidence |")
         lines.append("|--------|------------|")
         for domain, conf in assessment.confidence_summary.items():
-            lines.append(f"| {domain.replace('_', ' ').title()} | {_confidence_badge(conf.value)} |")
+            lines.append(
+                f"| {domain.replace('_', ' ').title()} | {_confidence_badge(conf.value)} |"
+            )
         lines.append("")
 
     # Recommendations
@@ -111,9 +113,13 @@ def render_json(assessment: ImpactAssessment) -> str:
 def render_entity_graph(entity_graph: EntityGraph) -> dict[str, Any]:
     """Render an EntityGraph directly to vis.js node/edge format."""
     colors = {
-        "company": "#4A90D9", "person": "#7B68EE", "government": "#DC143C",
-        "vessel": "#2E8B57", "sanctions_list": "#F85149",
-        "theme": "#F0883E", "sector": "#3FB950",
+        "company": "#4A90D9",
+        "person": "#7B68EE",
+        "government": "#DC143C",
+        "vessel": "#2E8B57",
+        "sanctions_list": "#F85149",
+        "theme": "#F0883E",
+        "sector": "#3FB950",
     }
     nodes = [
         {
@@ -127,9 +133,11 @@ def render_entity_graph(entity_graph: EntityGraph) -> dict[str, Any]:
     ]
     edges = [
         {
-            "from": r.source_id, "to": r.target_id,
+            "from": r.source_id,
+            "to": r.target_id,
             "label": r.relationship_type.replace("_", " "),
-            "arrows": "to", "dashes": r.confidence.value == "LOW",
+            "arrows": "to",
+            "dashes": r.confidence.value == "LOW",
         }
         for r in entity_graph.relationships
     ]

@@ -1,4 +1,5 @@
 """Demo + admin account login endpoint."""
+
 from __future__ import annotations
 
 import os

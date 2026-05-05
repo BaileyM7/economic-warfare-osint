@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-from wargame_shared.schemas.sim_event import Domain
 
 from wargame_ai.agents.arbiter import Arbiter
 from wargame_ai.agents.country_agent import (
@@ -207,8 +206,7 @@ async def test_seed_events_emitted_at_turn_zero(world) -> None:
 
     # The turn-0 seed event should appear as a sim_event frame
     seed_events = [
-        json.loads(m) for _, m in redis.published
-        if json.loads(m)["frame_type"] == "sim_event"
+        json.loads(m) for _, m in redis.published if json.loads(m)["frame_type"] == "sim_event"
     ]
     quarantine = [
         e
@@ -248,8 +246,7 @@ async def test_abort_stops_loop(world) -> None:
 
     # The loop should exit immediately and emit a sim_complete(aborted)
     complete = [
-        json.loads(m) for _, m in redis.published
-        if json.loads(m)["frame_type"] == "sim_complete"
+        json.loads(m) for _, m in redis.published if json.loads(m)["frame_type"] == "sim_complete"
     ]
     assert len(complete) == 1
     assert complete[0]["payload"]["status"] == "aborted"

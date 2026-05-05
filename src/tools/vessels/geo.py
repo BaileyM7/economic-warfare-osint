@@ -83,8 +83,9 @@ async def get_countries_from_positions(
     step = max(1, len(positions) // sample_size)
     sampled = positions[::step][:sample_size]
 
-    coords = [(p["latitude"], p["longitude"]) for p in sampled
-              if p.get("latitude") and p.get("longitude")]
+    coords = [
+        (p["latitude"], p["longitude"]) for p in sampled if p.get("latitude") and p.get("longitude")
+    ]
     if not coords:
         return []
 

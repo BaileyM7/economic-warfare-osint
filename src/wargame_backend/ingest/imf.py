@@ -33,8 +33,16 @@ log = structlog.get_logger(__name__)
 
 # IMF SDMX uses ISO2 country codes for most datasets.
 _ISO3_TO_IMF: dict[str, str] = {
-    "CHN": "CN", "TWN": "TW", "USA": "US", "JPN": "JP", "KOR": "KR",
-    "PHL": "PH", "AUS": "AU", "PRK": "KP", "RUS": "RU", "IND": "IN",
+    "CHN": "CN",
+    "TWN": "TW",
+    "USA": "US",
+    "JPN": "JP",
+    "KOR": "KR",
+    "PHL": "PH",
+    "AUS": "AU",
+    "PRK": "KP",
+    "RUS": "RU",
+    "IND": "IN",
 }
 
 # (dataset, indicator) → human label.  IFS = International Financial Statistics;
@@ -79,9 +87,7 @@ class IMFSource(Source):
     name: ClassVar[str] = "imf"
     display_name: ClassVar[str] = "IMF SDMX"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         # CompactData URL shape: /{dataset}/{FREQ}.{REF_AREA}.{INDICATOR}
         # Frequency Q = quarterly; IFS also supports M (monthly) and A (annual).
         start_period = since.strftime("%Y")
@@ -112,16 +118,12 @@ class IMFSource(Source):
                     series_raw = dataset_obj.get("Series")
                     if series_raw is None:
                         continue
-                    series_list = (
-                        series_raw if isinstance(series_raw, list) else [series_raw]
-                    )
+                    series_list = series_raw if isinstance(series_raw, list) else [series_raw]
                     for ser in series_list:
                         obs_raw = ser.get("Obs")
                         if obs_raw is None:
                             continue
-                        obs_list = (
-                            obs_raw if isinstance(obs_raw, list) else [obs_raw]
-                        )
+                        obs_list = obs_raw if isinstance(obs_raw, list) else [obs_raw]
                         for obs in obs_list:
                             try:
                                 value = float(obs.get("@OBS_VALUE"))

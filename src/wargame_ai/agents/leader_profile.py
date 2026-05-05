@@ -93,7 +93,7 @@ def parse_persona_file(text: str) -> tuple[LeaderProfile | None, str]:
         return None, text
 
     yaml_text = match.group("yaml")
-    body = text[match.end():]
+    body = text[match.end() :]
 
     try:
         data = yaml.safe_load(yaml_text)
@@ -108,9 +108,7 @@ def parse_persona_file(text: str) -> tuple[LeaderProfile | None, str]:
     try:
         profile = LeaderProfile.model_validate(data)
     except ValidationError as exc:
-        raise LeaderProfileError(
-            f"persona frontmatter failed validation: {exc}"
-        ) from exc
+        raise LeaderProfileError(f"persona frontmatter failed validation: {exc}") from exc
 
     return profile, body
 

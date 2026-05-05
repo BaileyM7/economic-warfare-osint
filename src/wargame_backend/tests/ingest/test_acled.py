@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -30,6 +30,7 @@ from ingest.acled import (
 # ---------------------------------------------------------------------------
 # _event_type_to_domain
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "event_type, expected",
@@ -51,6 +52,7 @@ def test_event_type_to_domain(event_type: str, expected: EventDomain):
 # _fatalities_to_severity
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "fatalities, expected_range",
     [
@@ -71,6 +73,7 @@ def test_fatalities_to_severity(fatalities: int, expected_range: tuple[float, fl
 # ---------------------------------------------------------------------------
 # ACLEDSource.normalize
 # ---------------------------------------------------------------------------
+
 
 def _make_acled_raw(**overrides) -> ACLEDRawRecord:
     defaults = dict(
@@ -190,6 +193,7 @@ async def test_normalize_bad_date_fallback():
 # fetch — skip if no ACLED credentials
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_fetch_skips_without_credentials():
     """fetch() should raise RuntimeError when ACLED credentials are absent."""
@@ -207,9 +211,7 @@ async def test_fetch_skips_without_credentials():
 @pytest.mark.asyncio
 async def test_fetch_uses_vcr_cassette():
     """Replay ACLED API response from cassette (skips if cassette absent)."""
-    cassette = (
-        Path(__file__).parent / "cassettes" / "acled_read.yaml"
-    )
+    cassette = Path(__file__).parent / "cassettes" / "acled_read.yaml"
     if not cassette.exists():
         pytest.skip("VCR cassette acled_read.yaml not present")
 

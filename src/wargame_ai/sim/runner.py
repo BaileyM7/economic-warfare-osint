@@ -15,7 +15,6 @@ from typing import Any
 
 import structlog
 import yaml
-from sqlalchemy import select
 
 from wargame_backend.app.config import get_settings
 from wargame_backend.app.db.models import Scenario as ScenarioORM
@@ -180,7 +179,9 @@ class LangGraphSimRunner:
             self._statuses[simulation_id] = SimulationStatus.aborted
             raise
         except Exception as exc:  # noqa: BLE001
-            log.exception("langgraph_runner_error", simulation_id=str(simulation_id), error=str(exc))
+            log.exception(
+                "langgraph_runner_error", simulation_id=str(simulation_id), error=str(exc)
+            )
             self._statuses[simulation_id] = SimulationStatus.error
 
     # ------------------------------------------------------------------ #

@@ -111,7 +111,7 @@ async def list_watchlist(username: str = Depends(require_auth)) -> dict:
     conn = get_db()
     try:
         cur = conn.execute(
-            "SELECT * FROM watchlist_items WHERE username = ? " "ORDER BY category, created_at",
+            "SELECT * FROM watchlist_items WHERE username = ? ORDER BY category, created_at",
             (username,),
         )
         items = [_row_to_item(r) for r in cur.fetchall()]
@@ -252,7 +252,7 @@ async def update_watchlist_item(
         params.extend([item_id, username])
 
         conn.execute(
-            f"UPDATE watchlist_items SET {', '.join(sets)} " "WHERE id = ? AND username = ?",
+            f"UPDATE watchlist_items SET {', '.join(sets)} WHERE id = ? AND username = ?",
             params,
         )
         conn.commit()

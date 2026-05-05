@@ -1,4 +1,5 @@
 """Admin endpoints — usage analytics for tracking logins and feature adoption."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Query

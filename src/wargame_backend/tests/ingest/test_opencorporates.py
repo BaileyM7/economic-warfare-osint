@@ -16,9 +16,7 @@ from ingest.opencorporates import (
 
 class TestHelpers:
     def test_parse_date(self) -> None:
-        assert _parse_date("2026-04-15") == datetime(
-            2026, 4, 15, tzinfo=timezone.utc
-        )
+        assert _parse_date("2026-04-15") == datetime(2026, 4, 15, tzinfo=timezone.utc)
         assert _parse_date(None) is None
 
 
@@ -37,9 +35,7 @@ class TestNormalize:
         assert event.actor_iso3 == "CHN"
         assert event.domain is EventDomain.economic
         assert event.event_type == "company_registry_update"
-        assert event.payload["_dedup_key"] == (
-            "opencorporates:cn:91110000123456789X:2026-04-15"
-        )
+        assert event.payload["_dedup_key"] == ("opencorporates:cn:91110000123456789X:2026-04-15")
 
     def test_disabled_when_api_key_missing(self, monkeypatch) -> None:
         monkeypatch.delenv("OPENCORPORATES_API_KEY", raising=False)

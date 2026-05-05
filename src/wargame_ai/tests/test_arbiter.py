@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from wargame_shared.schemas.sim_event import Domain
 
@@ -46,7 +45,7 @@ class TestHeuristicResolver:
     async def test_self_target_rejected(self) -> None:
         arb = Arbiter(llm=None)
         # ProposedAction allows target=actor; arbiter should reject it.
-        p = ProposedAction(
+        ProposedAction(
             actor="CHN",
             target="CHN",
             domain=Domain.diplomatic,

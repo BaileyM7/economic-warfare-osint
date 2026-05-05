@@ -44,9 +44,7 @@ class TradeGovExtractor:
         magnitude = round(normalize_magnitude(count, soft_cap=3), 2)
         if magnitude < 0.1:
             return None
-        headline = (
-            f"{iso3}: {count} new US export-control / CSL listings (last {window_hours}h)"
-        )
+        headline = f"{iso3}: {count} new US export-control / CSL listings (last {window_hours}h)"
         return Signal(
             source=self.source,
             headline=headline[:120],

@@ -227,7 +227,7 @@ async def get_target_info(ticker: str) -> dict[str, Any]:
     price_unavailable = current_price is None
     if price_unavailable:
         logger.warning(
-            "get_target_info(%s): no live price from Finnhub or yfinance " "(finnhub_reason=%s)",
+            "get_target_info(%s): no live price from Finnhub or yfinance (finnhub_reason=%s)",
             ticker,
             fh_data.get("_reason") if fh_data else "not configured",
         )

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class StockProfile(BaseModel):
     """Core company profile information."""
+
     ticker: str
     name: str
     market_cap: float | None = None
@@ -22,12 +21,14 @@ class StockProfile(BaseModel):
 
 class HistoricalPrice(BaseModel):
     """A single day's closing price."""
+
     date: str  # ISO date string
     close: float
 
 
 class PriceData(BaseModel):
     """Current and historical price information for a ticker."""
+
     ticker: str
     current_price: float | None = None
     change_pct: float | None = None
@@ -39,6 +40,7 @@ class PriceData(BaseModel):
 
 class InstitutionalHolder(BaseModel):
     """A single institutional holder of a stock."""
+
     holder_name: str
     shares: int | None = None
     value: float | None = None
@@ -48,6 +50,7 @@ class InstitutionalHolder(BaseModel):
 
 class AnalystEstimate(BaseModel):
     """Analyst consensus data for a stock."""
+
     target_price: float | None = None
     recommendation: str | None = None
     num_analysts: int | None = None
@@ -55,6 +58,7 @@ class AnalystEstimate(BaseModel):
 
 class ExposureReport(BaseModel):
     """US/allied institutional exposure analysis for a target entity."""
+
     entity_name: str
     ticker: str | None = None
     us_institutional_holders: list[InstitutionalHolder] = Field(default_factory=list)
@@ -65,6 +69,7 @@ class ExposureReport(BaseModel):
 
 class MarketEntityResult(BaseModel):
     """Result from searching for a market entity."""
+
     name: str
     ticker: str | None = None
     cik: str | None = None
@@ -74,12 +79,14 @@ class MarketEntityResult(BaseModel):
 
 class MacroObservation(BaseModel):
     """A single observation from a FRED time series."""
+
     date: str
     value: float | None = None
 
 
 class MacroSeries(BaseModel):
     """FRED macroeconomic time series data."""
+
     series_id: str
     title: str | None = None
     units: str | None = None

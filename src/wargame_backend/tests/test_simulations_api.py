@@ -19,9 +19,7 @@ from wargame_backend.app.db.models import Scenario, Simulation
 
 
 @pytest.mark.asyncio
-async def test_create_simulation_returns_202(
-    client: AsyncClient, scenario: Scenario
-) -> None:
+async def test_create_simulation_returns_202(client: AsyncClient, scenario: Scenario) -> None:
     """Happy path: creates a simulation for an existing scenario → HTTP 202."""
     payload = {"scenario_id": str(scenario.id)}
     response = await client.post("/api/simulations", json=payload)
@@ -37,21 +35,15 @@ async def test_create_simulation_returns_202(
 
 
 @pytest.mark.asyncio
-async def test_create_simulation_default_max_turns(
-    client: AsyncClient, scenario: Scenario
-) -> None:
+async def test_create_simulation_default_max_turns(client: AsyncClient, scenario: Scenario) -> None:
     """max_turns defaults to 20 when not supplied."""
-    response = await client.post(
-        "/api/simulations", json={"scenario_id": str(scenario.id)}
-    )
+    response = await client.post("/api/simulations", json={"scenario_id": str(scenario.id)})
     assert response.status_code == 202
     assert response.json()["data"]["max_turns"] == 20
 
 
 @pytest.mark.asyncio
-async def test_create_simulation_custom_max_turns(
-    client: AsyncClient, scenario: Scenario
-) -> None:
+async def test_create_simulation_custom_max_turns(client: AsyncClient, scenario: Scenario) -> None:
     """Custom max_turns is persisted."""
     response = await client.post(
         "/api/simulations",
@@ -64,18 +56,14 @@ async def test_create_simulation_custom_max_turns(
 @pytest.mark.asyncio
 async def test_create_simulation_scenario_not_found(client: AsyncClient) -> None:
     """Non-existent scenario_id → 404."""
-    response = await client.post(
-        "/api/simulations", json={"scenario_id": str(uuid.uuid4())}
-    )
+    response = await client.post("/api/simulations", json={"scenario_id": str(uuid.uuid4())})
     assert response.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_create_simulation_invalid_scenario_id(client: AsyncClient) -> None:
     """Malformed UUID → 422."""
-    response = await client.post(
-        "/api/simulations", json={"scenario_id": "not-a-uuid"}
-    )
+    response = await client.post("/api/simulations", json={"scenario_id": "not-a-uuid"})
     assert response.status_code == 422
 
 
@@ -84,14 +72,10 @@ async def test_create_simulation_conflict_on_active(
     client: AsyncClient, scenario: Scenario
 ) -> None:
     """Second simulation for the same scenario → 409 while first is active."""
-    first = await client.post(
-        "/api/simulations", json={"scenario_id": str(scenario.id)}
-    )
+    first = await client.post("/api/simulations", json={"scenario_id": str(scenario.id)})
     assert first.status_code == 202
 
-    second = await client.post(
-        "/api/simulations", json={"scenario_id": str(scenario.id)}
-    )
+    second = await client.post("/api/simulations", json={"scenario_id": str(scenario.id)})
     assert second.status_code == 409
 
 
@@ -103,9 +87,7 @@ async def test_create_simulation_conflict_on_active(
 @pytest.mark.asyncio
 async def test_get_simulation(client: AsyncClient, scenario: Scenario) -> None:
     """GET returns the simulation state."""
-    create_resp = await client.post(
-        "/api/simulations", json={"scenario_id": str(scenario.id)}
-    )
+    create_resp = await client.post("/api/simulations", json={"scenario_id": str(scenario.id)})
     sim_id = create_resp.json()["data"]["id"]
 
     get_resp = await client.get(f"/api/simulations/{sim_id}")
@@ -131,9 +113,7 @@ async def test_get_simulation_not_found(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_abort_simulation(client: AsyncClient, scenario: Scenario) -> None:
     """Aborting a pending simulation sets status to aborted."""
-    create_resp = await client.post(
-        "/api/simulations", json={"scenario_id": str(scenario.id)}
-    )
+    create_resp = await client.post("/api/simulations", json={"scenario_id": str(scenario.id)})
     assert create_resp.status_code == 202
     sim_id = create_resp.json()["data"]["id"]
 
@@ -159,15 +139,11 @@ async def test_abort_completed_simulation_returns_409(
     from wargame_backend.app.db.models import SimulationStatus
 
     # Create sim then manually mark it completed
-    create_resp = await client.post(
-        "/api/simulations", json={"scenario_id": str(scenario.id)}
-    )
+    create_resp = await client.post("/api/simulations", json={"scenario_id": str(scenario.id)})
     sim_id = create_resp.json()["data"]["id"]
 
     # Force status to completed in DB
-    result = await db.execute(
-        sa_select(Simulation).where(Simulation.id == uuid.UUID(sim_id))
-    )
+    result = await db.execute(sa_select(Simulation).where(Simulation.id == uuid.UUID(sim_id)))
     sim = result.scalar_one()
     sim.status = SimulationStatus.completed
     await db.commit()

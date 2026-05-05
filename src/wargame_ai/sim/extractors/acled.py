@@ -33,9 +33,7 @@ class ACLEDExtractor:
         since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         # Sum fatalities (stored in payload->>'fatalities') and count events.
         fatalities_expr = func.coalesce(
-            func.sum(
-                func.cast(Event.payload["fatalities"].astext, type_=func.Integer().type)
-            ),
+            func.sum(func.cast(Event.payload["fatalities"].astext, type_=func.Integer().type)),
             0,
         )
         stmt = select(func.count(Event.id), fatalities_expr).where(
@@ -80,8 +78,7 @@ class ACLEDExtractor:
             return None
 
         headline = (
-            f"{iso3} ACLED: {count} violent events, {fatalities} fatalities "
-            f"(last {window_hours}h)"
+            f"{iso3} ACLED: {count} violent events, {fatalities} fatalities (last {window_hours}h)"
         )
         return Signal(
             source=self.source,

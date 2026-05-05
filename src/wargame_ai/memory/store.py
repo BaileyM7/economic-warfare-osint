@@ -245,10 +245,7 @@ class AgentMemoryStore:
     async def count(self, *, sim_id: uuid.UUID, country_code: str) -> int:
         """Return the number of memory rows for a (sim, country) pair."""
         stmt = text(
-            "SELECT COUNT(*) FROM agent_memory "
-            "WHERE sim_id = :sim_id AND country_iso3 = :code"
+            "SELECT COUNT(*) FROM agent_memory WHERE sim_id = :sim_id AND country_iso3 = :code"
         )
-        row = await self.session.execute(
-            stmt, {"sim_id": sim_id, "code": country_code.upper()}
-        )
+        row = await self.session.execute(stmt, {"sim_id": sim_id, "code": country_code.upper()})
         return int(row.scalar_one())

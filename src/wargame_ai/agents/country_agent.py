@@ -136,7 +136,11 @@ COUNTRY_AGENT_TOOLS: list[dict[str, Any]] = [
                 **_COMMON_SCHEMA_BASE,
             },
             "required": [
-                "target", "action_type", "severity", "message", "rationale",
+                "target",
+                "action_type",
+                "severity",
+                "message",
+                "rationale",
                 *_EXPLAINABILITY_REQUIRED,
             ],
         },
@@ -159,7 +163,10 @@ COUNTRY_AGENT_TOOLS: list[dict[str, Any]] = [
                 **_COMMON_SCHEMA_BASE,
             },
             "required": [
-                "target", "instrument", "magnitude", "rationale",
+                "target",
+                "instrument",
+                "magnitude",
+                "rationale",
                 *_EXPLAINABILITY_REQUIRED,
             ],
         },
@@ -185,7 +192,10 @@ COUNTRY_AGENT_TOOLS: list[dict[str, Any]] = [
                 **_COMMON_SCHEMA_BASE,
             },
             "required": [
-                "channel", "target", "content_type", "rationale",
+                "channel",
+                "target",
+                "content_type",
+                "rationale",
                 *_EXPLAINABILITY_REQUIRED,
             ],
         },
@@ -208,7 +218,10 @@ COUNTRY_AGENT_TOOLS: list[dict[str, Any]] = [
                 **_COMMON_SCHEMA_BASE,
             },
             "required": [
-                "target", "vector", "intent", "rationale",
+                "target",
+                "vector",
+                "intent",
+                "rationale",
                 *_EXPLAINABILITY_REQUIRED,
             ],
         },
@@ -220,7 +233,10 @@ COUNTRY_AGENT_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "target": {"type": "string"},
-                "asset": {"type": "string", "description": "Asset deployed (e.g. 'carrier_group')."},
+                "asset": {
+                    "type": "string",
+                    "description": "Asset deployed (e.g. 'carrier_group').",
+                },
                 "posture": {
                     "type": "string",
                     "enum": ["show_of_force", "limited_strike", "major_strike"],
@@ -228,7 +244,10 @@ COUNTRY_AGENT_TOOLS: list[dict[str, Any]] = [
                 **_COMMON_SCHEMA_BASE,
             },
             "required": [
-                "target", "asset", "posture", "rationale",
+                "target",
+                "asset",
+                "posture",
+                "rationale",
                 *_EXPLAINABILITY_REQUIRED,
             ],
         },
@@ -243,7 +262,8 @@ COUNTRY_AGENT_TOOLS: list[dict[str, Any]] = [
                 **_COMMON_SCHEMA_BASE,
             },
             "required": [
-                "reason", "rationale",
+                "reason",
+                "rationale",
                 *_EXPLAINABILITY_REQUIRED,
             ],
         },
@@ -343,9 +363,7 @@ _PROMPT_PATH = Path(__file__).parent / "prompts" / "country_agent.md"
 # Nudges — defaults chosen to be noticeable but not pushy.  Tunable via env
 # so a running sim can be tightened without a code change.
 _NO_ACTION_STREAK_THRESHOLD = int(os.environ.get("NO_ACTION_STREAK_THRESHOLD", "2"))
-_HIGH_SIGNAL_MAGNITUDE_THRESHOLD = float(
-    os.environ.get("HIGH_SIGNAL_MAGNITUDE_THRESHOLD", "0.7")
-)
+_HIGH_SIGNAL_MAGNITUDE_THRESHOLD = float(os.environ.get("HIGH_SIGNAL_MAGNITUDE_THRESHOLD", "0.7"))
 # Demo-oriented: if a country has repeated the same domain this many turns
 # in a row, the prompt nudges it to consider a cross-domain move.  Lowered
 # below 2 would force unnatural churn; higher than 3 rarely fires.
@@ -430,8 +448,7 @@ def _domain_variety_pressure_line(recent_domains: list[str]) -> str:
     repeated = tail[0]
     # Available alternatives — pick any domain not equal to the repeated one.
     alternatives = [
-        d for d in ("economic", "cyber", "info", "kinetic_limited", "diplomatic")
-        if d != repeated
+        d for d in ("economic", "cyber", "info", "kinetic_limited", "diplomatic") if d != repeated
     ]
     alt_phrase = ", ".join(alternatives)
     return (
@@ -896,9 +913,7 @@ class ChatAnthropicClient:
                 "agent_llm_usage",
                 input_tokens=getattr(usage, "input_tokens", 0),
                 output_tokens=getattr(usage, "output_tokens", 0),
-                cache_creation_input_tokens=getattr(
-                    usage, "cache_creation_input_tokens", 0
-                ),
+                cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0),
                 cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0),
             )
 

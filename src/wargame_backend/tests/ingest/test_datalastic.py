@@ -27,9 +27,7 @@ class TestNormalize:
         assert event.payload["zone"] == "TWN_strait_buffer"
         assert event.payload["ping_count"] == 42
         assert event.payload["ping_count_w_w_pct"] == 200.0
-        assert event.payload["_dedup_key"].startswith(
-            "datalastic:CHN:TWN_strait_buffer:"
-        )
+        assert event.payload["_dedup_key"].startswith("datalastic:CHN:TWN_strait_buffer:")
 
     def test_disabled_when_api_key_missing(self, monkeypatch) -> None:
         monkeypatch.delenv("DATALASTIC_API_KEY", raising=False)

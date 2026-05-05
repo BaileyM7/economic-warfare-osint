@@ -16,14 +16,10 @@ from ingest.icij_offshore import (
 
 class TestHelpers:
     def test_parse_date_iso(self) -> None:
-        assert _parse_date("2024-04-15") == datetime(
-            2024, 4, 15, tzinfo=timezone.utc
-        )
+        assert _parse_date("2024-04-15") == datetime(2024, 4, 15, tzinfo=timezone.utc)
 
     def test_parse_date_dd_mon_yyyy(self) -> None:
-        assert _parse_date("15-Apr-2024") == datetime(
-            2024, 4, 15, tzinfo=timezone.utc
-        )
+        assert _parse_date("15-Apr-2024") == datetime(2024, 4, 15, tzinfo=timezone.utc)
 
 
 class TestNormalize:

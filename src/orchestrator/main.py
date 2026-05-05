@@ -48,7 +48,6 @@ class Orchestrator:
 
     async def analyze(self, query: str, progress_callback=None) -> ImpactAssessment:
         """Run the full analysis pipeline for an analyst's question."""
-        from typing import Callable
 
         def _emit(msg: str) -> None:
             print(msg)
@@ -163,16 +162,8 @@ class Orchestrator:
                 tool_name, params = _parse_string_tool_call(tool_call)
             else:
                 # LLM may use "tool"/"params" or "name"/"parameters" interchangeably
-                tool_name = (
-                    tool_call.get("tool")
-                    or tool_call.get("name")
-                    or ""
-                )
-                params = (
-                    tool_call.get("params")
-                    or tool_call.get("parameters")
-                    or {}
-                )
+                tool_name = tool_call.get("tool") or tool_call.get("name") or ""
+                params = tool_call.get("params") or tool_call.get("parameters") or {}
 
             try:
                 result = await self.tool_registry.call_tool(tool_name, params)
@@ -192,12 +183,15 @@ class Orchestrator:
 
         # Count steps that returned only errors vs steps with real data
         error_only_steps = [
-            k for k, v in tool_results.items()
+            k
+            for k, v in tool_results.items()
             if isinstance(v, dict) and set(v.keys()) <= {"error", "description"}
         ]
         data_steps = [k for k in tool_results if k not in error_only_steps]
         if error_only_steps:
-            print(f"  [synthesize] {len(error_only_steps)} step(s) returned errors only: {error_only_steps}")
+            print(
+                f"  [synthesize] {len(error_only_steps)} step(s) returned errors only: {error_only_steps}"
+            )
 
         # Compact tool results — strip large arrays/raw data to stay within context
         compacted = _compact_tool_results(tool_results)
@@ -438,7 +432,9 @@ def _merge_sources(
     return list(merged.values())
 
 
-def _compact_tool_results(results: dict[str, Any], max_list: int = 10, max_str: int = 500) -> dict[str, Any]:
+def _compact_tool_results(
+    results: dict[str, Any], max_list: int = 10, max_str: int = 500
+) -> dict[str, Any]:
     """Recursively compact tool results to fit within synthesis context window.
 
     Truncates long strings, caps list lengths, and strips raw binary/HTML data.
@@ -448,8 +444,16 @@ def _compact_tool_results(results: dict[str, Any], max_list: int = 10, max_str: 
         out = {}
         for k, v in results.items():
             # Skip keys that are typically huge and low-signal
-            if k in ("raw_html", "raw_response", "raw_data", "price_history",
-                      "historical_data", "chart_data", "curve", "positions"):
+            if k in (
+                "raw_html",
+                "raw_response",
+                "raw_data",
+                "price_history",
+                "historical_data",
+                "chart_data",
+                "curve",
+                "positions",
+            ):
                 if isinstance(v, list):
                     out[k] = f"[{len(v)} items omitted]"
                 else:
@@ -459,7 +463,9 @@ def _compact_tool_results(results: dict[str, Any], max_list: int = 10, max_str: 
         return out
     elif isinstance(results, list):
         if len(results) > max_list:
-            compacted = [_compact_tool_results(item, max_list, max_str) for item in results[:max_list]]
+            compacted = [
+                _compact_tool_results(item, max_list, max_str) for item in results[:max_list]
+            ]
             compacted.append(f"... and {len(results) - max_list} more items")
             return compacted
         return [_compact_tool_results(item, max_list, max_str) for item in results]
@@ -479,7 +485,7 @@ def _parse_string_tool_call(call_str: str) -> tuple[str, dict[str, Any]]:
     import re
 
     call_str = call_str.strip()
-    m = re.match(r'^(\w+)\s*\((.*)\)\s*$', call_str, re.DOTALL)
+    m = re.match(r"^(\w+)\s*\((.*)\)\s*$", call_str, re.DOTALL)
     if not m:
         return call_str, {}
 
@@ -496,12 +502,12 @@ def _parse_string_tool_call(call_str: str) -> tuple[str, dict[str, Any]]:
         for kw_match in kw_matches:
             key = kw_match[0]
             # Take first non-empty capture group as the value
-            val: Any = next((v for v in kw_match[1:] if v != ''), '')
+            val: Any = next((v for v in kw_match[1:] if v != ""), "")
             params[key] = int(val) if val.isdigit() else val
     else:
         # Positional args only — try to extract string values
         pos_vals = re.findall(r'"([^"]*?)"|\'([^\']*?)\'|(\d+)', args_str)
-        positional = [next(v for v in grp if v != '') for grp in pos_vals]
+        positional = [next(v for v in grp if v != "") for grp in pos_vals]
         # Map positional args to common parameter names based on typical tool signatures
         if len(positional) >= 1:
             params["query"] = positional[0]
@@ -593,9 +599,11 @@ def _extract_json(text: str) -> str:
 async def main() -> None:
     query = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
     if not query:
-        print("Usage: uv run python -m src.orchestrator.main \"Your question here\"")
+        print('Usage: uv run python -m src.orchestrator.main "Your question here"')
         print("\nExample:")
-        print('  uv run python -m src.orchestrator.main "What happens if we sanction Fujian Jinhua?"')
+        print(
+            '  uv run python -m src.orchestrator.main "What happens if we sanction Fujian Jinhua?"'
+        )
         sys.exit(1)
 
     try:
@@ -610,13 +618,15 @@ async def main() -> None:
     print(f"\nExecutive Summary:\n{assessment.executive_summary}")
     print(f"\nFindings ({len(assessment.findings)}):")
     for i, f in enumerate(assessment.findings, 1):
-        print(f"  {i}. [{f.get('confidence', 'N/A')}] {f.get('category', 'General')}: {f.get('finding', '')}")
+        print(
+            f"  {i}. [{f.get('confidence', 'N/A')}] {f.get('category', 'General')}: {f.get('finding', '')}"
+        )
     if assessment.friendly_fire:
         print(f"\nFriendly Fire Alerts ({len(assessment.friendly_fire)}):")
         for ff in assessment.friendly_fire:
             print(f"  ⚠ {ff.get('entity', 'Unknown')}: {ff.get('details', '')}")
     if assessment.recommendations:
-        print(f"\nRecommendations:")
+        print("\nRecommendations:")
         for r in assessment.recommendations:
             print(f"  • {r}")
 

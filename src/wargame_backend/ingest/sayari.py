@@ -38,8 +38,16 @@ _TOKEN_URL = "https://api.sayari.com/oauth/token"
 _SEARCH_URL = "https://api.sayari.com/v1/search/entity"
 
 _ISO3_TO_ISO2: dict[str, str] = {
-    "CHN": "CN", "TWN": "TW", "USA": "US", "JPN": "JP", "KOR": "KR",
-    "PHL": "PH", "AUS": "AU", "PRK": "KP", "RUS": "RU", "IND": "IN",
+    "CHN": "CN",
+    "TWN": "TW",
+    "USA": "US",
+    "JPN": "JP",
+    "KOR": "KR",
+    "PHL": "PH",
+    "AUS": "AU",
+    "PRK": "KP",
+    "RUS": "RU",
+    "IND": "IN",
 }
 
 
@@ -79,10 +87,7 @@ class SayariSource(Source):
     def enabled(self) -> bool:
         if not super().enabled:
             return False
-        if not (
-            os.environ.get("SAYARI_API_KEY")
-            and os.environ.get("SAYARI_CLIENT_SECRET")
-        ):
+        if not (os.environ.get("SAYARI_API_KEY") and os.environ.get("SAYARI_CLIENT_SECRET")):
             log.info("sayari.disabled_no_credentials")
             return False
         return True
@@ -109,9 +114,7 @@ class SayariSource(Source):
         self._bearer_token = token
         return token
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         token = await self._get_token()
         if not token:
             return

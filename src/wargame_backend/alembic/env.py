@@ -26,7 +26,7 @@ _here = os.path.dirname(os.path.abspath(__file__))
 _wargame_backend_dir = os.path.dirname(_here)
 _src_dir = os.path.dirname(_wargame_backend_dir)
 sys.path.insert(0, _wargame_backend_dir)  # so `from app...` works
-sys.path.insert(0, _src_dir)              # so `from wargame_ai/shared...` works
+sys.path.insert(0, _src_dir)  # so `from wargame_ai/shared...` works
 
 # Import Base (and trigger model registration by importing models)
 from wargame_backend.app.db.base import Base  # noqa: E402
@@ -43,7 +43,7 @@ config = context.config
 _db_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://swarm:swarm@localhost:5432/swarm")
 for _prefix in ("postgres://", "postgresql://"):
     if _db_url.startswith(_prefix) and not _db_url.startswith("postgresql+"):
-        _db_url = "postgresql+asyncpg://" + _db_url[len(_prefix):]
+        _db_url = "postgresql+asyncpg://" + _db_url[len(_prefix) :]
         break
 config.set_main_option("sqlalchemy.url", _db_url)
 

@@ -85,3 +85,17 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Exclude the swarm submodule — it has its own pyproject.toml + ruff config
+# (select = ["E","F","I","N","UP","B","A","C4","SIM","PL","RUF"]) and its own
+# lint lifecycle. Linting it from here applies the wrong rule set.
+extend-exclude = ["swarm", "frontend", ".venv", "data"]
+
+[tool.ruff.lint]
+# Lock to the classic pyflakes + pycodestyle set so newer ruff versions don't
+# silently introduce hundreds of new lint errors via expanded defaults. We
+# specifically gate on real bugs (unused imports, undefined names, syntax
+# issues) — not subjective style preferences (PL*, RUF*, etc.).
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line-too-long — handled by ruff format, not enforced as error
+]

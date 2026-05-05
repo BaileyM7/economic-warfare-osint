@@ -60,11 +60,11 @@ async def fetch_json(
                 raise
             last_exc = exc
             if attempt < retries:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
         except httpx.TransportError as exc:
             last_exc = exc
             if attempt < retries:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
     raise last_exc  # type: ignore[misc]
 
 
@@ -89,11 +89,11 @@ async def post_json(
                 raise
             last_exc = exc
             if attempt < retries:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
         except httpx.TransportError as exc:
             last_exc = exc
             if attempt < retries:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
     raise last_exc  # type: ignore[misc]
 
 

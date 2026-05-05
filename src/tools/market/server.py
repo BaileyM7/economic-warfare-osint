@@ -117,7 +117,11 @@ async def get_institutional_holders(ticker: str) -> dict:
     return ToolResponse(
         data=data,
         confidence=confidence,
-        sources=[SourceReference(name="yfinance", url=f"https://finance.yahoo.com/quote/{ticker}/holders")],
+        sources=[
+            SourceReference(
+                name="yfinance", url=f"https://finance.yahoo.com/quote/{ticker}/holders"
+            )
+        ],
         errors=errors,
     ).model_dump()
 
@@ -180,7 +184,9 @@ async def get_market_exposure(entity_name: str) -> dict:
         data=data,
         confidence=confidence,
         sources=[
-            SourceReference(name="yfinance", url=f"https://finance.yahoo.com/quote/{ticker}/holders"),
+            SourceReference(
+                name="yfinance", url=f"https://finance.yahoo.com/quote/{ticker}/holders"
+            ),
             SourceReference(name="SEC EDGAR", url="https://www.sec.gov"),
         ],
         errors=errors,
@@ -211,10 +217,12 @@ async def get_macro_indicator(series_id: str, period: str = "1y") -> dict:
     return ToolResponse(
         data=data,
         confidence=confidence,
-        sources=[SourceReference(
-            name="FRED",
-            url=f"https://fred.stlouisfed.org/series/{series_id.upper()}",
-        )],
+        sources=[
+            SourceReference(
+                name="FRED",
+                url=f"https://fred.stlouisfed.org/series/{series_id.upper()}",
+            )
+        ],
         errors=errors,
     ).model_dump()
 
@@ -246,7 +254,9 @@ async def search_market_entity(query: str) -> dict:
     except Exception:
         pass  # FRED search is supplementary, not primary
 
-    confidence = Confidence.HIGH if results else (Confidence.MEDIUM if fred_results else Confidence.LOW)
+    confidence = (
+        Confidence.HIGH if results else (Confidence.MEDIUM if fred_results else Confidence.LOW)
+    )
 
     return ToolResponse(
         data={

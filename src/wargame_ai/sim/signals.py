@@ -97,18 +97,14 @@ class SignalCollector:
         self._max_signals = max_signals
         self._window_hours = window_hours
 
-    async def collect_for(
-        self, session: AsyncSession, iso3: str
-    ) -> list[Signal]:
+    async def collect_for(self, session: AsyncSession, iso3: str) -> list[Signal]:
         """Run every extractor in parallel, filter, rank, cap."""
         if not self._extractors:
             return []
 
         async def _safe_extract(ex: SignalExtractor) -> Signal | None:
             try:
-                return await ex.extract(
-                    session, iso3, window_hours=self._window_hours
-                )
+                return await ex.extract(session, iso3, window_hours=self._window_hours)
             except Exception as exc:  # noqa: BLE001
                 # One bad extractor must not poison the whole turn.  Log and
                 # skip — the agent gets a smaller intel block this turn.
@@ -120,14 +116,9 @@ class SignalCollector:
                 )
                 return None
 
-        results = await asyncio.gather(
-            *(_safe_extract(ex) for ex in self._extractors)
-        )
+        results = await asyncio.gather(*(_safe_extract(ex) for ex in self._extractors))
 
-        signals = [
-            s for s in results
-            if s is not None and s.magnitude >= self._magnitude_floor
-        ]
+        signals = [s for s in results if s is not None and s.magnitude >= self._magnitude_floor]
         signals.sort(key=lambda s: s.magnitude, reverse=True)
         return signals[: self._max_signals]
 
@@ -145,7 +136,5 @@ def render_signals_block(signals: list[Signal]) -> str:
     lines = []
     for s in signals:
         arrow = {"positive": "↑", "negative": "↓", "neutral": "·"}[s.direction]
-        lines.append(
-            f"- **[{s.source}]** {arrow} {s.headline}  _(mag {s.magnitude:.2f})_"
-        )
+        lines.append(f"- **[{s.source}]** {arrow} {s.headline}  _(mag {s.magnitude:.2f})_")
     return "\n".join(lines)

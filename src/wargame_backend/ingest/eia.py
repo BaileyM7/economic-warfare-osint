@@ -80,9 +80,7 @@ class EIASource(Source):
             return False
         return True
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         api_key = os.environ.get("EIA_API_KEY", "")
         for series_id, label in _WATCHED_SERIES.items():
             url = f"{_API_BASE}/{series_id}/data"
@@ -97,9 +95,7 @@ class EIASource(Source):
                 response = await self._get(url, params=params)
                 payload = response.json()
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "eia.fetch_failed", series_id=series_id, error=str(exc)
-                )
+                log.warning("eia.fetch_failed", series_id=series_id, error=str(exc))
                 continue
 
             observations = (payload.get("response") or {}).get("data") or []
@@ -108,11 +104,7 @@ class EIASource(Source):
                 value = _safe_float(obs.get("value"))
                 if value is None:
                     continue
-                delta = (
-                    round(value - prior_value, 4)
-                    if prior_value is not None
-                    else None
-                )
+                delta = round(value - prior_value, 4) if prior_value is not None else None
                 yield EIARawRecord(
                     series_id=series_id,
                     series_label=label,

@@ -9,7 +9,7 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -121,9 +121,7 @@ async def create_simulation(
         429: Global concurrent simulation limit reached.
     """
     # -- Validate scenario exists --
-    scenario_result = await db.execute(
-        select(Scenario).where(Scenario.id == body.scenario_id)
-    )
+    scenario_result = await db.execute(select(Scenario).where(Scenario.id == body.scenario_id))
     scenario = scenario_result.scalar_one_or_none()
     if scenario is None:
         raise HTTPException(
@@ -150,9 +148,7 @@ async def create_simulation(
 
     # -- Check global concurrency limit --
     active_count_result = await db.execute(
-        select(Simulation).where(
-            Simulation.status.in_([s.value for s in _ACTIVE_STATUSES])
-        )
+        select(Simulation).where(Simulation.status.in_([s.value for s in _ACTIVE_STATUSES]))
     )
     active_count = len(active_count_result.scalars().all())
     if active_count >= settings.max_concurrent_sims:
@@ -198,14 +194,10 @@ async def get_simulation(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Return the current state of a simulation."""
-    result = await db.execute(
-        select(Simulation).where(Simulation.id == simulation_id)
-    )
+    result = await db.execute(select(Simulation).where(Simulation.id == simulation_id))
     sim = result.scalar_one_or_none()
     if sim is None:
-        raise HTTPException(
-            status_code=404, detail=f"Simulation '{simulation_id}' not found."
-        )
+        raise HTTPException(status_code=404, detail=f"Simulation '{simulation_id}' not found.")
 
     ws_url = f"/ws/simulations/{sim.id}" if sim.status in _ACTIVE_STATUSES else None
     return {
@@ -226,14 +218,10 @@ async def abort_simulation(
         404: Simulation not found.
         409: Simulation is not in an abortable state.
     """
-    result = await db.execute(
-        select(Simulation).where(Simulation.id == simulation_id)
-    )
+    result = await db.execute(select(Simulation).where(Simulation.id == simulation_id))
     sim = result.scalar_one_or_none()
     if sim is None:
-        raise HTTPException(
-            status_code=404, detail=f"Simulation '{simulation_id}' not found."
-        )
+        raise HTTPException(status_code=404, detail=f"Simulation '{simulation_id}' not found.")
     if sim.status not in _ACTIVE_STATUSES:
         raise HTTPException(
             status_code=409,

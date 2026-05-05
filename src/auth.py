@@ -3,6 +3,7 @@
 Admin users are configured via EMISSARY_ADMIN_USERS:
     EMISSARY_ADMIN_USERS="bailey:mypassword,boss:otherpassword"
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -67,11 +68,16 @@ def verify_token(token: str | None) -> str | None:
 async def require_auth(authorization: str | None = Header(None)) -> str:
     """FastAPI dependency — raises 401 if missing/invalid token, else returns username."""
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid Authorization header")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header",
+        )
     token = authorization[7:]
     username = verify_token(token)
     if not username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        )
     return username
 
 

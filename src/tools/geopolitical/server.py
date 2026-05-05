@@ -153,9 +153,7 @@ def _compute_risk_score(
     return min(round(score, 1), 10.0)
 
 
-def _confidence_for_data(
-    gdelt_count: int, acled_available: bool, acled_count: int
-) -> Confidence:
+def _confidence_for_data(gdelt_count: int, acled_available: bool, acled_count: int) -> Confidence:
     """Determine confidence based on data completeness.
 
     GDELT-only results are capped at MEDIUM because:
@@ -232,9 +230,7 @@ async def get_conflict_data(country: str, days: int = 90) -> dict:
 
     if not used_acled:
         if not is_acled_available():
-            errors.append(
-                "ACLED credentials not configured; using GDELT-only fallback"
-            )
+            errors.append("ACLED credentials not configured; using GDELT-only fallback")
         # Fallback: use GDELT doc search for the country
         gdelt_events = await gdelt_doc_search(f'"{country}" conflict', days=days)
     else:
@@ -336,26 +332,20 @@ async def get_risk_profile(country: str) -> dict:
     parts.append(f"GDELT found {len(gdelt_events)} media articles.")
     if used_acled:
         parts.append(
-            f"ACLED reports {len(acled_events)} conflict events with "
-            f"{total_fatalities} fatalities."
+            f"ACLED reports {len(acled_events)} conflict events with {total_fatalities} fatalities."
         )
     if avg_tone is not None:
         direction = "negative" if avg_tone < 0 else "positive"
         parts.append(f"Average media tone is {direction} ({avg_tone:.2f}).")
     parts.append(
-        f"Overall risk score: {risk_score}/10 "
-        f"({_classify_conflict_intensity(risk_score)})."
+        f"Overall risk score: {risk_score}/10 ({_classify_conflict_intensity(risk_score)})."
     )
 
     # Combine recent events (most recent first, limited to 20)
     recent_events: list[dict] = []
-    for ev in sorted(
-        gdelt_events, key=lambda e: e.date or datetime.min, reverse=True
-    )[:10]:
+    for ev in sorted(gdelt_events, key=lambda e: e.date or datetime.min, reverse=True)[:10]:
         recent_events.append(ev.model_dump(mode="json"))
-    for ev in sorted(
-        acled_events, key=lambda e: e.event_date or datetime.min, reverse=True
-    )[:10]:
+    for ev in sorted(acled_events, key=lambda e: e.event_date or datetime.min, reverse=True)[:10]:
         recent_events.append(ev.model_dump(mode="json"))
 
     profile = GeopoliticalRiskProfile(
@@ -366,9 +356,7 @@ async def get_risk_profile(country: str) -> dict:
         narrative_summary=" ".join(parts),
     )
 
-    confidence = _confidence_for_data(
-        len(gdelt_events), is_acled_available(), len(acled_events)
-    )
+    confidence = _confidence_for_data(len(gdelt_events), is_acled_available(), len(acled_events))
 
     response = ToolResponse(
         data={
@@ -383,9 +371,7 @@ async def get_risk_profile(country: str) -> dict:
 
 
 @mcp.tool()
-async def get_bilateral_tensions(
-    country1: str, country2: str, days: int = 90
-) -> dict:
+async def get_bilateral_tensions(country1: str, country2: str, days: int = 90) -> dict:
     """Analyze tensions between two countries using GDELT event data.
 
     Args:

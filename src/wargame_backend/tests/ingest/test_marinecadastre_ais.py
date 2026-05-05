@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 import pytest
 
@@ -49,6 +48,4 @@ class TestNormalize:
         assert event.actor_iso3 == "CHN"
         assert event.target_iso3 == "USA"
         assert event.domain is EventDomain.kinetic_limited
-        assert event.payload["_dedup_key"] == (
-            "marinecadastre_ais:2026-04-15:PearlHarbor:CHN"
-        )
+        assert event.payload["_dedup_key"] == ("marinecadastre_ais:2026-04-15:PearlHarbor:CHN")

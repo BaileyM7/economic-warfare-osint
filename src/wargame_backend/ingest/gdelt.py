@@ -36,10 +36,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from wargame_backend.app.db.models import Event
-from ingest.base import Source, RawRecord, raise_for_retryable
+from ingest.base import Source, RawRecord
 from ingest.cameo import cameo_to_domain
 
 log = structlog.get_logger(__name__)
@@ -95,14 +95,15 @@ COL = {
 # Raw record model
 # ---------------------------------------------------------------------------
 
+
 class GDELTRawRecord(BaseModel):
     """Typed representation of one GDELT 2.0 CSV row."""
 
     global_event_id: str
-    sql_date: str                 # YYYYMMDD
-    actor1_country_code: str      # GDELT ISO2-like code
+    sql_date: str  # YYYYMMDD
+    actor1_country_code: str  # GDELT ISO2-like code
     actor2_country_code: str
-    event_code: str               # CAMEO code string
+    event_code: str  # CAMEO code string
     goldstein_scale: float | None
     avg_tone: float | None
     source_url: str
@@ -142,9 +143,7 @@ def _gdelt_file_url_for_dt(dt: datetime) -> str:
 def _gdelt_file_urls_in_window(since: datetime, until: datetime) -> list[str]:
     """Return all 15-min GDELT export URLs covering [since, until)."""
     urls: list[str] = []
-    slot = since.replace(
-        minute=(since.minute // 15) * 15, second=0, microsecond=0
-    )
+    slot = since.replace(minute=(since.minute // 15) * 15, second=0, microsecond=0)
     while slot < until:
         urls.append(_gdelt_file_url_for_dt(slot))
         slot += timedelta(minutes=15)
@@ -230,9 +229,7 @@ class GDELTSource(Source):
     name: ClassVar[str] = "gdelt"
     display_name: ClassVar[str] = "GDELT 2.0"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         """Yield GDELTRawRecord for every filtered row in [since, until)."""
         urls = _gdelt_file_urls_in_window(since, until)
         log.info("gdelt.fetch_urls", count=len(urls), since=since, until=until)
@@ -242,9 +239,7 @@ class GDELTSource(Source):
                 response = await self._get(url)
                 zip_bytes = response.content
                 with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-                    csv_name = next(
-                        (n for n in zf.namelist() if n.endswith(".CSV")), None
-                    )
+                    csv_name = next((n for n in zf.namelist() if n.endswith(".CSV")), None)
                     if csv_name is None:
                         log.warning("gdelt.no_csv_in_zip", url=url)
                         continue
@@ -267,9 +262,7 @@ class GDELTSource(Source):
 
         # Parse SQLDATE YYYYMMDD
         try:
-            occurred_at = datetime.strptime(raw.sql_date, "%Y%m%d").replace(
-                tzinfo=timezone.utc
-            )
+            occurred_at = datetime.strptime(raw.sql_date, "%Y%m%d").replace(tzinfo=timezone.utc)
         except ValueError:
             occurred_at = datetime.now(timezone.utc)
 
