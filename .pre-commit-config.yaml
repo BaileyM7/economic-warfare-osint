@@ -26,3 +26,27 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: [--maxkb=1000]
+
+  # Local hooks
+  - repo: local
+    hooks:
+      # Scrub .env values from any cassette being committed. Runs only when
+      # files under tests/cassettes/ are staged. Exits non-zero if it
+      # rewrites any file — re-stage and commit again.
+      - id: redact-cassettes
+        name: redact secrets from VCR cassettes
+        entry: python scripts/redact-cassettes.py
+        language: system
+        files: ^tests/cassettes/.*\.yaml$
+        pass_filenames: false
+
+      # Fast pre-push gate: run pytest -x so a failing test blocks the push
+      # before it ever reaches GitHub Actions. Local backstop only — CI is
+      # the merge-blocking authority.
+      - id: pytest-pre-push
+        name: pytest (pre-push)
+        entry: pytest -x --no-header
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        types: [python]
