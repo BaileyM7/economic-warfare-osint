@@ -7,10 +7,12 @@ import json
 import logging
 import re
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, Field, field_validator
 
 from src.common.config import config
+from src.common.rate_limit import LLM_GENERATE_LIMIT, limiter
+from src.common.sanitize import sanitize_for_llm
 from src.db import get_db, log_activity, _now, _new_id, row_to_coa
 from src.llm import get_anthropic_client
 from src.routers._shared import notify_monitoring
@@ -23,36 +25,47 @@ router = APIRouter(prefix="/api", tags=["coa"])
 
 
 class COACreateRequest(BaseModel):
-    name: str
-    description: str = ""
-    target_entities: list[str] = []
-    action_type: str = ""
-    confidence: float | None = None
-    source_analysis_id: str | None = None
-    recommendations: list[str] = []
-    friendly_fire: list[dict] = []
-    expected_effects: list[str] = []
-    sources: list[dict] = []
-    rationale: str = ""
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=5_000)
+    target_entities: list[str] = Field(default_factory=list, max_length=50)
+    action_type: str = Field("", max_length=100)
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    source_analysis_id: str | None = Field(None, max_length=64, pattern=r"^[a-zA-Z0-9_-]*$")
+    recommendations: list[str] = Field(default_factory=list, max_length=50)
+    friendly_fire: list[dict] = Field(default_factory=list, max_length=50)
+    expected_effects: list[str] = Field(default_factory=list, max_length=50)
+    sources: list[dict] = Field(default_factory=list, max_length=100)
+    rationale: str = Field("", max_length=10_000)
 
 
 class COAUpdateRequest(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    target_entities: list[str] | None = None
-    action_type: str | None = None
-    status: str | None = None
-    confidence: float | None = None
-    recommendations: list[str] | None = None
-    friendly_fire: list[dict] | None = None
-    expected_effects: list[str] | None = None
-    sources: list[dict] | None = None
-    rationale: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = Field(None, max_length=5_000)
+    target_entities: list[str] | None = Field(None, max_length=50)
+    action_type: str | None = Field(None, max_length=100)
+    status: str | None = Field(None, max_length=32, pattern=r"^[a-zA-Z0-9_-]+$")
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    recommendations: list[str] | None = Field(None, max_length=50)
+    friendly_fire: list[dict] | None = Field(None, max_length=50)
+    expected_effects: list[str] | None = Field(None, max_length=50)
+    sources: list[dict] | None = Field(None, max_length=100)
+    rationale: str | None = Field(None, max_length=10_000)
 
 
 class COAGenerateRequest(BaseModel):
     analysis_data: dict | None = None
-    objective: str = ""
+    objective: str = Field("", max_length=1_000)
+
+    @field_validator("analysis_data")
+    @classmethod
+    def _cap_analysis_size(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return v
+        # Reject any analysis_data whose JSON serialization exceeds 50KB.
+        # Prevents a single request from costing $1+ in Anthropic tokens.
+        if len(json.dumps(v, default=str)) > 50_000:
+            raise ValueError("analysis_data exceeds 50KB serialized size")
+        return v
 
 
 # --- Endpoints ---
@@ -70,11 +83,20 @@ async def create_coa(req: COACreateRequest):
             "created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                coa_id, req.name, req.description, json.dumps(req.target_entities),
-                req.action_type, req.confidence, req.source_analysis_id,
-                json.dumps(req.recommendations), json.dumps(req.friendly_fire),
-                json.dumps(req.expected_effects), json.dumps(req.sources),
-                req.rationale, now, now,
+                coa_id,
+                req.name,
+                req.description,
+                json.dumps(req.target_entities),
+                req.action_type,
+                req.confidence,
+                req.source_analysis_id,
+                json.dumps(req.recommendations),
+                json.dumps(req.friendly_fire),
+                json.dumps(req.expected_effects),
+                json.dumps(req.sources),
+                req.rationale,
+                now,
+                now,
             ),
         )
         conn.commit()
@@ -91,7 +113,9 @@ async def list_coas(status: str | None = None):
     conn = get_db()
     try:
         if status:
-            rows = conn.execute("SELECT * FROM coas WHERE status = ? ORDER BY updated_at DESC", (status,)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM coas WHERE status = ? ORDER BY updated_at DESC", (status,)
+            ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM coas ORDER BY updated_at DESC").fetchall()
     finally:
@@ -123,7 +147,13 @@ async def update_coa(coa_id: str, req: COAUpdateRequest):
             val = getattr(req, field, None)
             if val is not None:
                 updates[field] = val
-        for field in ("target_entities", "recommendations", "friendly_fire", "expected_effects", "sources"):
+        for field in (
+            "target_entities",
+            "recommendations",
+            "friendly_fire",
+            "expected_effects",
+            "sources",
+        ):
             val = getattr(req, field, None)
             if val is not None:
                 updates[field] = json.dumps(val)
@@ -134,7 +164,11 @@ async def update_coa(coa_id: str, req: COAUpdateRequest):
         conn.execute(f"UPDATE coas SET {set_clause} WHERE id = ?", (*updates.values(), coa_id))
         conn.commit()
         if req.status and req.status != existing["status"]:
-            log_activity("coa_status_changed", f"COA '{existing['name']}' status: {existing['status']} -> {req.status}", related_id=coa_id)
+            log_activity(
+                "coa_status_changed",
+                f"COA '{existing['name']}' status: {existing['status']} -> {req.status}",
+                related_id=coa_id,
+            )
         row = conn.execute("SELECT * FROM coas WHERE id = ?", (coa_id,)).fetchone()
     finally:
         conn.close()
@@ -233,7 +267,8 @@ HARD RULES:
 
 
 @router.post("/coa/generate")
-async def generate_coa(req: COAGenerateRequest):
+@limiter.limit(LLM_GENERATE_LIMIT)
+async def generate_coa(request: Request, response: Response, req: COAGenerateRequest):
     client = get_anthropic_client()
     if not client:
         raise HTTPException(status_code=503, detail="Anthropic API key not configured")
@@ -265,6 +300,8 @@ async def generate_coa(req: COAGenerateRequest):
     if not req.objective and not req.analysis_data:
         user_content = "Generate general economic warfare COA options for Indo-Pacific region."
 
+    user_content = sanitize_for_llm(user_content, max_chars=60_000)
+
     try:
         response = await asyncio.wait_for(
             client.messages.create(
@@ -283,7 +320,7 @@ async def generate_coa(req: COAGenerateRequest):
         if text.startswith("["):
             parsed = json.loads(text)
         else:
-            match = re.search(r'\[.*\]', text, re.DOTALL)
+            match = re.search(r"\[.*\]", text, re.DOTALL)
             if match:
                 parsed = json.loads(match.group())
         if sources and isinstance(parsed, list):
