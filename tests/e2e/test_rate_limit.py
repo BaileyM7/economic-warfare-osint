@@ -65,6 +65,6 @@ def test_rate_limit_keyed_per_user(app_client, app_module):
         json=payload,
         headers={"Authorization": f"Bearer {token_bob}"},
     )
-    assert (
-        r.status_code != 429
-    ), f"Bob's bucket got mixed with Alice's — key function may be wrong. status={r.status_code}"
+    assert r.status_code != 429, (
+        f"Bob's bucket got mixed with Alice's — key function may be wrong. status={r.status_code}"
+    )
