@@ -1,0 +1,119 @@
+name: CI
+
+# Runs on every PR targeting the deploy branches and on push to those branches
+# (so the merge commit itself is also gated). Protect emissary-v1 + master via
+# branch protection rules in GitHub UI to require all jobs below to pass.
+on:
+  pull_request:
+    branches: [emissary-v1, master]
+  push:
+    branches: [emissary-v1, master]
+
+# Cancel superseded runs on the same PR — saves CI minutes when devs push
+# rapid-fire fixups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install "ruff>=0.4"
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format check
+        run: ruff format --check .
+
+  test:
+    name: Pytest (unit + e2e replay)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+          cache: pip
+
+      - name: Install project (dev extras)
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Pytest
+        # No secrets needed — VCR replay-only, ANTHROPIC_API_KEY cleared
+        # by tests/conftest.py. Coverage is informational, not a gate.
+        run: pytest tests/ --cov=src --cov-report=term --no-header
+
+  frontend-build:
+    name: Frontend build (vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.11.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install + build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+  build-script:
+    name: Render build.sh end-to-end
+    runs-on: ubuntu-latest
+    # Most expensive job (~3-5 min). Mirrors the Render runtime exactly so
+    # we catch deploy-time failures (submodule init, requirements.txt drift,
+    # frontend build) BEFORE they hit prod.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python (matches render.yaml)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Set up Node (matches render.yaml)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.11.0"
+
+      - name: Run build.sh
+        run: bash build.sh
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can scan all commits in the PR diff.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

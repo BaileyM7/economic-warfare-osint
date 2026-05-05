@@ -1,0 +1,13 @@
+# GitHub auto-requests review from these owners when matching files change.
+# Format: <path-pattern>  @user1 @user2
+
+# Default owner for everything.
+*  @BaileyM7
+
+# Security-sensitive paths warrant explicit review.
+src/auth.py             @BaileyM7
+src/common/rate_limit.py @BaileyM7
+src/common/sanitize.py   @BaileyM7
+src/api.py              @BaileyM7
+.github/workflows/      @BaileyM7
+.pre-commit-config.yaml @BaileyM7
