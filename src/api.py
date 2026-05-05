@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os as _os
 import re
 import uuid
 import webbrowser
@@ -65,9 +66,14 @@ from src.routers.coa import router as coa_router
 from src.routers.monitoring import router as monitoring_router
 from src.routers.briefings import router as briefings_router
 from src.routers.risk_feed import router as risk_feed_router
+from src.routers.watchlist import router as watchlist_router
 from src.routers import briefings as _briefings_mod
 from src.analytics import UsageTrackingMiddleware
 from src.auth import require_admin, require_auth, verify_token
+from src.common.rate_limit import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from src.routers.admin import router as admin_router
 from src.routers.auth import router as auth_router
 
@@ -179,12 +185,32 @@ app = FastAPI(
 
 app.add_middleware(UsageTrackingMiddleware)
 
+# --- Rate limiting (Redis-backed when REDIS_URL is set) ---
+# See src/common/rate_limit.py for key function and limit constants.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# --- CORS ---
+# Wildcard "*" with allow_credentials=True is unsafe (browsers will reject
+# it anyway under modern spec) — read explicit origins from CORS_ORIGINS as
+# a comma-separated list. Defaults are dev-only; production sets the env var.
+_cors_raw = _os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173",
+)
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+if "*" in _cors_origins:
+    raise ValueError(
+        "CORS wildcard '*' combined with allow_credentials=True is forbidden. "
+        "Set CORS_ORIGINS to explicit origins (comma-separated)."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # --- Include Emissary routers ---
@@ -195,12 +221,14 @@ app.include_router(coa_router, dependencies=[Depends(require_auth)])
 app.include_router(monitoring_router, dependencies=[Depends(require_auth)])
 app.include_router(briefings_router, dependencies=[Depends(require_auth)])
 app.include_router(risk_feed_router, dependencies=[Depends(require_auth)])
+# watchlist endpoints all use Depends(require_auth) per-route to read the
+# username, so the include-level dep is redundant here — but kept for parity.
+app.include_router(watchlist_router, dependencies=[Depends(require_auth)])
 
 # --- Wargame subapp (embedded swarm backend) ---
 # Gated by WARGAME_ENABLED so Emissary's baseline behavior is unaffected
 # when swarm's Postgres + Redis aren't provisioned. Any import-time failure
 # is caught so a broken wargame doesn't take down the rest of the app.
-import os as _os  # noqa: E402  # pre-existing late import; tracked separately
 
 _wargame_app: Any = None  # populated below if import succeeds
 _wargame_lifespan_cm: Any = None  # the active lifespan context, kept for shutdown

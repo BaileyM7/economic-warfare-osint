@@ -7,13 +7,18 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from src.common.config import config
+from src.common.rate_limit import LLM_GENERATE_LIMIT, limiter
+from src.common.sanitize import sanitize_for_llm
 from src.db import get_db, log_activity, _now, _new_id, row_to_briefing, row_to_coa
 from src.llm import get_anthropic_client
 from src.routers._shared import notify_monitoring
+
+# Allow alphanumerics, dash, underscore — matches `_new_id` and UUID outputs.
+_ID_PATTERN = r"^[a-zA-Z0-9_-]+$"
 
 logger = logging.getLogger(__name__)
 
@@ -34,22 +39,22 @@ def set_analyses_ref(analyses: dict[str, dict[str, Any]]) -> None:
 
 
 class BriefingCreateRequest(BaseModel):
-    title: str
-    type: str = "situation_update"
-    reference_id: str | None = None
-    content_markdown: str = ""
+    title: str = Field(..., min_length=1, max_length=200)
+    type: str = Field("situation_update", max_length=50, pattern=r"^[a-zA-Z0-9_-]+$")
+    reference_id: str | None = Field(None, max_length=64, pattern=_ID_PATTERN)
+    content_markdown: str = Field("", max_length=50_000)
 
 
 class BriefingGenerateRequest(BaseModel):
-    coa_id: str | None = None
-    analysis_id: str | None = None
-    briefing_type: str = "situation_update"
+    coa_id: str | None = Field(None, max_length=64, pattern=_ID_PATTERN)
+    analysis_id: str | None = Field(None, max_length=64, pattern=_ID_PATTERN)
+    briefing_type: str = Field("situation_update", max_length=50, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 class BriefingUpdateRequest(BaseModel):
-    status: str | None = None
-    title: str | None = None
-    content_markdown: str | None = None
+    status: str | None = Field(None, max_length=32, pattern=r"^[a-zA-Z0-9_-]+$")
+    title: str | None = Field(None, min_length=1, max_length=200)
+    content_markdown: str | None = Field(None, max_length=50_000)
 
 
 # --- Endpoints ---
@@ -183,7 +188,8 @@ HARD RULES:
 
 
 @router.post("/briefing/generate")
-async def generate_briefing(req: BriefingGenerateRequest):
+@limiter.limit(LLM_GENERATE_LIMIT)
+async def generate_briefing(request: Request, response: Response, req: BriefingGenerateRequest):
     client = get_anthropic_client()
     if not client:
         raise HTTPException(status_code=503, detail="Anthropic API key not configured")
@@ -225,6 +231,7 @@ async def generate_briefing(req: BriefingGenerateRequest):
         f"Available sources (use these numbers as inline citations):\n{sources_block}\n\n"
         f"Source data payload (JSON):\n{json.dumps(source_data, default=str)}"
     )
+    user_content = sanitize_for_llm(user_content, max_chars=60_000)
 
     try:
         response = await asyncio.wait_for(
@@ -251,13 +258,24 @@ async def generate_briefing(req: BriefingGenerateRequest):
         conn.execute(
             "INSERT INTO briefings (id, title, type, status, reference_id, content_markdown, sources, created_at, updated_at) "
             "VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)",
-            (briefing_id, source_title, req.briefing_type, ref_id, content_md, sources_json, now, now),
+            (
+                briefing_id,
+                source_title,
+                req.briefing_type,
+                ref_id,
+                content_md,
+                sources_json,
+                now,
+                now,
+            ),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM briefings WHERE id = ?", (briefing_id,)).fetchone()
     finally:
         conn.close()
-    log_activity("briefing_generated", f"Briefing generated: {source_title}", related_id=briefing_id)
+    log_activity(
+        "briefing_generated", f"Briefing generated: {source_title}", related_id=briefing_id
+    )
     await notify_monitoring("briefing_generated", f"Briefing generated: {source_title}")
     return row_to_briefing(row)
 
@@ -267,7 +285,9 @@ async def list_briefings(status: str | None = None):
     conn = get_db()
     try:
         if status:
-            rows = conn.execute("SELECT * FROM briefings WHERE status = ? ORDER BY updated_at DESC", (status,)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM briefings WHERE status = ? ORDER BY updated_at DESC", (status,)
+            ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM briefings ORDER BY updated_at DESC").fetchall()
     finally:
@@ -303,10 +323,16 @@ async def update_briefing(briefing_id: str, req: BriefingUpdateRequest):
             return row_to_briefing(existing)
         updates["updated_at"] = _now()
         set_clause = ", ".join(f"{k} = ?" for k in updates)
-        conn.execute(f"UPDATE briefings SET {set_clause} WHERE id = ?", (*updates.values(), briefing_id))
+        conn.execute(
+            f"UPDATE briefings SET {set_clause} WHERE id = ?", (*updates.values(), briefing_id)
+        )
         conn.commit()
         if req.status and req.status != existing["status"]:
-            log_activity("briefing_status_changed", f"Briefing '{existing['title']}' status: {existing['status']} -> {req.status}", related_id=briefing_id)
+            log_activity(
+                "briefing_status_changed",
+                f"Briefing '{existing['title']}' status: {existing['status']} -> {req.status}",
+                related_id=briefing_id,
+            )
         row = conn.execute("SELECT * FROM briefings WHERE id = ?", (briefing_id,)).fetchone()
     finally:
         conn.close()
@@ -325,6 +351,8 @@ async def delete_briefing(briefing_id: str):
         conn.commit()
     finally:
         conn.close()
-    log_activity("briefing_deleted", f"Briefing deleted: {existing['title']}", related_id=briefing_id)
+    log_activity(
+        "briefing_deleted", f"Briefing deleted: {existing['title']}", related_id=briefing_id
+    )
     await notify_monitoring("briefing_deleted", f"Briefing deleted: {existing['title']}")
     return {"detail": "deleted"}
