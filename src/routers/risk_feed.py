@@ -1,16 +1,22 @@
 """Risk Feed router — proactive card-style surfacing of risk shifts.
 
-Exposes:
-- GET  /api/risk-feed              -> current in-memory feed items
-- POST /api/risk-feed/refresh      -> rebuild the feed from configured sources
+After Phase 3 every endpoint is per-user: each authenticated caller gets their
+own feed driven by their own `watchlist_items` rows (see src/routers/watchlist.py).
+Two users hitting refresh at the same time see two independent feeds.
+
+Endpoints:
+- GET  /api/risk-feed                       -> caller's current in-memory feed
+- POST /api/risk-feed/refresh               -> rebuild the caller's feed from sources
+- GET  /api/risk-feed/{item_id}             -> fetch one item from the caller's feed
+- POST /api/risk-feed/{item_id}/prepare-coa -> click-time source enrichment
 
 Mode is controlled by env var RISK_FEED_MODE:
-- "fixture" : load only from fixtures/risk_feed_demo.json (offline-safe)
-- "live"    : pull from OFAC delta + GDELT/yfinance only
+- "fixture" : load only from fixtures/risk_feed_demo.json (offline-safe, identical for every user)
+- "live"    : pull from OFAC ranked surface + watch-list-driven markets/CSL feeds
 - "auto"    : try live; if it returns nothing or errors, fall back to fixture
 
-The feed is intentionally process-local — POC scope. Persistence to a
-feed_items table is a Phase 2 concern.
+Storage is intentionally process-local (in-memory dict keyed by username).
+Persistence to a `feed_items` table is a Phase 3.5 concern.
 """
 
 from __future__ import annotations
@@ -22,13 +28,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from src.auth import require_auth
 from src.db import log_activity
 from src.risk_feed.enrich import enrich_payload
 from src.routers._shared import notify_monitoring
+from src.routers.watchlist import load_active_items_for_user
 from src.tools.markets.feed import build_markets_feed
-from src.tools.sanctions.delta import detect_ofac_delta
+from src.tools.sanctions.delta import build_sanctions_feed
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +45,17 @@ router = APIRouter(prefix="/api/risk-feed", tags=["risk-feed"])
 # Severity ordering for sort
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
-# In-memory store. Lifetime = process lifetime.
-_FEED_ITEMS: list[dict[str, Any]] = []
-_LAST_REFRESH: dict[str, Any] = {"at": None, "source": None, "count": 0, "errors": []}
+# Per-user in-memory store. Lifetime = process lifetime.
+# Phase 3.5 will replace this with a `feed_items` SQL table.
+_FEED_ITEMS: dict[str, list[dict[str, Any]]] = {}
+_LAST_REFRESH: dict[str, dict[str, Any]] = {}
+
+_EMPTY_REFRESH_META: dict[str, Any] = {
+    "at": None,
+    "source": None,
+    "count": 0,
+    "errors": [],
+}
 
 _FIXTURE_PATH = Path("fixtures/risk_feed_demo.json")
 
@@ -84,34 +100,69 @@ def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-async def _build_live_feed() -> tuple[list[dict[str, Any]], list[str]]:
-    """Build the live feed in parallel from all configured sources.
+def _watchlist_to_feed_args(grouped: dict[str, list[dict]]) -> dict[str, Any]:
+    """Translate a user's watch-list (grouped by entity_kind) into the kwargs
+    that build_markets_feed / build_sanctions_feed expect.
 
-    Returns (items, errors). Errors are non-fatal; one source failing should
-    not blank the whole feed.
+    Empty lists are passed explicitly so the builder runs zero fan-out for a
+    signal type the user hasn't subscribed to (rather than falling back to
+    SUGGESTED_*).
+    """
+    tickers: list[tuple[str, str]] = [
+        (row["query"], row["label"]) for row in grouped.get("ticker", [])
+    ]
+    regions: list[tuple[str, str]] = [
+        (row["query"], row["label"]) for row in grouped.get("gdelt_region", [])
+    ]
+    entities: list[tuple[str, str, str]] = [
+        (row["query"], row["label"], row.get("category", "markets"))
+        for row in grouped.get("gdelt_query", [])
+    ]
+    csl_keywords: list[str] = [row["query"] for row in grouped.get("sanctions_keyword", [])]
+    return {
+        "tickers": tickers,
+        "regions": regions,
+        "entities": entities,
+        "csl_keywords": csl_keywords,
+    }
+
+
+async def _build_live_feed_for_user(username: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build the live feed for *username* in parallel from configured sources.
+
+    The OFAC ranked surface (top recent + program-weighted SDN designations)
+    runs unconditionally — it's a global signal that matters even when the
+    user hasn't curated a watch-list yet. The markets fan-out and CSL keyword
+    augmentation are driven by the user's watch-list rows.
     """
     import asyncio
 
     errors: list[str] = []
+    grouped = load_active_items_for_user(username)
+    args = _watchlist_to_feed_args(grouped)
 
-    async def _safe_ofac() -> list[dict[str, Any]]:
+    async def _safe_sanctions() -> list[dict[str, Any]]:
         try:
-            return await detect_ofac_delta()
+            return await build_sanctions_feed(csl_keywords=args["csl_keywords"])
         except Exception as exc:
-            logger.warning("OFAC delta failed: %s", exc)
-            errors.append(f"ofac: {type(exc).__name__}: {exc}")
+            logger.warning("Sanctions feed failed for %s: %s", username, exc)
+            errors.append(f"sanctions: {type(exc).__name__}: {exc}")
             return []
 
     async def _safe_markets() -> list[dict[str, Any]]:
         try:
-            return await build_markets_feed()
+            return await build_markets_feed(
+                tickers=args["tickers"],
+                regions=args["regions"],
+                entities=args["entities"],
+            )
         except Exception as exc:
-            logger.warning("Markets feed failed: %s", exc)
+            logger.warning("Markets feed failed for %s: %s", username, exc)
             errors.append(f"markets: {type(exc).__name__}: {exc}")
             return []
 
-    ofac_items, market_items = await asyncio.gather(_safe_ofac(), _safe_markets())
-    return ofac_items + market_items, errors
+    sanctions_items, market_items = await asyncio.gather(_safe_sanctions(), _safe_markets())
+    return sanctions_items + market_items, errors
 
 
 def _category_counts(items: list[dict[str, Any]]) -> dict[str, int]:
@@ -123,20 +174,20 @@ def _category_counts(items: list[dict[str, Any]]) -> dict[str, int]:
 
 
 @router.get("")
-async def get_risk_feed():
-    """Return the current in-memory feed plus metadata about the last refresh."""
+async def get_risk_feed(username: str = Depends(require_auth)):
+    """Return the calling user's current in-memory feed + last-refresh metadata."""
+    items = _FEED_ITEMS.get(username, [])
     return {
-        "items": _FEED_ITEMS,
-        "last_refresh": _LAST_REFRESH,
-        "category_counts": _category_counts(_FEED_ITEMS),
+        "items": items,
+        "last_refresh": _LAST_REFRESH.get(username, dict(_EMPTY_REFRESH_META)),
+        "category_counts": _category_counts(items),
     }
 
 
 @router.post("/refresh")
-async def refresh_risk_feed():
-    """Rebuild the feed from configured sources. Synchronous so the caller
-    sees the new items immediately.
-    """
+async def refresh_risk_feed(username: str = Depends(require_auth)):
+    """Rebuild *this user's* feed from configured sources. Synchronous so the
+    caller sees the new items immediately."""
     mode = (os.getenv("RISK_FEED_MODE") or "auto").strip().lower()
     items: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -146,23 +197,22 @@ async def refresh_risk_feed():
         items = _load_fixture()
         source_used = "fixture"
     elif mode == "live":
-        items, errors = await _build_live_feed()
+        items, errors = await _build_live_feed_for_user(username)
         source_used = "live"
     else:  # "auto"
-        live_items, errors = await _build_live_feed()
+        live_items, errors = await _build_live_feed_for_user(username)
         if live_items:
             items = live_items
             source_used = "live"
         else:
-            logger.info("Risk feed auto mode: live yielded 0 items, using fixture")
+            logger.info("Risk feed auto mode: live yielded 0 items for %s, using fixture", username)
             items = _load_fixture()
             source_used = "fixture"
 
     items = _sort_items(_dedupe(items))
 
-    global _FEED_ITEMS, _LAST_REFRESH
-    _FEED_ITEMS = items
-    _LAST_REFRESH = {
+    _FEED_ITEMS[username] = items
+    _LAST_REFRESH[username] = {
         "at": _now_iso(),
         "source": source_used,
         "count": len(items),
@@ -173,13 +223,13 @@ async def refresh_risk_feed():
     counts_str = ", ".join(f"{k}={v}" for k, v in counts.items()) or "none"
     log_activity(
         event_type="risk_feed_refreshed",
-        message=f"Risk feed refresh ({source_used}): {len(items)} items ({counts_str})",
-        source="monitor",
+        message=f"Risk feed refresh ({source_used}) for {username}: {len(items)} items ({counts_str})",
+        source=username,
         severity="info",
     )
     await notify_monitoring(
         "risk_feed_refreshed",
-        f"Risk feed refresh ({source_used}): {len(items)} items",
+        f"Risk feed refresh ({source_used}) for {username}: {len(items)} items",
     )
 
     # Per-item activity rows give the monitoring page the "watching" beat.
@@ -187,31 +237,29 @@ async def refresh_risk_feed():
         log_activity(
             event_type="risk_card_generated",
             message=f"[{it.get('category')}] {it.get('headline')}",
-            source="monitor",
+            source=username,
             severity=it.get("severity", "info"),
             related_id=it.get("id"),
         )
 
     return {
         "items": items,
-        "last_refresh": _LAST_REFRESH,
+        "last_refresh": _LAST_REFRESH[username],
         "category_counts": counts,
     }
 
 
 @router.get("/{item_id}")
-async def get_risk_feed_item(item_id: str):
-    """Return one feed item by id. Used by the frontend to fetch the
-    synthetic_payload before triggering /api/coa/generate.
-    """
-    for it in _FEED_ITEMS:
+async def get_risk_feed_item(item_id: str, username: str = Depends(require_auth)):
+    """Return one feed item from the calling user's feed."""
+    for it in _FEED_ITEMS.get(username, []):
         if it.get("id") == item_id:
             return it
     raise HTTPException(status_code=404, detail="risk feed item not found")
 
 
 @router.post("/{item_id}/prepare-coa")
-async def prepare_coa_payload(item_id: str):
+async def prepare_coa_payload(item_id: str, username: str = Depends(require_auth)):
     """Enrich the feed item's synthetic_payload with extra sources fetched
     in parallel from cheap cached helpers (GDELT / CSL / PEP / OFAC / yfinance
     profile) and return the augmented payload.
@@ -221,7 +269,7 @@ async def prepare_coa_payload(item_id: str):
     same card hit the diskcache and return near-instantly.
     """
     target: dict[str, Any] | None = None
-    for it in _FEED_ITEMS:
+    for it in _FEED_ITEMS.get(username, []):
         if it.get("id") == item_id:
             target = it
             break
@@ -243,7 +291,7 @@ async def prepare_coa_payload(item_id: str):
             f"[{target.get('category')}] {target.get('headline')} — "
             f"sources {base_count} → {enriched_count}"
         ),
-        source="monitor",
+        source=username,
         severity="info",
         related_id=item_id,
     )
