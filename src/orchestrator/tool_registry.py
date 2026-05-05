@@ -30,6 +30,7 @@ class ToolRegistry:
                 get_sanctions_proximity,
                 search_sanctions,
             )
+
             self._tools["search_sanctions"] = search_sanctions
             self._tools["check_sanctions_status"] = check_sanctions_status
             self._tools["get_sanctions_proximity"] = get_sanctions_proximity
@@ -45,6 +46,7 @@ class ToolRegistry:
                 resolve_entity,
                 search_entity,
             )
+
             self._tools["search_entity"] = search_entity
             self._tools["get_corporate_tree"] = get_corporate_tree
             self._tools["get_beneficial_owners"] = get_beneficial_owners
@@ -62,6 +64,7 @@ class ToolRegistry:
                 get_stock_profile,
                 search_market_entity,
             )
+
             self._tools["get_stock_profile"] = get_stock_profile
             self._tools["get_price_history"] = get_price_history
             self._tools["get_institutional_holders"] = get_institutional_holders
@@ -79,6 +82,7 @@ class ToolRegistry:
                 get_supply_chain_exposure,
                 get_trade_partners,
             )
+
             self._tools["get_bilateral_trade"] = get_bilateral_trade
             self._tools["get_commodity_trade"] = get_commodity_trade
             self._tools["get_supply_chain_exposure"] = get_supply_chain_exposure
@@ -95,6 +99,7 @@ class ToolRegistry:
                 get_risk_profile,
                 search_events,
             )
+
             self._tools["search_events"] = search_events
             self._tools["get_conflict_data"] = get_conflict_data
             self._tools["get_risk_profile"] = get_risk_profile
@@ -111,6 +116,7 @@ class ToolRegistry:
                 get_gdp_exposure,
                 get_macro_series,
             )
+
             self._tools["get_country_profile"] = get_country_profile
             self._tools["get_gdp_exposure"] = get_gdp_exposure
             self._tools["get_commodity_prices"] = get_commodity_prices
@@ -126,6 +132,7 @@ class ToolRegistry:
                 sayari_get_ubo,
                 sayari_resolve,
             )
+
             self._tools["sayari_resolve"] = sayari_resolve
             self._tools["sayari_get_related"] = sayari_get_related
             self._tools["sayari_get_ubo"] = sayari_get_ubo
@@ -153,8 +160,17 @@ class ToolRegistry:
         except TypeError as e:
             # Parameter mismatch — try common positional arg patterns
             # LLM often uses "company", "name", "entity", "symbol" instead of "ticker"/"query"
-            for key in ("query", "entity_name", "ticker", "country", "name",
-                        "company", "entity", "symbol", "commodity_code"):
+            for key in (
+                "query",
+                "entity_name",
+                "ticker",
+                "country",
+                "name",
+                "company",
+                "entity",
+                "symbol",
+                "commodity_code",
+            ):
                 if key in params:
                     try:
                         result = await fn(params[key])

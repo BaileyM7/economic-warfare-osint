@@ -53,8 +53,21 @@ def _make_perception() -> Perception:
         doctrine="Preserve the party.",
         red_lines=["Taiwan independence"],
         current_posture={"diplomatic": "aggressive"},
-        resource_budget={"diplomatic": 80, "economic": 90, "military": 95, "cyber": 70, "information": 85},
-        world_view={"turn": 4, "self": None, "others": {}, "relationships": {}, "recent_events_involving_me": [], "active_crises": []},
+        resource_budget={
+            "diplomatic": 80,
+            "economic": 90,
+            "military": 95,
+            "cyber": 70,
+            "information": 85,
+        },
+        world_view={
+            "turn": 4,
+            "self": None,
+            "others": {},
+            "relationships": {},
+            "recent_events_involving_me": [],
+            "active_crises": [],
+        },
     )
 
 
@@ -81,8 +94,21 @@ class TestPromptRendering:
             doctrine="Preserve the party.",
             red_lines=["Taiwan independence"],
             current_posture={"diplomatic": "aggressive"},
-            resource_budget={"diplomatic": 80, "economic": 90, "military": 95, "cyber": 70, "information": 85},
-            world_view={"turn": 4, "self": None, "others": {}, "relationships": {}, "recent_events_involving_me": [], "active_crises": []},
+            resource_budget={
+                "diplomatic": 80,
+                "economic": 90,
+                "military": 95,
+                "cyber": 70,
+                "information": 85,
+            },
+            world_view={
+                "turn": 4,
+                "self": None,
+                "others": {},
+                "relationships": {},
+                "recent_events_involving_me": [],
+                "active_crises": [],
+            },
             persona="**Leader:** Xi Jinping. Patient on kinetic; aggressive on gray-zone.",
         )
         rendered = render_country_prompt(perception, [])
@@ -92,7 +118,9 @@ class TestPromptRendering:
         # Section header is present so the model sees it as dedicated context
         assert "Leadership & decision style" in rendered
         # Persona sits above posture/budget (stable region for prompt caching)
-        assert rendered.index("Leadership & decision style") < rendered.index("Your current posture")
+        assert rendered.index("Leadership & decision style") < rendered.index(
+            "Your current posture"
+        )
 
     def test_persona_absent_falls_back_gracefully(self) -> None:
         # Default Perception has persona="" — must not leave an unsubstituted token
@@ -124,8 +152,21 @@ class TestPromptRendering:
             doctrine="Preserve the party.",
             red_lines=["Taiwan independence"],
             current_posture={"diplomatic": "aggressive"},
-            resource_budget={"diplomatic": 80, "economic": 90, "military": 95, "cyber": 70, "information": 85},
-            world_view={"turn": 4, "self": None, "others": {}, "relationships": {}, "recent_events_involving_me": [], "active_crises": []},
+            resource_budget={
+                "diplomatic": 80,
+                "economic": 90,
+                "military": 95,
+                "cyber": 70,
+                "information": 85,
+            },
+            world_view={
+                "turn": 4,
+                "self": None,
+                "others": {},
+                "relationships": {},
+                "recent_events_involving_me": [],
+                "active_crises": [],
+            },
             persona="**Leader:** Xi Jinping. Patient on kinetic; aggressive on gray-zone.",
             leader_profile=profile,
         )

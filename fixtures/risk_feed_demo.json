@@ -9,6 +9,7 @@
       "headline": "OFAC adds Sinno Electronics Co. Ltd. to SDN list under SDGT program",
       "entity": "Sinno Electronics Co. Ltd.",
       "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42531",
+      "event_at": "2026-04-28",
       "fetched_at": "2026-04-29T08:15:00Z",
       "synthetic_payload": {
         "scenario_type": "sanctions_designation",
@@ -43,6 +44,7 @@
       "headline": "OFAC designates Volga-Dnepr Gulf FZE for sanctions evasion via UAE re-export",
       "entity": "Volga-Dnepr Gulf FZE",
       "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42547",
+      "event_at": "2026-04-28",
       "fetched_at": "2026-04-29T08:15:10Z",
       "synthetic_payload": {
         "scenario_type": "sanctions_designation",
@@ -76,6 +78,7 @@
       "headline": "OFAC adds Pearl Harvest Trading (HK) to SDN under NK-related program",
       "entity": "Pearl Harvest Trading (HK) Ltd.",
       "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42561",
+      "event_at": "2026-04-28",
       "fetched_at": "2026-04-29T08:15:20Z",
       "synthetic_payload": {
         "scenario_type": "sanctions_designation",
@@ -109,6 +112,7 @@
       "headline": "OFAC sanctions Mahmoud Hassan Khalil, IRGC-QF financial facilitator",
       "entity": "Mahmoud Hassan Khalil",
       "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42572",
+      "event_at": "2026-04-28",
       "fetched_at": "2026-04-29T08:16:00Z",
       "synthetic_payload": {
         "scenario_type": "sanctions_designation",
@@ -142,6 +146,7 @@
       "headline": "OFAC adds two Russian oligarchs to SDN under EO14024",
       "entity": "Igor Petrovich Volkov",
       "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42583",
+      "event_at": "2026-04-28",
       "fetched_at": "2026-04-29T08:16:10Z",
       "synthetic_payload": {
         "scenario_type": "sanctions_designation",
@@ -170,6 +175,7 @@
       "headline": "Treasury designates Venezuelan judge for corruption under GLOMAG",
       "entity": "Carmen Elena Briceno Rivas",
       "source_url": "https://sanctionssearch.ofac.treas.gov/Details.aspx?id=42596",
+      "event_at": "2026-04-28",
       "fetched_at": "2026-04-29T08:16:20Z",
       "synthetic_payload": {
         "scenario_type": "sanctions_designation",
@@ -203,6 +209,7 @@
       "headline": "ASML drops 6.4% intraday on China export-license curtailment headlines",
       "entity": "ASML Holding NV (ASML)",
       "source_url": "https://www.reuters.com/technology/asml-china-export-license-2026-04-29/",
+      "event_at": "2026-04-29",
       "fetched_at": "2026-04-29T13:35:00Z",
       "synthetic_payload": {
         "scenario_type": "market_shift",
@@ -236,6 +243,7 @@
       "headline": "Brent crude up 4.2% on reports of Strait of Hormuz tanker incidents",
       "entity": "Brent Crude (BZ=F)",
       "source_url": "https://www.bloomberg.com/news/articles/2026-04-29/brent-hormuz-tanker-incidents",
+      "event_at": "2026-04-29",
       "fetched_at": "2026-04-29T13:35:30Z",
       "synthetic_payload": {
         "scenario_type": "market_shift",
@@ -269,6 +277,7 @@
       "headline": "Lockheed Martin (LMT) +3.8% after House passes supplemental defense package",
       "entity": "Lockheed Martin Corporation (LMT)",
       "source_url": "https://www.wsj.com/articles/defense-supplemental-house-vote-2026-04-29",
+      "event_at": "2026-04-29",
       "fetched_at": "2026-04-29T13:36:00Z",
       "synthetic_payload": {
         "scenario_type": "market_shift",

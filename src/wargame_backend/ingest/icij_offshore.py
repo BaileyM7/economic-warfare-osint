@@ -41,8 +41,16 @@ _SEARCH_URL = "https://offshoreleaks.icij.org/search"
 # search endpoint accepts ISO2-ish 2-3 letter codes.  These match ICIJ's
 # slugs as observed in their public UI.
 _ISO3_TO_ICIJ: dict[str, str] = {
-    "CHN": "CHN", "TWN": "TWN", "USA": "USA", "JPN": "JPN", "KOR": "KOR",
-    "PHL": "PHL", "AUS": "AUS", "PRK": "PRK", "RUS": "RUS", "IND": "IND",
+    "CHN": "CHN",
+    "TWN": "TWN",
+    "USA": "USA",
+    "JPN": "JPN",
+    "KOR": "KOR",
+    "PHL": "PHL",
+    "AUS": "AUS",
+    "PRK": "PRK",
+    "RUS": "RUS",
+    "IND": "IND",
 }
 
 
@@ -75,9 +83,7 @@ class ICIJOffshoreSource(Source):
     name: ClassVar[str] = "icij_offshore"
     display_name: ClassVar[str] = "ICIJ Offshore Leaks"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         # ICIJ publishes a static dataset — the time window only filters by
         # incorporation_date, not by ingest time.  We pull all entities
         # whose incorporation_date falls in [since, until).
@@ -129,8 +135,7 @@ class ICIJOffshoreSource(Source):
             actor_iso3=raw.iso3,
             target_iso3=None,
             event_type=(
-                f"offshore_entity_"
-                f"{(raw.leak_source or 'unknown').lower().replace(' ', '_')[:32]}"
+                f"offshore_entity_{(raw.leak_source or 'unknown').lower().replace(' ', '_')[:32]}"
             ),
             domain=EventDomain.economic,
             severity=None,
@@ -142,13 +147,10 @@ class ICIJOffshoreSource(Source):
                 "jurisdiction": raw.jurisdiction,
                 "leak_source": raw.leak_source,
                 "incorporation_date": (
-                    raw.incorporation_date.isoformat()
-                    if raw.incorporation_date
-                    else None
+                    raw.incorporation_date.isoformat() if raw.incorporation_date else None
                 ),
             },
             raw_text=(
-                f"ICIJ {raw.leak_source or 'leak'}: {raw.name} "
-                f"({raw.jurisdiction or raw.iso3})"
+                f"ICIJ {raw.leak_source or 'leak'}: {raw.name} ({raw.jurisdiction or raw.iso3})"
             ),
         )

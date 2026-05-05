@@ -20,7 +20,6 @@ import fakeredis.aioredis
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from wargame_backend.app.db.models import Scenario, Simulation, SimulationStatus
@@ -97,8 +96,6 @@ async def test_ws_connect_nonexistent_sim(
     null_sim_runner: NullSimRunner,
 ) -> None:
     """Connecting to a non-existent sim should receive an error frame."""
-    from wargame_backend.app.main import app
-    from wargame_backend.app.deps import get_db, get_redis, get_sim_runner
 
     app_instance = _make_overridden_app(db, fake_redis, null_sim_runner)
 

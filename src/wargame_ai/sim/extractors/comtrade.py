@@ -66,9 +66,7 @@ class ComtradeExtractor:
         commodity = (row.payload or {}).get("commodity", "trade")
         direction = "negative" if pct < 0 else "positive"
         magnitude = round(min(1.0, abs(pct) / 50.0), 2)
-        headline = (
-            f"{iso3}↔{partner} {commodity} {pct:+.1f}% MoM"
-        )
+        headline = f"{iso3}↔{partner} {commodity} {pct:+.1f}% MoM"
         return Signal(
             source=self.source,
             headline=headline[:120],

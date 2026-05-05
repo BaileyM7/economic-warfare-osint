@@ -45,8 +45,7 @@ class SECEdgarExtractor:
         if magnitude < 0.1:
             return None
         headline = (
-            f"{iso3}-related SEC filings: {count} new (8-K/10-K/20-F) in "
-            f"last {window_hours}h"
+            f"{iso3}-related SEC filings: {count} new (8-K/10-K/20-F) in last {window_hours}h"
         )
         return Signal(
             source=self.source,

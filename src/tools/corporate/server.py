@@ -114,6 +114,7 @@ def _detailed_sources(
 # Tool: search_entity
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def search_entity(query: str) -> dict:
     """Search for a company or entity across OpenCorporates, GLEIF, and ICIJ Offshore Leaks.
@@ -127,7 +128,10 @@ async def search_entity(query: str) -> dict:
     icij_task = client.icij_search(query)
 
     oc_results, gleif_results, icij_results = await asyncio.gather(
-        oc_task, gleif_task, icij_task, return_exceptions=True,
+        oc_task,
+        gleif_task,
+        icij_task,
+        return_exceptions=True,
     )
 
     if isinstance(oc_results, BaseException):
@@ -162,6 +166,7 @@ async def search_entity(query: str) -> dict:
 # Tool: get_corporate_tree
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def get_corporate_tree(entity_name: str) -> dict:
     """Build an ownership chain (parent/child) for an entity using GLEIF and OpenCorporates.
@@ -182,7 +187,9 @@ async def get_corporate_tree(entity_name: str) -> dict:
         direct_parent_task = client.gleif_get_direct_parent(rec.lei)
         ultimate_parent_task = client.gleif_get_ultimate_parent(rec.lei)
         direct_parent, ultimate_parent = await asyncio.gather(
-            direct_parent_task, ultimate_parent_task, return_exceptions=True,
+            direct_parent_task,
+            ultimate_parent_task,
+            return_exceptions=True,
         )
 
         if isinstance(direct_parent, OwnershipLink) and direct_parent.parent_id:
@@ -197,7 +204,11 @@ async def get_corporate_tree(entity_name: str) -> dict:
 
         if isinstance(ultimate_parent, OwnershipLink) and ultimate_parent.parent_id:
             # Only add if different from direct parent
-            if not any(l.parent_id == ultimate_parent.parent_id and l.relationship_type == "ultimate_parent" for l in ownership_links):
+            if not any(
+                link.parent_id == ultimate_parent.parent_id
+                and link.relationship_type == "ultimate_parent"
+                for link in ownership_links
+            ):
                 ownership_links.append(ultimate_parent)
                 ult_rec = await client.gleif_get_lei_record(ultimate_parent.parent_id)
                 if ult_rec:
@@ -249,6 +260,7 @@ async def get_corporate_tree(entity_name: str) -> dict:
 # Tool: get_beneficial_owners
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def get_beneficial_owners(entity_name: str) -> dict:
     """Find officers and ultimate beneficial owners for an entity.
@@ -263,7 +275,10 @@ async def get_beneficial_owners(entity_name: str) -> dict:
     icij_task = client.icij_search(entity_name)
 
     oc_companies, oc_officers, icij_results = await asyncio.gather(
-        oc_companies_task, oc_officers_task, icij_task, return_exceptions=True,
+        oc_companies_task,
+        oc_officers_task,
+        icij_task,
+        return_exceptions=True,
     )
 
     if isinstance(oc_companies, BaseException):
@@ -285,7 +300,9 @@ async def get_beneficial_owners(entity_name: str) -> dict:
             if detailed:
                 detailed_companies[i] = detailed
                 for officer in detailed.officers:
-                    if not any(o.name == officer.name and o.role == officer.role for o in all_officers):
+                    if not any(
+                        o.name == officer.name and o.role == officer.role for o in all_officers
+                    ):
                         all_officers.append(officer)
 
     payload = BeneficialOwnerResult(
@@ -319,6 +336,7 @@ async def get_beneficial_owners(entity_name: str) -> dict:
 # Tool: get_offshore_connections
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def get_offshore_connections(entity_name: str) -> dict:
     """Search the ICIJ Offshore Leaks database for hidden structures related to an entity.
@@ -332,7 +350,9 @@ async def get_offshore_connections(entity_name: str) -> dict:
     officer_task = client.icij_search(entity_name, entity_type="officer")
 
     entity_results, officer_results = await asyncio.gather(
-        entity_task, officer_task, return_exceptions=True,
+        entity_task,
+        officer_task,
+        return_exceptions=True,
     )
 
     if isinstance(entity_results, BaseException):
@@ -358,7 +378,11 @@ async def get_offshore_connections(entity_name: str) -> dict:
         entities=enriched,
     )
 
-    confidence = Confidence.HIGH if len(enriched) >= 3 else (Confidence.MEDIUM if enriched else Confidence.LOW)
+    confidence = (
+        Confidence.HIGH
+        if len(enriched) >= 3
+        else (Confidence.MEDIUM if enriched else Confidence.LOW)
+    )
     sources = _sources_used(False, False, True)
 
     return ToolResponse(
@@ -372,6 +396,7 @@ async def get_offshore_connections(entity_name: str) -> dict:
 # ---------------------------------------------------------------------------
 # Tool: resolve_entity
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def resolve_entity(name: str, jurisdiction: str = "") -> dict:
@@ -388,7 +413,10 @@ async def resolve_entity(name: str, jurisdiction: str = "") -> dict:
     icij_task = client.icij_search(name)
 
     oc_results, gleif_results, icij_results = await asyncio.gather(
-        oc_task, gleif_task, icij_task, return_exceptions=True,
+        oc_task,
+        gleif_task,
+        icij_task,
+        return_exceptions=True,
     )
 
     if isinstance(oc_results, BaseException):
@@ -404,7 +432,9 @@ async def resolve_entity(name: str, jurisdiction: str = "") -> dict:
     # Filter GLEIF results by jurisdiction if specified
     if jurisdiction and gleif_results:
         jurisdiction_upper = jurisdiction.upper()
-        filtered = [r for r in gleif_results if r.country and r.country.upper() == jurisdiction_upper]
+        filtered = [
+            r for r in gleif_results if r.country and r.country.upper() == jurisdiction_upper
+        ]
         if filtered:
             gleif_results = filtered
 
@@ -412,7 +442,8 @@ async def resolve_entity(name: str, jurisdiction: str = "") -> dict:
     if jurisdiction and icij_results:
         jurisdiction_lower = jurisdiction.lower()
         filtered_icij = [
-            e for e in icij_results
+            e
+            for e in icij_results
             if e.jurisdiction and jurisdiction_lower in e.jurisdiction.lower()
         ]
         if filtered_icij:

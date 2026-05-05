@@ -91,11 +91,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Running the sync `_run_alembic_upgrade` in a worker thread gives
     # Alembic its own fresh loop and avoids the conflict.
     import asyncio as _asyncio
+
     try:
         await _asyncio.to_thread(_run_alembic_upgrade)
         log.info("Alembic migrations applied (or already at head)")
     except Exception as exc:  # noqa: BLE001
-        log.error("Alembic migration failed; continuing in case the schema is already current", error=str(exc))
+        log.error(
+            "Alembic migration failed; continuing in case the schema is already current",
+            error=str(exc),
+        )
 
     # -- Database --
     # Validate connectivity at startup; fail fast rather than on first request
@@ -224,10 +228,15 @@ def create_app() -> FastAPI:
     async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
         import os as _dbg_os
         import traceback as _dbg_tb
+
         log.error("Unhandled exception", error=str(exc), exc_info=exc)
         # When WARGAME_DEBUG_ERRORS=1, echo the real traceback back to the client.
         # Useful for diagnosing issues without access to server logs. Unset or 0 to hide.
-        _debug_errors = _dbg_os.environ.get("WARGAME_DEBUG_ERRORS", "").lower() in {"1", "true", "yes"}
+        _debug_errors = _dbg_os.environ.get("WARGAME_DEBUG_ERRORS", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         details: list = []
         message: str = "An unexpected error occurred."
         if _debug_errors:

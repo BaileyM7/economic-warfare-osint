@@ -57,6 +57,7 @@ def _gdelt_dedup_key(article: dict[str, Any]) -> str:
     title = article.get("title", "")
     # Lower-case, strip punctuation, keep only the first 8 significant tokens
     import re
+
     tokens = re.findall(r"[a-z0-9]+", title.lower())
     # Drop stop words to prevent collisions on generic titles
     _STOP = {"the", "a", "an", "in", "of", "and", "to", "is", "are", "for", "on", "at"}
@@ -77,7 +78,9 @@ def _parse_gdelt_article(article: dict[str, Any]) -> GdeltEvent:
         try:
             parsed_date = datetime.strptime(date_str[:8], "%Y%m%d")
         except (ValueError, IndexError):
-            logger.debug("GDELT: could not parse date %r — skipping date for this article", date_str)
+            logger.debug(
+                "GDELT: could not parse date %r — skipping date for this article", date_str
+            )
 
     tone = article.get("tone", None)
     # Validate tone range: GDELT tone is typically -100..+100
@@ -98,16 +101,14 @@ def _parse_gdelt_article(article: dict[str, Any]) -> GdeltEvent:
         actor2_name="",
         actor2_country="",
         event_code="",
-        goldstein_scale=None,   # GDELT Doc API does not return Goldstein scale; use avg_tone
+        goldstein_scale=None,  # GDELT Doc API does not return Goldstein scale; use avg_tone
         num_mentions=1,
         avg_tone=tone,
         source_url=article.get("url", ""),
     )
 
 
-async def gdelt_doc_search(
-    query: str, days: int = 30, max_records: int = 75
-) -> list[GdeltEvent]:
+async def gdelt_doc_search(query: str, days: int = 30, max_records: int = 75) -> list[GdeltEvent]:
     """Search GDELT Doc API for articles matching a query.
 
     Uses the artlist mode which returns individual articles.
@@ -149,7 +150,9 @@ async def gdelt_doc_search(
     if raw_count != deduped_count:
         logger.info(
             "GDELT dedup: %d raw articles → %d unique incidents (query=%r)",
-            raw_count, deduped_count, query
+            raw_count,
+            deduped_count,
+            query,
         )
 
     events = [_parse_gdelt_article(a) for a in deduped_articles]
@@ -227,9 +230,7 @@ async def gdelt_timeline(query: str, days: int = 180) -> list[dict[str, Any]]:
             value = point.get("value", 0)
             data_points.append({"date": date_val, "count": value})
 
-    set_cached(
-        data_points, "gdelt_timeline", ttl=GDELT_CACHE_TTL, query=query, days=days
-    )
+    set_cached(data_points, "gdelt_timeline", ttl=GDELT_CACHE_TTL, query=query, days=days)
     return data_points
 
 
@@ -352,9 +353,7 @@ async def acled_get_events(
         logger.info("ACLED credentials not configured; skipping ACLED query")
         return []
 
-    cached = get_cached(
-        "acled_events", country=country, days=days, event_type=event_type or ""
-    )
+    cached = get_cached("acled_events", country=country, days=days, event_type=event_type or "")
     if cached is not None:
         return [AcledEvent(**e) for e in cached]
 
@@ -407,9 +406,7 @@ async def acled_get_events_bilateral(
     if not _acled_available():
         return []
 
-    cached = get_cached(
-        "acled_bilateral", country=country, actor=actor_filter, days=days
-    )
+    cached = get_cached("acled_bilateral", country=country, actor=actor_filter, days=days)
     if cached is not None:
         return [AcledEvent(**e) for e in cached]
 

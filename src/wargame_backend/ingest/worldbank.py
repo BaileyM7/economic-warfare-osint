@@ -51,15 +51,23 @@ log = structlog.get_logger(__name__)
 WB_BASE_URL = "https://api.worldbank.org/v2"
 
 SLICE_ISO3: list[str] = [
-    "CHN", "TWN", "USA", "JPN", "KOR",
-    "PHL", "AUS", "PRK", "RUS", "IND",
+    "CHN",
+    "TWN",
+    "USA",
+    "JPN",
+    "KOR",
+    "PHL",
+    "AUS",
+    "PRK",
+    "RUS",
+    "IND",
 ]
 
 INDICATORS: list[tuple[str, str]] = [
-    ("NY.GDP.MKTP.CD",    "GDP (current USD)"),
-    ("NE.RSB.GNFS.CD",    "Trade balance (goods and services, current USD)"),
+    ("NY.GDP.MKTP.CD", "GDP (current USD)"),
+    ("NE.RSB.GNFS.CD", "Trade balance (goods and services, current USD)"),
     ("MS.MIL.XPND.GD.ZS", "Military expenditure (% of GDP)"),
-    ("SP.POP.TOTL",        "Population, total"),
+    ("SP.POP.TOTL", "Population, total"),
 ]
 
 # How many most-recent values to fetch per indicator per country
@@ -69,6 +77,7 @@ MRV = 5
 # ---------------------------------------------------------------------------
 # Raw record model
 # ---------------------------------------------------------------------------
+
 
 class WorldBankRawRecord(BaseModel):
     """One indicator observation from the World Bank API."""
@@ -83,6 +92,7 @@ class WorldBankRawRecord(BaseModel):
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
+
 
 class WorldBankSource(Source):
     """World Bank Indicators adapter.
@@ -100,9 +110,7 @@ class WorldBankSource(Source):
     name: ClassVar[str] = "worldbank"
     display_name: ClassVar[str] = "World Bank Indicators"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         """Yield WorldBankRawRecord for each country × indicator combination."""
         for iso3 in SLICE_ISO3:
             for indicator_id, indicator_label in INDICATORS:
@@ -163,7 +171,11 @@ class WorldBankSource(Source):
         """Map a WorldBankRawRecord to the canonical Event ORM model."""
         assert isinstance(raw, WorldBankRawRecord)
 
-        occurred_at = datetime(raw.year, 1, 1, tzinfo=timezone.utc) if raw.year else datetime.now(timezone.utc)
+        occurred_at = (
+            datetime(raw.year, 1, 1, tzinfo=timezone.utc)
+            if raw.year
+            else datetime.now(timezone.utc)
+        )
 
         dedup_key = f"worldbank:{raw.iso3}:{raw.indicator_id}:{raw.year}"
         payload: dict[str, Any] = {
@@ -176,8 +188,7 @@ class WorldBankSource(Source):
         }
 
         raw_text = (
-            f"{raw.iso3} {raw.indicator_label}: "
-            f"{raw.value:,.2f} ({raw.year})"
+            f"{raw.iso3} {raw.indicator_label}: {raw.value:,.2f} ({raw.year})"
             if raw.value is not None
             else f"{raw.iso3} {raw.indicator_label}: N/A ({raw.year})"
         )

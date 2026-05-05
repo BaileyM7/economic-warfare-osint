@@ -62,8 +62,8 @@ Respond with JSON only, no markdown fences:
 
 @dataclass
 class EntityResolution:
-    entity_type: str   # "company" | "person" | "sector" | "vessel"
-    entity_name: str   # extracted canonical name or identifier
+    entity_type: str  # "company" | "person" | "sector" | "vessel"
+    entity_name: str  # extracted canonical name or identifier
     confidence: float  # 0.0 – 1.0
     reasoning: str
 

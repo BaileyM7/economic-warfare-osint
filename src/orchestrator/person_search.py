@@ -30,8 +30,7 @@ from src.tools.corporate.client import (
     oc_search_officers_for_company,
 )
 from src.tools.corporate.models import Officer
-from src.tools.sanctions.client import SanctionsClient
-from src.tools.screening.client import search_csl, search_pep
+from src.tools.screening.client import search_csl
 
 logger = logging.getLogger(__name__)
 
@@ -48,20 +47,20 @@ class PersonCandidate(BaseModel):
     """One row in the autocomplete dropdown."""
 
     name: str
-    sources: list[str] = Field(default_factory=list)        # ["opensanctions", "opencorporates"]
+    sources: list[str] = Field(default_factory=list)  # ["opensanctions", "opencorporates"]
     sanctioned: bool = False
     sanction_programs: list[str] = Field(default_factory=list)
     primary_affiliation: str | None = None
     country: str | None = None
-    score: float = 0.0                                       # 0-1, see rank_candidates
-    alt_names: list[str] = Field(default_factory=list)      # aliases from CSL / OFAC alt names
+    score: float = 0.0  # 0-1, see rank_candidates
+    alt_names: list[str] = Field(default_factory=list)  # aliases from CSL / OFAC alt names
 
 
 class PersonNetworkNode(BaseModel):
     id: str
     label: str
-    group: str                                               # "person" | "company"
-    depth: int                                               # 0 = central, 1 = L1, 2 = L2
+    group: str  # "person" | "company"
+    depth: int  # 0 = central, 1 = L1, 2 = L2
     sanctioned: bool = False
 
 
@@ -85,7 +84,7 @@ class RiskFactor(BaseModel):
 
     title: str
     severity: Severity
-    score: int                                               # 0-100
+    score: int  # 0-100
     summary: str
     evidence: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -98,9 +97,7 @@ class RiskFactor(BaseModel):
 # Countries where an affiliated officer is inherently higher-risk.
 # Used (a) as a candidate-ranking tiebreaker and (b) to escalate the
 # corporate-ties factor. ISO 3166-1 alpha-2.
-ADVERSARY_COUNTRIES: frozenset[str] = frozenset(
-    {"RU", "IR", "KP", "CN", "BY", "VE", "SY", "CU"}
-)
+ADVERSARY_COUNTRIES: frozenset[str] = frozenset({"RU", "IR", "KP", "CN", "BY", "VE", "SY", "CU"})
 
 
 # Sanctions program labels that indicate an export-control / consent-decree
@@ -303,20 +300,20 @@ def rank_candidates(
     for c in candidates:
         score = 0.0
         if c.sanctioned:
-            score += 0.6                                  # dominant tier signal
+            score += 0.6  # dominant tier signal
         if len(c.sources) >= 2:
-            score += 0.2                                  # multi-source boost
+            score += 0.2  # multi-source boost
         if _normalize_name(c.name) == norm_q:
-            score += 0.15                                 # exact-match tiebreaker
+            score += 0.15  # exact-match tiebreaker
         if _is_adversary_country(c.country):
-            score += 0.05                                 # small country nudge
+            score += 0.05  # small country nudge
         c.score = round(score, 3)
 
     def _sort_key(c: PersonCandidate) -> tuple:
         return (
             -c.score,
             0 if _is_adversary_country(c.country) else 1,  # adversary first
-            _normalize_country(c.country) or "zz",          # then by country
+            _normalize_country(c.country) or "zz",  # then by country
             c.name.lower(),
         )
 
@@ -500,24 +497,27 @@ async def build_person_network(
         if key in seen_companies:
             continue
         seen_companies.add(key)
-        company_keys.append(
-            (off.company_jurisdiction, off.company_number, off.company_name)
-        )
+        company_keys.append((off.company_jurisdiction, off.company_number, off.company_name))
         cid = _company_id(off.company_jurisdiction, off.company_number, off.company_name)
         nodes[cid] = PersonNetworkNode(
-            id=cid, label=off.company_name, group="company", depth=1,
+            id=cid,
+            label=off.company_name,
+            group="company",
+            depth=1,
         )
-        edges.append(PersonNetworkEdge(**{"from": central_id, "to": cid, "label": off.role or "officer"}))
+        edges.append(
+            PersonNetworkEdge(**{"from": central_id, "to": cid, "label": off.role or "officer"})
+        )
 
     # Layer 1 (officers): co-officers at each of those companies.
-    co_officer_tasks = [
-        oc_search_officers_for_company(jur, num) for (jur, num, _) in company_keys
-    ]
+    co_officer_tasks = [oc_search_officers_for_company(jur, num) for (jur, num, _) in company_keys]
     co_officer_results: list[Any] = []
     if co_officer_tasks:
         co_officer_results = await asyncio.gather(*co_officer_tasks, return_exceptions=True)
 
-    l1_officer_company_map: dict[str, list[tuple[str, str, str]]] = {}  # officer_norm -> [(jur,num,name)]
+    l1_officer_company_map: dict[
+        str, list[tuple[str, str, str]]
+    ] = {}  # officer_norm -> [(jur,num,name)]
 
     for (jur, num, comp_name), result in zip(company_keys, co_officer_results):
         if isinstance(result, Exception) or not result:
@@ -529,18 +529,21 @@ async def build_person_network(
             pid = _person_id(co_off.name)
             if pid not in nodes:
                 nodes[pid] = PersonNetworkNode(
-                    id=pid, label=co_off.name, group="person", depth=1,
+                    id=pid,
+                    label=co_off.name,
+                    group="person",
+                    depth=1,
                 )
-            edges.append(PersonNetworkEdge(**{"from": cid, "to": pid, "label": co_off.role or "officer"}))
+            edges.append(
+                PersonNetworkEdge(**{"from": cid, "to": pid, "label": co_off.role or "officer"})
+            )
             l1_officer_company_map.setdefault(_normalize_name(co_off.name), []).append(
                 (jur, num, comp_name)
             )
 
     # Layer 2: walk one more step from each L1 co-officer (if requested).
     if depth >= 2:
-        l1_officer_names = [
-            n.label for n in nodes.values() if n.depth == 1 and n.group == "person"
-        ]
+        l1_officer_names = [n.label for n in nodes.values() if n.depth == 1 and n.group == "person"]
         l2_search_tasks = [oc_search_officers(n) for n in l1_officer_names[:max_per_node]]
         l2_results: list[Any] = (
             await asyncio.gather(*l2_search_tasks, return_exceptions=True)
@@ -557,20 +560,21 @@ async def build_person_network(
                 cid = _company_id(off.company_jurisdiction, off.company_number, off.company_name)
                 if cid not in nodes:
                     nodes[cid] = PersonNetworkNode(
-                        id=cid, label=off.company_name, group="company", depth=2,
+                        id=cid,
+                        label=off.company_name,
+                        group="company",
+                        depth=2,
                     )
                 edges.append(
-                    PersonNetworkEdge(**{"from": parent_id, "to": cid, "label": off.role or "officer"})
+                    PersonNetworkEdge(
+                        **{"from": parent_id, "to": cid, "label": off.role or "officer"}
+                    )
                 )
 
     # Sanctions overlay on every person node (cheap CSL hit-check).
-    person_node_ids = [
-        n.id for n in nodes.values() if n.group == "person" and n.depth >= 1
-    ]
+    person_node_ids = [n.id for n in nodes.values() if n.group == "person" and n.depth >= 1]
     if person_node_ids:
-        sanction_tasks = [
-            _check_sanctioned(nodes[nid].label) for nid in person_node_ids
-        ]
+        sanction_tasks = [_check_sanctioned(nodes[nid].label) for nid in person_node_ids]
         sanction_results = await asyncio.gather(*sanction_tasks, return_exceptions=True)
         for nid, flagged in zip(person_node_ids, sanction_results):
             if isinstance(flagged, bool):
@@ -579,11 +583,17 @@ async def build_person_network(
     node_list = list(nodes.values())
     if depth >= 2:
         node_list, edges = prune_l2_nodes(
-            node_list, edges, max_per_l1=max_per_node, min_shared_companies=1,
+            node_list,
+            edges,
+            max_per_l1=max_per_node,
+            min_shared_companies=1,
         )
 
     response = PersonNetworkResponse(
-        central=name, depth=depth, nodes=node_list, edges=edges,
+        central=name,
+        depth=depth,
+        nodes=node_list,
+        edges=edges,
     )
     _NETWORK_CACHE[cache_key] = (time.time(), response)
     return response
@@ -635,20 +645,24 @@ def _factor_sanctions(
     evidence: list[dict[str, Any]] = []
     for h in (ofac_hits or [])[:5]:
         if (getattr(h, "score", 0) or 0) >= 0.7:
-            evidence.append({
-                "type": "ofac_sdn",
-                "description": f"OFAC match: {getattr(h, 'name', '?')}",
-                "source": "OFAC SDN",
-                "programs": list(getattr(h, "programs", []) or []),
-            })
+            evidence.append(
+                {
+                    "type": "ofac_sdn",
+                    "description": f"OFAC match: {getattr(h, 'name', '?')}",
+                    "source": "OFAC SDN",
+                    "programs": list(getattr(h, "programs", []) or []),
+                }
+            )
     for h in (sanctions_hits or [])[:5]:
         if (getattr(h, "score", 0) or 0) >= 0.6:
-            evidence.append({
-                "type": "opensanctions",
-                "description": f"OpenSanctions match: {getattr(h, 'name', '?')}",
-                "source": "OpenSanctions / Trade.gov CSL",
-                "programs": list(getattr(h, "programs", []) or []),
-            })
+            evidence.append(
+                {
+                    "type": "opensanctions",
+                    "description": f"OpenSanctions match: {getattr(h, 'name', '?')}",
+                    "source": "OpenSanctions / Trade.gov CSL",
+                    "programs": list(getattr(h, "programs", []) or []),
+                }
+            )
 
     return RiskFactor(
         title="Sanctions Exposure",
@@ -675,8 +689,7 @@ def _factor_corporate_ties(affiliations: list[dict[str, Any]]) -> RiskFactor:
     active_rows = [a for a in affiliations if a.get("active")]
     active = len(active_rows)
     adversary_active = any(
-        _is_adversary_country(a.get("jurisdiction") or a.get("nationality"))
-        for a in active_rows
+        _is_adversary_country(a.get("jurisdiction") or a.get("nationality")) for a in active_rows
     )
     if total == 0:
         severity: Severity = "none"
@@ -705,7 +718,7 @@ def _factor_corporate_ties(affiliations: list[dict[str, Any]]) -> RiskFactor:
     evidence = [
         {
             "type": "corporate_role",
-            "description": f"{a.get('role','officer')} at {a.get('company','?')}",
+            "description": f"{a.get('role', 'officer')} at {a.get('company', '?')}",
             "source": "OpenCorporates",
             "active": a.get("active"),
             "jurisdiction": _normalize_country(a.get("jurisdiction") or a.get("nationality")),
@@ -738,13 +751,17 @@ def _factor_offshore(offshore: list[dict[str, Any]]) -> RiskFactor:
     evidence = [
         {
             "type": "offshore_link",
-            "description": f"{o.get('entity','?')} ({o.get('jurisdiction','?')})",
+            "description": f"{o.get('entity', '?')} ({o.get('jurisdiction', '?')})",
             "source": o.get("dataset") or "ICIJ Offshore Leaks",
         }
         for o in offshore[:5]
     ]
     return RiskFactor(
-        title="Offshore Exposure", severity=severity, score=score, summary=summary, evidence=evidence
+        title="Offshore Exposure",
+        severity=severity,
+        score=score,
+        summary=summary,
+        evidence=evidence,
     )
 
 
@@ -814,7 +831,11 @@ def _factor_news(recent_events: list[dict[str, Any]]) -> RiskFactor:
         for e in recent_events[:3]
     ]
     return RiskFactor(
-        title="Recent News Events", severity=severity, score=score, summary=summary, evidence=evidence
+        title="Recent News Events",
+        severity=severity,
+        score=score,
+        summary=summary,
+        evidence=evidence,
     )
 
 

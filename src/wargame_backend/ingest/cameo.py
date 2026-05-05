@@ -48,13 +48,13 @@ _CODE_OVERRIDES: dict[int, Domain] = {
 # Range table — list of (lo_inclusive, hi_inclusive, domain) sorted by lo
 # ---------------------------------------------------------------------------
 _RANGE_TABLE: list[tuple[int, int, Domain]] = [
-    (10,  99,  Domain.diplomatic),
+    (10, 99, Domain.diplomatic),
     (100, 139, Domain.diplomatic),
     (140, 149, Domain.diplomatic),
-    (150, 159, Domain.kinetic_limited),   # force display / posturing
-    (160, 169, Domain.economic),          # sanctions, bans, expulsions
-    (170, 179, Domain.kinetic_limited),   # coercive arrests / seizure
-    (180, 199, Domain.kinetic_limited),   # assault / fight (may upgrade below)
+    (150, 159, Domain.kinetic_limited),  # force display / posturing
+    (160, 169, Domain.economic),  # sanctions, bans, expulsions
+    (170, 179, Domain.kinetic_limited),  # coercive arrests / seizure
+    (180, 199, Domain.kinetic_limited),  # assault / fight (may upgrade below)
     (200, 999, Domain.kinetic_general),
 ]
 

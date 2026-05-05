@@ -133,7 +133,9 @@ class SayariClient:
 
     # ── resolve ───────────────────────────────────────────────────────────
 
-    async def resolve(self, name: str, limit: int = 5, entity_type: str | None = None) -> SayariResolveResult:
+    async def resolve(
+        self, name: str, limit: int = 5, entity_type: str | None = None
+    ) -> SayariResolveResult:
         """Resolve a company/person name to Sayari entity IDs."""
         body: dict[str, Any] = {"name": [name], "limit": limit}
         if entity_type and entity_type in ("company", "person", "vessel"):
@@ -239,9 +241,8 @@ class SayariClient:
             path = item.get("path", [])
             path_length = len(path) if path else 1
 
-            rel_type = ""
             if path and isinstance(path[0], dict):
-                rel_type = path[0].get("field", "")
+                path[0].get("field", "")
 
             owners.append(
                 SayariUBOOwner(

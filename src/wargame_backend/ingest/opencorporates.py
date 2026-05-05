@@ -38,8 +38,16 @@ _API_BASE = "https://api.opencorporates.com/v0.4/companies"
 # OpenCorporates uses ISO-3166-2-style jurisdiction codes (lowercase, may
 # include sub-jurisdictions; we use top-level only).
 _ISO3_TO_JURISDICTION: dict[str, str] = {
-    "CHN": "cn", "TWN": "tw", "USA": "us", "JPN": "jp", "KOR": "kr",
-    "PHL": "ph", "AUS": "au", "PRK": "kp", "RUS": "ru", "IND": "in",
+    "CHN": "cn",
+    "TWN": "tw",
+    "USA": "us",
+    "JPN": "jp",
+    "KOR": "kr",
+    "PHL": "ph",
+    "AUS": "au",
+    "PRK": "kp",
+    "RUS": "ru",
+    "IND": "in",
 }
 
 
@@ -80,9 +88,7 @@ class OpenCorporatesSource(Source):
             return False
         return True
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         api_key = os.environ.get("OPENCORPORATES_API_KEY", "")
         for iso3, jurisdiction in _ISO3_TO_JURISDICTION.items():
             params = {
@@ -127,13 +133,9 @@ class OpenCorporatesSource(Source):
 
     async def normalize(self, raw: RawRecord) -> Event:
         assert isinstance(raw, OpenCorporatesRawRecord)
-        occurred_at = (
-            raw.incorporation_date or raw.updated_at or datetime.now(timezone.utc)
-        )
+        occurred_at = raw.incorporation_date or raw.updated_at or datetime.now(timezone.utc)
         date_suffix = occurred_at.date().isoformat()
-        dedup_key = (
-            f"opencorporates:{raw.jurisdiction}:{raw.company_number}:{date_suffix}"
-        )
+        dedup_key = f"opencorporates:{raw.jurisdiction}:{raw.company_number}:{date_suffix}"
         return Event(
             source="opencorporates",
             occurred_at=occurred_at,
@@ -150,9 +152,7 @@ class OpenCorporatesSource(Source):
                 "iso3": raw.iso3,
                 "company_type": raw.company_type,
                 "incorporation_date": (
-                    raw.incorporation_date.isoformat()
-                    if raw.incorporation_date
-                    else None
+                    raw.incorporation_date.isoformat() if raw.incorporation_date else None
                 ),
             },
             raw_text=f"OpenCorporates {raw.jurisdiction} {raw.company_number}: {raw.name}",

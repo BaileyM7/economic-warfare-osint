@@ -3,6 +3,7 @@
 Wraps :mod:`src.db.log_usage_event` with higher-level helpers and a FastAPI
 middleware that records every authenticated API hit.
 """
+
 from __future__ import annotations
 
 import time
@@ -17,10 +18,10 @@ from src.db import log_usage_event
 
 # Map backend path prefixes → frontend tab name. Order matters: more specific first.
 _TAB_PREFIXES: list[tuple[str, str]] = [
-    ("/api/coa",                "COA Workspace"),
-    ("/api/monitoring",         "Monitoring"),
-    ("/api/briefing",           "Briefings"),        # matches /api/briefing and /api/briefings
-    ("/api/exercise",           "Exercise Control"), # matches /api/exercise and /api/exercises
+    ("/api/coa", "COA Workspace"),
+    ("/api/monitoring", "Monitoring"),
+    ("/api/briefing", "Briefings"),  # matches /api/briefing and /api/briefings
+    ("/api/exercise", "Exercise Control"),  # matches /api/exercise and /api/exercises
 ]
 
 # Endpoints used by the Search page. Anything not in another tab but matching one
@@ -42,12 +43,12 @@ _SEARCH_PREFIXES: tuple[str, ...] = (
 
 # Paths we never want in the usage stats (noise: polled constantly, internal, or self-referential).
 _SKIP_PREFIXES: tuple[str, ...] = (
-    "/api/auth/me",     # frontend polls this on every page mount
+    "/api/auth/me",  # frontend polls this on every page mount
     "/api/auth/login",  # already captured separately as login_attempt events
-    "/api/admin",       # admin viewing the dashboard shouldn't dominate stats
+    "/api/admin",  # admin viewing the dashboard shouldn't dominate stats
     "/api/health",
     "/assets",
-    "/ws",              # websockets
+    "/ws",  # websockets
 )
 
 

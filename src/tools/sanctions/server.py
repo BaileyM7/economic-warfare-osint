@@ -169,9 +169,7 @@ async def get_sanctions_proximity(entity_name: str, max_hops: int = 3) -> dict:
     try:
         result = await _client.get_proximity(entity_name, max_hops=max_hops)
     except Exception as exc:
-        logger.exception(
-            "get_sanctions_proximity failed for entity=%s", entity_name
-        )
+        logger.exception("get_sanctions_proximity failed for entity=%s", entity_name)
         errors.append(f"Proximity search error: {exc}")
         response = ToolResponse(
             data={

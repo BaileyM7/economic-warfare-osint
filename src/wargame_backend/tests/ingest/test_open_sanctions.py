@@ -39,9 +39,7 @@ class TestParsing:
         assert record.schema_ == "Organization"
         assert record.name == "Sanctioned Co Ltd."
         assert record.countries == ["cn", "hk"]
-        assert record.first_seen == datetime(
-            2026, 4, 15, 8, 0, 0, tzinfo=timezone.utc
-        )
+        assert record.first_seen == datetime(2026, 4, 15, 8, 0, 0, tzinfo=timezone.utc)
         assert "us_ofac_sdn" in record.datasets
 
 

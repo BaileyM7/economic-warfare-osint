@@ -63,7 +63,7 @@ from datetime import datetime, timezone
 from typing import Any, ClassVar
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from wargame_backend.app.db.models import Event, EventDomain
 from ingest.base import Source, RawRecord
@@ -82,7 +82,7 @@ SLICE_ISO_NUMERIC: list[str] = [
     "392",  # JPN
     "410",  # KOR
     "608",  # PHL
-    "36",   # AUS
+    "36",  # AUS
     "408",  # PRK
     "643",  # RUS
     "356",  # IND
@@ -96,7 +96,7 @@ _ISO_NUMERIC_TO_ISO3: dict[str, str] = {
     "392": "JPN",
     "410": "KOR",
     "608": "PHL",
-    "36":  "AUS",
+    "36": "AUS",
     "408": "PRK",
     "643": "RUS",
     "356": "IND",
@@ -143,12 +143,13 @@ def _fatalities_to_severity(fatalities: int) -> float:
 # Raw record model
 # ---------------------------------------------------------------------------
 
+
 class ACLEDRawRecord(BaseModel):
     """Typed representation of one ACLED API result row."""
 
-    data_id: str                  # ACLED unique event ID
-    event_id_cnty: str            # Country-specific event ID
-    event_date: str               # YYYY-MM-DD
+    data_id: str  # ACLED unique event ID
+    event_id_cnty: str  # Country-specific event ID
+    event_date: str  # YYYY-MM-DD
     year: str
     time_precision: int
     event_type: str
@@ -161,7 +162,7 @@ class ACLEDRawRecord(BaseModel):
     inter2: str
     interaction: str
     civilian_targeting: str
-    iso: str                      # ISO numeric
+    iso: str  # ISO numeric
     region: str
     country: str
     admin1: str
@@ -182,6 +183,7 @@ class ACLEDRawRecord(BaseModel):
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
+
 
 class ACLEDSource(Source):
     """ACLED API adapter for conflict events.
@@ -204,9 +206,7 @@ class ACLEDSource(Source):
         api_key = os.environ.get("ACLED_API_KEY", "")
         email = os.environ.get("ACLED_EMAIL", "")
         if not api_key or not email:
-            raise RuntimeError(
-                "ACLED_API_KEY and ACLED_EMAIL env vars must be set"
-            )
+            raise RuntimeError("ACLED_API_KEY and ACLED_EMAIL env vars must be set")
         password = os.environ.get("ACLED_PASSWORD") or None
         return api_key, email, password
 
@@ -226,14 +226,10 @@ class ACLEDSource(Source):
             raise RuntimeError("ACLED OAuth2 token response missing access_token")
         return token
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         """Yield ACLEDRawRecord for every event in the slice countries."""
         api_key, email, password = self._credentials()
-        date_range = (
-            f"{since.strftime('%Y-%m-%d')}|{until.strftime('%Y-%m-%d')}"
-        )
+        date_range = f"{since.strftime('%Y-%m-%d')}|{until.strftime('%Y-%m-%d')}"
         iso_filter = ":OR:".join(SLICE_ISO_NUMERIC)
 
         # If password is set, use OAuth2 bearer; otherwise fall back to legacy
@@ -322,9 +318,7 @@ class ACLEDSource(Source):
         assert isinstance(raw, ACLEDRawRecord)
 
         try:
-            occurred_at = datetime.strptime(raw.event_date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
-            )
+            occurred_at = datetime.strptime(raw.event_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
             occurred_at = datetime.now(timezone.utc)
 
@@ -334,9 +328,7 @@ class ACLEDSource(Source):
         # Actor → ISO3: use country field for the territorial ISO, actor for
         # the agent.  ACLED events are located in a country, actor1 is the
         # initiating entity.
-        actor_iso3 = _ISO_NUMERIC_TO_ISO3.get(raw.iso) or _COUNTRY_NAME_TO_ISO3.get(
-            raw.country
-        )
+        actor_iso3 = _ISO_NUMERIC_TO_ISO3.get(raw.iso) or _COUNTRY_NAME_TO_ISO3.get(raw.country)
         # target is often blank; try to infer from assoc_actor_2 / actor2 country
         target_iso3: str | None = None
         for name in (raw.actor2, raw.assoc_actor_2):

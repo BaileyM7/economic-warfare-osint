@@ -101,6 +101,23 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_events(timestamp);
             CREATE INDEX IF NOT EXISTS idx_usage_kind ON usage_events(kind);
             CREATE INDEX IF NOT EXISTS idx_usage_username ON usage_events(username);
+
+            -- Per-user Risk Feed watch-lists. Replaces the hardcoded WATCH_*
+            -- constants in src/tools/markets/feed.py + src/tools/sanctions/delta.py
+            -- so each analyst manages their own categories from the UI.
+            CREATE TABLE IF NOT EXISTS watchlist_items (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                label TEXT NOT NULL,
+                query TEXT NOT NULL,
+                entity_kind TEXT NOT NULL,
+                category TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_watchlist_username ON watchlist_items(username);
+            CREATE INDEX IF NOT EXISTS idx_watchlist_active ON watchlist_items(username, active);
             """
         )
         conn.commit()
@@ -156,41 +173,76 @@ def seed_mock_data() -> None:
 
         # --- COAs across all statuses ---
         coa_samples = [
-            (_new_id(), "SWIFT Node Disconnection [Delta]",
-             "Sever SWIFT access for Central State Bank to disrupt regime financing. Coordinate with EU partners for synchronized implementation.",
-             '["Central State Bank", "Ministry of Finance"]', "asset_freeze", "executing", 0.92,
-             '["Freeze all correspondent banking relationships with CSB", "Direct FinCEN to issue advisory on secondary sanctions risk", "Coordinate with FATF for grey-listing assessment"]',
-             '[{"entity": "JP Morgan Chase", "details": "Correspondent banking exposure ~$340M annually", "risk_level": "MODERATE"}, {"entity": "Deutsche Bank AG", "details": "Trade finance pipeline for CSB petroleum transactions", "risk_level": "HIGH"}]',
-             '["80% reduction in USD-denominated transactions within 30 days", "Regime forced to alternative payment channels (crypto, barter)", "Increased pressure on diplomatic negotiations"]',
-             now, now),
-            (_new_id(), "Phase 1 Semiconductor Embargo",
-             "Restrict export of advanced lithography equipment and EDA software to designated PRC entities under BIS Entity List expansion.",
-             '["SMIC", "Huawei HiSilicon", "YMTC"]', "export_control", "draft", 0.45,
-             '["Add 14 PRC semiconductor entities to BIS Entity List", "Coordinate with Netherlands and Japan for parallel ASML/TEL restrictions", "Establish end-use monitoring for legacy node equipment"]',
-             '[{"entity": "Qualcomm", "details": "Revenue loss from restricted chip sales ~$8B annually", "risk_level": "HIGH"}, {"entity": "Applied Materials", "details": "Service contract disruption for existing PRC installations", "risk_level": "MODERATE"}]',
-             '["Delay PRC 7nm-equivalent production by 18-24 months", "Accelerate indigenous PRC chip development programs", "Potential retaliation against US rare earth supply"]',
-             now, now),
-            (_new_id(), "Maritime Lane Asset Freeze",
-             "Freeze assets of Eastern Shipping Conglomerate entities identified in sanctions evasion network operating through Strait of Malacca.",
-             '["Eastern Shipping Conglomerate", "Oceanic Holdings Ltd", "Pacific Maritime Services"]', "sanction", "under_review", 0.68,
-             '["Designate ESC and 7 subsidiaries under EO 13846", "Issue OFAC advisory on ship-to-ship transfer risks in Malacca Strait", "Coordinate with Singapore MAS for parallel financial restrictions"]',
-             '[{"entity": "Maersk Line", "details": "Shared port facilities in Singapore may face operational delays", "risk_level": "LOW"}, {"entity": "US Pacific Fleet", "details": "Increased maritime patrol requirements in SCS", "risk_level": "MODERATE"}]',
-             '["Disrupt 60% of sanctioned oil shipment volume within 90 days", "Force rerouting through longer Cape of Good Hope route", "Increased insurance premiums for vessels in region"]',
-             now, now),
-            (_new_id(), "Lithium Supply Chain Restriction",
-             "Implement investment screening for PRC-linked lithium mining acquisitions in Chile, Argentina, and Australia under CFIUS expanded jurisdiction.",
-             '["Ganfeng Lithium", "Tianqi Lithium", "CATL"]', "investment_screening", "draft", 0.81,
-             '["Invoke CFIUS jurisdiction for lithium assets under critical minerals EO", "Coordinate with Australian FIRB and Chilean CODELCO", "Establish allied critical minerals purchasing consortium"]',
-             '[]',
-             '["Block 3 pending PRC lithium acquisitions worth $4.2B", "Secure allied access to 40% of global lithium reserves", "PRC forced to accelerate sodium-ion battery alternatives"]',
-             now, now),
-            (_new_id(), "Cyber Infrastructure Sanctions",
-             "Designate PRC cyber units and affiliated technology companies enabling cyber operations against allied critical infrastructure.",
-             '["APT41 Front Companies", "PRC MSS Cyber Bureau", "Integrity Tech"]', "sanction", "approved", 0.73,
-             '["Designate 12 entities under EO 13694 (cyber sanctions)", "Coordinate Five Eyes joint attribution statement", "Direct CISA to issue binding operational directive for affected sectors"]',
-             '[{"entity": "Cisco Systems", "details": "Hardware already deployed in designated entity networks", "risk_level": "LOW"}]',
-             '["Disrupt PRC cyber operational infrastructure in 60% of identified nodes", "Deter future cyber operations through visible attribution costs", "Strengthen allied cyber defense coordination"]',
-             now, now),
+            (
+                _new_id(),
+                "SWIFT Node Disconnection [Delta]",
+                "Sever SWIFT access for Central State Bank to disrupt regime financing. Coordinate with EU partners for synchronized implementation.",
+                '["Central State Bank", "Ministry of Finance"]',
+                "asset_freeze",
+                "executing",
+                0.92,
+                '["Freeze all correspondent banking relationships with CSB", "Direct FinCEN to issue advisory on secondary sanctions risk", "Coordinate with FATF for grey-listing assessment"]',
+                '[{"entity": "JP Morgan Chase", "details": "Correspondent banking exposure ~$340M annually", "risk_level": "MODERATE"}, {"entity": "Deutsche Bank AG", "details": "Trade finance pipeline for CSB petroleum transactions", "risk_level": "HIGH"}]',
+                '["80% reduction in USD-denominated transactions within 30 days", "Regime forced to alternative payment channels (crypto, barter)", "Increased pressure on diplomatic negotiations"]',
+                now,
+                now,
+            ),
+            (
+                _new_id(),
+                "Phase 1 Semiconductor Embargo",
+                "Restrict export of advanced lithography equipment and EDA software to designated PRC entities under BIS Entity List expansion.",
+                '["SMIC", "Huawei HiSilicon", "YMTC"]',
+                "export_control",
+                "draft",
+                0.45,
+                '["Add 14 PRC semiconductor entities to BIS Entity List", "Coordinate with Netherlands and Japan for parallel ASML/TEL restrictions", "Establish end-use monitoring for legacy node equipment"]',
+                '[{"entity": "Qualcomm", "details": "Revenue loss from restricted chip sales ~$8B annually", "risk_level": "HIGH"}, {"entity": "Applied Materials", "details": "Service contract disruption for existing PRC installations", "risk_level": "MODERATE"}]',
+                '["Delay PRC 7nm-equivalent production by 18-24 months", "Accelerate indigenous PRC chip development programs", "Potential retaliation against US rare earth supply"]',
+                now,
+                now,
+            ),
+            (
+                _new_id(),
+                "Maritime Lane Asset Freeze",
+                "Freeze assets of Eastern Shipping Conglomerate entities identified in sanctions evasion network operating through Strait of Malacca.",
+                '["Eastern Shipping Conglomerate", "Oceanic Holdings Ltd", "Pacific Maritime Services"]',
+                "sanction",
+                "under_review",
+                0.68,
+                '["Designate ESC and 7 subsidiaries under EO 13846", "Issue OFAC advisory on ship-to-ship transfer risks in Malacca Strait", "Coordinate with Singapore MAS for parallel financial restrictions"]',
+                '[{"entity": "Maersk Line", "details": "Shared port facilities in Singapore may face operational delays", "risk_level": "LOW"}, {"entity": "US Pacific Fleet", "details": "Increased maritime patrol requirements in SCS", "risk_level": "MODERATE"}]',
+                '["Disrupt 60% of sanctioned oil shipment volume within 90 days", "Force rerouting through longer Cape of Good Hope route", "Increased insurance premiums for vessels in region"]',
+                now,
+                now,
+            ),
+            (
+                _new_id(),
+                "Lithium Supply Chain Restriction",
+                "Implement investment screening for PRC-linked lithium mining acquisitions in Chile, Argentina, and Australia under CFIUS expanded jurisdiction.",
+                '["Ganfeng Lithium", "Tianqi Lithium", "CATL"]',
+                "investment_screening",
+                "draft",
+                0.81,
+                '["Invoke CFIUS jurisdiction for lithium assets under critical minerals EO", "Coordinate with Australian FIRB and Chilean CODELCO", "Establish allied critical minerals purchasing consortium"]',
+                "[]",
+                '["Block 3 pending PRC lithium acquisitions worth $4.2B", "Secure allied access to 40% of global lithium reserves", "PRC forced to accelerate sodium-ion battery alternatives"]',
+                now,
+                now,
+            ),
+            (
+                _new_id(),
+                "Cyber Infrastructure Sanctions",
+                "Designate PRC cyber units and affiliated technology companies enabling cyber operations against allied critical infrastructure.",
+                '["APT41 Front Companies", "PRC MSS Cyber Bureau", "Integrity Tech"]',
+                "sanction",
+                "approved",
+                0.73,
+                '["Designate 12 entities under EO 13694 (cyber sanctions)", "Coordinate Five Eyes joint attribution statement", "Direct CISA to issue binding operational directive for affected sectors"]',
+                '[{"entity": "Cisco Systems", "details": "Hardware already deployed in designated entity networks", "risk_level": "LOW"}]',
+                '["Disrupt PRC cyber operational infrastructure in 60% of identified nodes", "Deter future cyber operations through visible attribution costs", "Strengthen allied cyber defense coordination"]',
+                now,
+                now,
+            ),
         ]
         for s in coa_samples:
             conn.execute(
@@ -200,8 +252,13 @@ def seed_mock_data() -> None:
 
         # --- Briefings ---
         briefing_samples = [
-            (_new_id(), "South China Sea Transit Analysis", "coa_brief", "finalized", coa_samples[2][0],
-             """# South China Sea Transit Analysis
+            (
+                _new_id(),
+                "South China Sea Transit Analysis",
+                "coa_brief",
+                "finalized",
+                coa_samples[2][0],
+                """# South China Sea Transit Analysis
 
 ## I. Situation
 
@@ -237,9 +294,16 @@ Immediate implementation of COA "Maritime Lane Asset Freeze" targeting ESC and i
 
 ---
 *EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
-             now, now),
-            (_new_id(), "Strait of Malacca Congestion Assessment", "bda_report", "reviewing", None,
-             """# Strait of Malacca Congestion — Battle Damage Assessment
+                now,
+                now,
+            ),
+            (
+                _new_id(),
+                "Strait of Malacca Congestion Assessment",
+                "bda_report",
+                "reviewing",
+                None,
+                """# Strait of Malacca Congestion — Battle Damage Assessment
 
 ## I. Situation
 
@@ -275,9 +339,16 @@ Continued enforcement will require sustained naval presence. Risk of normalizati
 
 ---
 *EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
-             now, now),
-            (_new_id(), "Semiconductor Supply Chain Vulnerability Brief", "situation_update", "finalized", coa_samples[1][0],
-             """# Semiconductor Supply Chain — Situation Update
+                now,
+                now,
+            ),
+            (
+                _new_id(),
+                "Semiconductor Supply Chain Vulnerability Brief",
+                "situation_update",
+                "finalized",
+                coa_samples[1][0],
+                """# Semiconductor Supply Chain — Situation Update
 
 ## I. Situation
 
@@ -302,9 +373,16 @@ Proceed with Phase 1 Semiconductor Embargo while strengthening multilateral coor
 
 ---
 *EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
-             now, now),
-            (_new_id(), "Carrier Group 5 Fuel Logistics", "bda_report", "draft", None,
-             """# Carrier Group 5 Fuel Logistics Assessment
+                now,
+                now,
+            ),
+            (
+                _new_id(),
+                "Carrier Group 5 Fuel Logistics",
+                "bda_report",
+                "draft",
+                None,
+                """# Carrier Group 5 Fuel Logistics Assessment
 
 ## I. Situation
 
@@ -327,7 +405,9 @@ Pre-position additional fuel stocks at Diego Garcia as contingency reserve. Coor
 
 ---
 *EMISSARY DEMO — NOT AN OFFICIAL DOCUMENT*""",
-             now, now),
+                now,
+                now,
+            ),
         ]
         for b in briefing_samples:
             conn.execute(
@@ -337,14 +417,36 @@ Pre-position additional fuel stocks at Diego Garcia as contingency reserve. Coor
 
         # --- Activity Log entries ---
         activity_entries = [
-            (now, "system_startup", "system", "Emissary platform initialized with mock data", "info", None),
+            (
+                now,
+                "system_startup",
+                "system",
+                "Emissary platform initialized with mock data",
+                "info",
+                None,
+            ),
         ]
         for s in coa_samples:
-            activity_entries.append((now, "coa_created", "system", f"COA '{s[1]}' created", "info", s[0]))
+            activity_entries.append(
+                (now, "coa_created", "system", f"COA '{s[1]}' created", "info", s[0])
+            )
         for b in briefing_samples:
-            activity_entries.append((now, "briefing_created", "system", f"Briefing '{b[1]}' created", "info", b[0]))
-        activity_entries.append((now, "alert", "monitor", "Participant deviation detected in Sector 4", "warning", None))
-        activity_entries.append((now, "alert", "monitor", "Critical threshold exceeded on maritime traffic volume near Malacca Strait", "error", None))
+            activity_entries.append(
+                (now, "briefing_created", "system", f"Briefing '{b[1]}' created", "info", b[0])
+            )
+        activity_entries.append(
+            (now, "alert", "monitor", "Participant deviation detected in Sector 4", "warning", None)
+        )
+        activity_entries.append(
+            (
+                now,
+                "alert",
+                "monitor",
+                "Critical threshold exceeded on maritime traffic volume near Malacca Strait",
+                "error",
+                None,
+            )
+        )
 
         for a in activity_entries:
             conn.execute(
@@ -353,7 +455,9 @@ Pre-position additional fuel stocks at Diego Garcia as contingency reserve. Coor
             )
 
         conn.commit()
-        print(f"Mock data seeded: {len(coa_samples)} COAs, {len(briefing_samples)} briefings, {len(activity_entries)} activity entries")
+        print(
+            f"Mock data seeded: {len(coa_samples)} COAs, {len(briefing_samples)} briefings, {len(activity_entries)} activity entries"
+        )
     finally:
         conn.close()
 
@@ -404,7 +508,18 @@ def log_usage_event(
                 "INSERT INTO usage_events "
                 "(timestamp, kind, username, feature, path, method, status_code, latency_ms, client_ip, detail) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (_now(), kind, username, feature, path, method, status_code, latency_ms, client_ip, detail),
+                (
+                    _now(),
+                    kind,
+                    username,
+                    feature,
+                    path,
+                    method,
+                    status_code,
+                    latency_ms,
+                    client_ip,
+                    detail,
+                ),
             )
             conn.commit()
         finally:
@@ -421,7 +536,8 @@ def query_usage_summary(days: int = 30) -> dict:
         cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         logins_per_day = [
-            dict(row) for row in conn.execute(
+            dict(row)
+            for row in conn.execute(
                 "SELECT substr(timestamp, 1, 10) AS day, "
                 "       SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) AS success, "
                 "       SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) AS failure, "
@@ -434,7 +550,8 @@ def query_usage_summary(days: int = 30) -> dict:
         ]
 
         top_features = [
-            dict(row) for row in conn.execute(
+            dict(row)
+            for row in conn.execute(
                 "SELECT feature, COUNT(*) AS hits, COUNT(DISTINCT username) AS unique_users "
                 "FROM usage_events "
                 "WHERE kind = 'api_request' AND feature IS NOT NULL AND timestamp >= ? "
@@ -444,7 +561,8 @@ def query_usage_summary(days: int = 30) -> dict:
         ]
 
         top_users = [
-            dict(row) for row in conn.execute(
+            dict(row)
+            for row in conn.execute(
                 "SELECT username, COUNT(*) AS events, MAX(timestamp) AS last_seen "
                 "FROM usage_events "
                 "WHERE username IS NOT NULL AND timestamp >= ? "
@@ -454,7 +572,8 @@ def query_usage_summary(days: int = 30) -> dict:
         ]
 
         recent_logins = [
-            dict(row) for row in conn.execute(
+            dict(row)
+            for row in conn.execute(
                 "SELECT timestamp, username, status_code, client_ip, detail "
                 "FROM usage_events "
                 "WHERE kind = 'login_attempt' "
@@ -463,7 +582,8 @@ def query_usage_summary(days: int = 30) -> dict:
         ]
 
         top_endpoints = [
-            dict(row) for row in conn.execute(
+            dict(row)
+            for row in conn.execute(
                 "SELECT feature, method, path, COUNT(*) AS hits, COUNT(DISTINCT username) AS unique_users "
                 "FROM usage_events "
                 "WHERE kind = 'api_request' AND path IS NOT NULL AND timestamp >= ? "
@@ -487,6 +607,7 @@ def query_usage_summary(days: int = 30) -> dict:
 # ---------------------------------------------------------------------------
 # Row converters – sqlite3.Row -> dict, deserialising JSON text columns
 # ---------------------------------------------------------------------------
+
 
 def _json_field(row: sqlite3.Row, key: str, default=None):
     """Safely parse a JSON text column."""

@@ -11,21 +11,15 @@ Real HTTP is never hit; the fixture CSV is loaded directly in tests.
 
 from __future__ import annotations
 
-import csv
-import io
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from ingest.gdelt import (
     GDELTSource,
-    GDELTRawRecord,
     _row_to_raw,
     _gdelt_file_urls_in_window,
-    SLICE_ISO2,
     COL,
 )
 from ingest.cameo import cameo_to_domain
@@ -35,6 +29,7 @@ from wargame_shared.schemas.sim_event import Domain
 # ---------------------------------------------------------------------------
 # Fixture CSV data (minimal GDELT export format — tab-separated, 61 columns)
 # ---------------------------------------------------------------------------
+
 
 def _make_gdelt_row(**overrides: str) -> list[str]:
     """Build a 61-column GDELT row with defaults, applying overrides by col name."""
@@ -64,6 +59,7 @@ def _make_gdelt_row(**overrides: str) -> list[str]:
 # ---------------------------------------------------------------------------
 # _row_to_raw
 # ---------------------------------------------------------------------------
+
 
 def test_row_to_raw_slice_country_passes():
     """Row with CH/TW actors should be parsed."""
@@ -107,16 +103,17 @@ def test_row_to_raw_bad_goldstein():
 # cameo_to_domain
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "code, goldstein, expected",
     [
-        ("014", None, Domain.info),           # info override
-        ("036", None, Domain.diplomatic),      # diplomatic range
-        ("193", -7.0, Domain.kinetic_limited), # assault, not severe enough for general
-        ("193", -9.0, Domain.kinetic_general), # assault + Goldstein ≤ -8 → general
-        ("1713", None, Domain.cyber),          # cyber override
-        ("200", None, Domain.kinetic_general), # code 200+
-        ("163", None, Domain.economic),        # sanction range
+        ("014", None, Domain.info),  # info override
+        ("036", None, Domain.diplomatic),  # diplomatic range
+        ("193", -7.0, Domain.kinetic_limited),  # assault, not severe enough for general
+        ("193", -9.0, Domain.kinetic_general),  # assault + Goldstein ≤ -8 → general
+        ("1713", None, Domain.cyber),  # cyber override
+        ("200", None, Domain.kinetic_general),  # code 200+
+        ("163", None, Domain.economic),  # sanction range
     ],
 )
 def test_cameo_to_domain(code: str, goldstein: float | None, expected: Domain):
@@ -136,6 +133,7 @@ def test_cameo_bad_string():
 # ---------------------------------------------------------------------------
 # GDELTSource.normalize
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_normalize_chn_twn_event():
@@ -204,6 +202,7 @@ async def test_normalize_dedup_key_stable():
 # URL generation helpers
 # ---------------------------------------------------------------------------
 
+
 def test_gdelt_file_urls_in_window():
     """15-min slots covering a 1-hour window should produce 4 URLs."""
     since = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
@@ -219,6 +218,7 @@ def test_gdelt_file_urls_in_window():
 # ---------------------------------------------------------------------------
 # Live fetch — skip if no network or cassette is absent
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(

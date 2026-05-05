@@ -35,9 +35,9 @@ from wargame_shared.schemas.sim_event import Domain, Explainability, SimEvent
 class RedLineStatus(str, enum.Enum):
     """Lifecycle of a country's declared red-line condition."""
 
-    inactive = "inactive"      # Not triggered; baseline state
+    inactive = "inactive"  # Not triggered; baseline state
     approached = "approached"  # World events suggest the red-line is near
-    crossed = "crossed"        # Condition met; country is obligated to respond
+    crossed = "crossed"  # Condition met; country is obligated to respond
 
 
 class Posture(str, enum.Enum):
@@ -220,7 +220,7 @@ class ResolvedOutcome(str, enum.Enum):
     """How the arbiter disposed of a proposed action."""
 
     accepted = "accepted"
-    merged = "merged"      # Deduplicated into a sibling action
+    merged = "merged"  # Deduplicated into a sibling action
     rejected = "rejected"  # Logically impossible / invalid
 
 
@@ -320,7 +320,10 @@ class WorldState(BaseModel):
             # Track sanctions / agreements explicitly
             if proposed.domain is Domain.economic:
                 instrument = proposed.payload.get("instrument", proposed.action_type)
-                if "sanction" in proposed.action_type.lower() and instrument not in rel.active_sanctions:
+                if (
+                    "sanction" in proposed.action_type.lower()
+                    and instrument not in rel.active_sanctions
+                ):
                     rel.active_sanctions.append(str(instrument))
             if proposed.domain is Domain.diplomatic and "agreement" in proposed.action_type.lower():
                 name = str(proposed.payload.get("agreement", proposed.action_type))
@@ -353,7 +356,11 @@ class WorldState(BaseModel):
             actor_state.recent_domains = window[-3:]
 
         # --- Red-line escalation ----------------------------------------
-        if proposed.target and proposed.target in self.countries and action.final_escalation_rung >= 3:
+        if (
+            proposed.target
+            and proposed.target in self.countries
+            and action.final_escalation_rung >= 3
+        ):
             target_state = self.countries[proposed.target]
             for rl in target_state.red_lines:
                 if rl.status is RedLineStatus.inactive:
@@ -378,9 +385,7 @@ class WorldState(BaseModel):
         """
         return {
             "turn": self.turn,
-            "countries": {
-                code: c.model_dump(mode="json") for code, c in self.countries.items()
-            },
+            "countries": {code: c.model_dump(mode="json") for code, c in self.countries.items()},
             "relationships": {
                 f"{a}-{b}": rel.model_dump(mode="json")
                 for (a, b), rel in self.relationships.items()

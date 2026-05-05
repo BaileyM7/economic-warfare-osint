@@ -17,9 +17,7 @@ from ingest.trade_gov import (
 
 class TestParsing:
     def test_parse_date_iso(self) -> None:
-        assert _parse_date("2026-04-15") == datetime(
-            2026, 4, 15, tzinfo=timezone.utc
-        )
+        assert _parse_date("2026-04-15") == datetime(2026, 4, 15, tzinfo=timezone.utc)
 
     def test_result_to_raw_extracts_country_from_addresses(self) -> None:
         record = _result_to_raw(

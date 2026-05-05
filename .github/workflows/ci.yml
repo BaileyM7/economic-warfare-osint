@@ -1,13 +1,15 @@
 name: CI
 
 # Runs on every PR targeting the deploy branches and on push to those branches
-# (so the merge commit itself is also gated). Protect emissary-v1 + master via
-# branch protection rules in GitHub UI to require all jobs below to pass.
+# (so the merge commit itself is also gated). Protect develop + emissary-v1 +
+# master via branch protection rules in GitHub UI to require all jobs below
+# to pass. develop is the local-staging branch; emissary-v1 is the prod
+# auto-deploy branch on Render.
 on:
   pull_request:
-    branches: [emissary-v1, master]
+    branches: [develop, emissary-v1, master]
   push:
-    branches: [emissary-v1, master]
+    branches: [develop, emissary-v1, master]
 
 # Cancel superseded runs on the same PR — saves CI minutes when devs push
 # rapid-fire fixups.
@@ -66,6 +68,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # frontend/ is a git submodule — must be initialized for npm ci to find package-lock.json
+          submodules: recursive
 
       - name: Set up Node
         uses: actions/setup-node@v4
