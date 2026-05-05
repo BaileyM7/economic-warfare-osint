@@ -39,7 +39,16 @@ log = structlog.get_logger(__name__)
 # Vertical-slice country pairs we pull.  Comtrade uses M.49 numeric codes;
 # we keep the ISO3 here and translate at request time.
 SLICE_ISO3: tuple[str, ...] = (
-    "CHN", "TWN", "USA", "JPN", "KOR", "PHL", "AUS", "PRK", "RUS", "IND",
+    "CHN",
+    "TWN",
+    "USA",
+    "JPN",
+    "KOR",
+    "PHL",
+    "AUS",
+    "PRK",
+    "RUS",
+    "IND",
 )
 
 # ISO3 → M.49 numeric code (UN Comtrade's "reporter"/"partner" parameter)
@@ -60,7 +69,7 @@ _ISO3_TO_M49: dict[str, str] = {
 # every chapter (~99) for every pair (~90) every run is wasteful; this
 # focused list keeps the request volume bounded and the signal density high.
 _WATCHED_HS2: dict[str, str] = {
-    "85": "electrical machinery",   # incl. semiconductors
+    "85": "electrical machinery",  # incl. semiconductors
     "84": "machinery / nuclear reactors",
     "27": "mineral fuels & oils",
     "29": "organic chemicals",
@@ -143,9 +152,7 @@ class UNComtradeSource(Source):
             return False
         return True
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         api_key = os.environ.get("UN_COMTRADE_KEY", "")
         headers = {"Ocp-Apim-Subscription-Key": api_key}
 
@@ -155,9 +162,7 @@ class UNComtradeSource(Source):
                 # Comtrade lets us request many partners in one call by
                 # passing a comma-separated list — minimizes round-trips.
                 partners = ",".join(
-                    _ISO3_TO_M49[p]
-                    for p in SLICE_ISO3
-                    if p != reporter and p in _ISO3_TO_M49
+                    _ISO3_TO_M49[p] for p in SLICE_ISO3 if p != reporter and p in _ISO3_TO_M49
                 )
                 cmd_codes = ",".join(_WATCHED_HS2.keys())
                 params = {
@@ -206,9 +211,7 @@ class UNComtradeSource(Source):
                         continue
                     current = float(row.get("primaryValue") or 0.0)
                     prior_row = by_key.get((partner_iso3, cmd, flow, prior))
-                    prior_value = (
-                        float(prior_row.get("primaryValue")) if prior_row else None
-                    )
+                    prior_value = float(prior_row.get("primaryValue")) if prior_row else None
                     yield ComtradeRawRecord(
                         reporter_iso3=reporter,
                         partner_iso3=partner_iso3,
@@ -219,10 +222,19 @@ class UNComtradeSource(Source):
                         trade_value_usd=current,
                         prior_trade_value_usd=prior_value,
                         mom_pct_change=_safe_pct_change(current, prior_value),
-                        raw_row={k: row.get(k) for k in (
-                            "reporterCode", "partnerCode", "period", "cmdCode",
-                            "flowCode", "primaryValue", "qty", "qtyUnitCode",
-                        )},
+                        raw_row={
+                            k: row.get(k)
+                            for k in (
+                                "reporterCode",
+                                "partnerCode",
+                                "period",
+                                "cmdCode",
+                                "flowCode",
+                                "primaryValue",
+                                "qty",
+                                "qtyUnitCode",
+                            )
+                        },
                     )
 
     async def normalize(self, raw: RawRecord) -> Event:

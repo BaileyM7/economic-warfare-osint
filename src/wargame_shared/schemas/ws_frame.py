@@ -40,14 +40,14 @@ from wargame_shared.schemas.sim_event import SimEvent
 class FrameType(str, Enum):
     """Discriminant for WebSocket frame type."""
 
-    connected = "connected"          # S→C: sent immediately on WS upgrade
-    turn_start = "turn_start"        # S→C: beginning of a new turn
-    sim_event = "sim_event"          # S→C: agent action event
-    turn_end = "turn_end"            # S→C: all agents in a turn have acted
-    sim_complete = "sim_complete"    # S→C: simulation finished
-    error = "error"                  # S→C: server-side error
-    heartbeat = "heartbeat"          # S→C: keepalive (every 15 s of idle)
-    control = "control"              # C→S: pause / resume / abort
+    connected = "connected"  # S→C: sent immediately on WS upgrade
+    turn_start = "turn_start"  # S→C: beginning of a new turn
+    sim_event = "sim_event"  # S→C: agent action event
+    turn_end = "turn_end"  # S→C: all agents in a turn have acted
+    sim_complete = "sim_complete"  # S→C: simulation finished
+    error = "error"  # S→C: server-side error
+    heartbeat = "heartbeat"  # S→C: keepalive (every 15 s of idle)
+    control = "control"  # C→S: pause / resume / abort
 
 
 class ControlAction(str, Enum):
@@ -122,8 +122,7 @@ class TurnEndPayload(BaseModel):
     relationship_deltas: dict[str, dict[str, float]] = Field(
         default_factory=dict,
         description=(
-            "Map of 'ISO3A-ISO3B' → {'trust_score_delta': float} "
-            "for all pairs affected this turn."
+            "Map of 'ISO3A-ISO3B' → {'trust_score_delta': float} for all pairs affected this turn."
         ),
     )
     max_escalation_rung_this_turn: int = Field(

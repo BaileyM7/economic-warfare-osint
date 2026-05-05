@@ -149,9 +149,7 @@ async def list_sim_events(
         uuid.UUID, Query(description="UUID of the simulation to fetch events for.")
     ],
     turn: Annotated[int | None, Query(ge=0, description="Filter by turn number.")] = None,
-    actor_country: Annotated[
-        str | None, Query(description="Filter by actor ISO-3 code.")
-    ] = None,
+    actor_country: Annotated[str | None, Query(description="Filter by actor ISO-3 code.")] = None,
     domain: Annotated[str | None, Query(description="Filter by event domain.")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     cursor: Annotated[str | None, Query(description="Opaque pagination cursor.")] = None,

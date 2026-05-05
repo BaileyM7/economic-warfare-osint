@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +22,7 @@ from ingest.base import (
 # Minimal concrete Source for testing
 # ---------------------------------------------------------------------------
 
+
 class _DummySource(Source):
     name = "dummy"
     display_name = "Dummy Test Source"
@@ -32,9 +32,7 @@ class _DummySource(Source):
         self._records = records or []
         self.normalize_call_count = 0
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[dict]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[dict]:
         for r in self._records:
             yield r
 
@@ -52,6 +50,7 @@ class _DummySource(Source):
 # ---------------------------------------------------------------------------
 # raise_for_retryable
 # ---------------------------------------------------------------------------
+
 
 def _fake_response(status_code: int) -> httpx.Response:
     """Build a minimal mock httpx.Response with the given status code."""
@@ -101,6 +100,7 @@ def test_raise_for_retryable_200_ok():
 # enabled property
 # ---------------------------------------------------------------------------
 
+
 def test_source_enabled_default(monkeypatch):
     """Source is enabled by default (no env var set)."""
     monkeypatch.delenv("DUMMY_ENABLED", raising=False)
@@ -126,6 +126,7 @@ def test_source_disabled_via_zero(monkeypatch):
 # Semaphore respects CONCURRENCY env
 # ---------------------------------------------------------------------------
 
+
 def test_concurrency_env(monkeypatch):
     """DUMMY_CONCURRENCY env sets semaphore limit."""
     monkeypatch.setenv("DUMMY_CONCURRENCY", "3")
@@ -136,6 +137,7 @@ def test_concurrency_env(monkeypatch):
 # ---------------------------------------------------------------------------
 # IngestionRunResult
 # ---------------------------------------------------------------------------
+
 
 def test_ingestion_run_result_success():
     r = IngestionRunResult(
@@ -163,6 +165,7 @@ def test_ingestion_run_result_failure():
 # ---------------------------------------------------------------------------
 # Retry behavior (unit — no real HTTP)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_get_retries_on_retryable_error():

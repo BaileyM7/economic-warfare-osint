@@ -30,6 +30,7 @@ _SEEDS_PATH = pathlib.Path(__file__).parents[3] / "wargame_shared" / "seeds" / "
 
 if not _SEEDS_PATH.exists():
     import structlog as _sl
+
     _sl.get_logger(__name__).warning(
         "countries_seed_file_missing",
         path=str(_SEEDS_PATH),
@@ -113,9 +114,7 @@ async def _maybe_seed_countries(db: AsyncSession) -> None:
 
         # red_lines in the seed is a list of strings; model expects JSONB list.
         red_lines_raw = record.get("red_lines") or []
-        red_lines_value: list[Any] = (
-            list(red_lines_raw) if isinstance(red_lines_raw, list) else []
-        )
+        red_lines_value: list[Any] = list(red_lines_raw) if isinstance(red_lines_raw, list) else []
 
         # Resolve persona_file (relative to the seeds dir) into inline markdown.
         persona_value: str | None = None
@@ -134,8 +133,16 @@ async def _maybe_seed_countries(db: AsyncSession) -> None:
 
         # Fold remaining strategic metadata (lat/lon/government_type/alliances
         # /adversaries/military_spend_usd) into profile so nothing is lost.
-        _core_keys = {"iso3", "name", "doctrine", "red_lines", "gdp_usd",
-                      "profile", "military_assets", "persona_file"}
+        _core_keys = {
+            "iso3",
+            "name",
+            "doctrine",
+            "red_lines",
+            "gdp_usd",
+            "profile",
+            "military_assets",
+            "persona_file",
+        }
         profile_extras = {k: v for k, v in record.items() if k not in _core_keys}
         profile_value = {**record.get("profile", {}), **profile_extras}
 
@@ -226,9 +233,7 @@ async def get_country(
     """Fetch a single country by ISO-3 code, including bilateral relationships."""
     await _maybe_seed_countries(db)
 
-    result = await db.execute(
-        select(Country).where(Country.iso3 == iso3_code.upper())
-    )
+    result = await db.execute(select(Country).where(Country.iso3 == iso3_code.upper()))
     country = result.scalar_one_or_none()
     if country is None:
         raise HTTPException(status_code=404, detail=f"Country '{iso3_code}' not found.")

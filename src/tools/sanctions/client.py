@@ -92,7 +92,9 @@ class OpenSanctionsClient:
                 f"{OPENSANCTIONS_BASE}/search/default", params=params, headers=headers
             )
         except Exception as exc:
-            logger.warning("OpenSanctions search unavailable (query=%s): %s", query, type(exc).__name__)
+            logger.warning(
+                "OpenSanctions search unavailable (query=%s): %s", query, type(exc).__name__
+            )
             return []
 
         entries = self._parse_search_results(data)
@@ -118,11 +120,11 @@ class OpenSanctionsClient:
 
         try:
             headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
-            data = await fetch_json(
-                f"{OPENSANCTIONS_BASE}/entities/{entity_id}", headers=headers
-            )
+            data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}", headers=headers)
         except Exception as exc:
-            logger.warning("OpenSanctions get_entity unavailable (id=%s): %s", entity_id, type(exc).__name__)
+            logger.warning(
+                "OpenSanctions get_entity unavailable (id=%s): %s", entity_id, type(exc).__name__
+            )
             return None
 
         entry = self._parse_entity(data)
@@ -148,19 +150,17 @@ class OpenSanctionsClient:
         if not config.opensanctions_api_key:
             return []
 
-        cached = get_cached(
-            _CACHE_NS_OPENSANCTIONS, action="relationships", id=entity_id
-        )
+        cached = get_cached(_CACHE_NS_OPENSANCTIONS, action="relationships", id=entity_id)
         if cached is not None:
             return cached
 
         try:
             headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
-            data = await fetch_json(
-                f"{OPENSANCTIONS_BASE}/entities/{entity_id}", headers=headers
-            )
+            data = await fetch_json(f"{OPENSANCTIONS_BASE}/entities/{entity_id}", headers=headers)
         except Exception as exc:
-            logger.warning("OpenSanctions relationships unavailable (id=%s): %s", entity_id, type(exc).__name__)
+            logger.warning(
+                "OpenSanctions relationships unavailable (id=%s): %s", entity_id, type(exc).__name__
+            )
             return []
 
         relationships: list[dict[str, Any]] = []
@@ -264,7 +264,7 @@ class OpenSanctionsClient:
 
         # Programs / sanctions lists
         programs = props.get("program", [])
-        topics = data.get("datasets", [])
+        data.get("datasets", [])
         if not programs:
             programs = props.get("topics", [])
 
@@ -294,9 +294,7 @@ class OpenSanctionsClient:
         date_strs = props.get("createdAt", []) or props.get("modifiedAt", [])
         if date_strs:
             try:
-                designation_date = datetime.fromisoformat(
-                    date_strs[0].replace("Z", "+00:00")
-                )
+                designation_date = datetime.fromisoformat(date_strs[0].replace("Z", "+00:00"))
             except (ValueError, IndexError):
                 pass
 
@@ -382,15 +380,9 @@ class OFACClient:
             self._addresses = {}
 
         # Cache parsed data
-        set_cached(
-            self._sdn_entries, _CACHE_NS_OFAC, ttl=_CACHE_TTL_SDN, action="sdn_csv"
-        )
-        set_cached(
-            self._alt_names, _CACHE_NS_OFAC, ttl=_CACHE_TTL_SDN, action="alt_csv"
-        )
-        set_cached(
-            self._addresses, _CACHE_NS_OFAC, ttl=_CACHE_TTL_SDN, action="add_csv"
-        )
+        set_cached(self._sdn_entries, _CACHE_NS_OFAC, ttl=_CACHE_TTL_SDN, action="sdn_csv")
+        set_cached(self._alt_names, _CACHE_NS_OFAC, ttl=_CACHE_TTL_SDN, action="alt_csv")
+        set_cached(self._addresses, _CACHE_NS_OFAC, ttl=_CACHE_TTL_SDN, action="add_csv")
 
     def _parse_sdn_csv(self, text: str) -> list[dict[str, str]]:
         """Parse the OFAC SDN CSV (no header row).
@@ -601,17 +593,13 @@ class OFACClient:
                     )
                 )
 
-        recent.sort(
-            key=lambda r: r.effective_date or datetime.min, reverse=True
-        )
+        recent.sort(key=lambda r: r.effective_date or datetime.min, reverse=True)
         return recent
 
     # --- Helpers ---
 
     @staticmethod
-    def _match_score(
-        query_lower: str, query_tokens: set[str], name_lower: str
-    ) -> float:
+    def _match_score(query_lower: str, query_tokens: set[str], name_lower: str) -> float:
         """Compute a simple fuzzy match score between query and name."""
         # Exact substring match
         if query_lower in name_lower:
@@ -629,9 +617,7 @@ class OFACClient:
 
         # Partial token matching
         partial_matches = sum(
-            1
-            for qt in query_tokens
-            if any(qt in nt or nt in qt for nt in name_tokens)
+            1 for qt in query_tokens if any(qt in nt or nt in qt for nt in name_tokens)
         )
         if partial_matches:
             return partial_matches / len(query_tokens) * 0.5
@@ -741,7 +727,9 @@ class SanctionsClient:
             if start_date:
                 for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y"):
                     try:
-                        designation_date = datetime.strptime(start_date[:10], fmt[:len(start_date[:10])])
+                        designation_date = datetime.strptime(
+                            start_date[:10], fmt[: len(start_date[:10])]
+                        )
                         break
                     except ValueError:
                         continue
@@ -760,19 +748,21 @@ class SanctionsClient:
                 if parts:
                     addresses.append(", ".join(parts))
 
-            entries.append(SanctionEntry(
-                id=f"csl-{hit.get('entity_number') or name}",
-                name=name,
-                aliases=hit.get("alt_names") or [],
-                entity_type=_type_map.get((hit.get("type") or "").lower(), "unknown"),
-                programs=hit.get("programs") or [],
-                addresses=addresses,
-                identifiers=identifiers,
-                list_source=hit.get("source") or "CSL",
-                designation_date=designation_date,
-                remarks=hit.get("remarks"),
-                score=0.9,
-            ))
+            entries.append(
+                SanctionEntry(
+                    id=f"csl-{hit.get('entity_number') or name}",
+                    name=name,
+                    aliases=hit.get("alt_names") or [],
+                    entity_type=_type_map.get((hit.get("type") or "").lower(), "unknown"),
+                    programs=hit.get("programs") or [],
+                    addresses=addresses,
+                    identifiers=identifiers,
+                    list_source=hit.get("source") or "CSL",
+                    designation_date=designation_date,
+                    remarks=hit.get("remarks"),
+                    score=0.9,
+                )
+            )
         return entries
 
     async def search(
@@ -784,9 +774,7 @@ class SanctionsClient:
         csl_task = asyncio.create_task(search_csl(query))
         ofac_task = asyncio.create_task(self.ofac.search(query, entity_type=entity_type))
 
-        csl_raw, ofac_results = await asyncio.gather(
-            csl_task, ofac_task, return_exceptions=True
-        )
+        csl_raw, ofac_results = await asyncio.gather(csl_task, ofac_task, return_exceptions=True)
 
         matches: list[SanctionEntry] = []
 
@@ -894,9 +882,7 @@ class SanctionsClient:
 
             next_frontier: list[str] = []
             for entity_id in current_frontier:
-                relationships = await self.opensanctions.get_entity_relationships(
-                    entity_id
-                )
+                relationships = await self.opensanctions.get_entity_relationships(entity_id)
                 for rel in relationships:
                     related_id = rel.get("related_id", "")
                     if not related_id or related_id in nodes:
@@ -918,11 +904,7 @@ class SanctionsClient:
                             entity_name=related_entry.name,
                             entity_type=related_entry.entity_type,
                             is_sanctioned=is_sanctioned,
-                            sanctions_lists=(
-                                [related_entry.list_source]
-                                if is_sanctioned
-                                else []
-                            ),
+                            sanctions_lists=([related_entry.list_source] if is_sanctioned else []),
                             hop_distance=hop,
                         )
 
@@ -933,18 +915,13 @@ class SanctionsClient:
                         ProximityEdge(
                             source_id=entity_id,
                             target_id=related_id,
-                            relationship_type=rel.get(
-                                "relationship_type", "associated"
-                            ),
+                            relationship_type=rel.get("relationship_type", "associated"),
                         )
                     )
 
                     if node.is_sanctioned:
                         sanctioned_neighbors.append(node)
-                        if (
-                            nearest_sanctioned_hop is None
-                            or hop < nearest_sanctioned_hop
-                        ):
+                        if nearest_sanctioned_hop is None or hop < nearest_sanctioned_hop:
                             nearest_sanctioned_hop = hop
 
             current_frontier = next_frontier

@@ -29,46 +29,68 @@ from src.tools.market.client import YFinanceClient
 
 logger = logging.getLogger(__name__)
 
-# --- Watch-lists (POC defaults; swap freely without touching downstream) ---
+# --- Suggested starter watch-lists ---
+#
+# These were the original hardcoded watch-lists driving every user's feed.
+# After Phase 3 (per-user saved watch-lists), they are no longer the source
+# of truth — every user's feed is built from their own watchlist_items rows.
+# We keep them here purely as content for the frontend's "Suggested starter
+# items" tile (always visible inside the watch-list manager).
+#
+# Curated to hit exactly **10 suggestions per category** so each column on
+# the picker UI has a balanced starter set:
+#
+#   markets           = SUGGESTED_TICKERS (5) + SUGGESTED_GDELT_REGIONS (3)
+#                       + SUGGESTED_ENTITIES filtered to category='markets' (2)
+#                       = 10
+#   company_sanctions = SUGGESTED_ENTITIES filtered to that category    = 10
+#   people_sanctions  = SUGGESTED_ENTITIES filtered to that category    = 10
+#
+# Keep these counts aligned when editing or the suggestion grid will look
+# lopsided.
 
-WATCH_TICKERS: list[tuple[str, str]] = [
+SUGGESTED_TICKERS: list[tuple[str, str]] = [
     ("LMT", "Lockheed Martin Corporation"),
     ("RTX", "RTX Corporation"),
-    ("NOC", "Northrop Grumman Corporation"),
-    ("GD", "General Dynamics Corporation"),
     ("ASML", "ASML Holding NV"),
     ("TSM", "Taiwan Semiconductor Manufacturing"),
     ("BZ=F", "Brent Crude"),
-    ("CL=F", "WTI Crude"),
 ]
 
-# Region/topic-level tone scans — already supported, lands in 'markets'.
-WATCH_GDELT_REGIONS: list[tuple[str, str]] = [
+SUGGESTED_GDELT_REGIONS: list[tuple[str, str]] = [
     ("Strait of Hormuz", "Strait of Hormuz shipping lanes"),
     ("Taiwan Strait", "Taiwan Strait military activity"),
     ("Red Sea Houthi", "Red Sea / Bab el-Mandeb shipping"),
-    ("South China Sea", "South China Sea maritime confrontation"),
 ]
 
-# Entity-watch list. Each tuple: (gdelt_query, display_label, category).
-# Category drives which feed column the resulting card lands in.
-WATCH_ENTITIES: list[tuple[str, str, str]] = [
-    # Companies — sanctions/export-controls exposure
+# Each tuple: (gdelt_query, display_label, category).
+# 10 company_sanctions + 10 people_sanctions + 2 markets = 22 total.
+SUGGESTED_ENTITIES: list[tuple[str, str, str]] = [
+    # --- Company sanctions (10) ---
     ("Huawei sanctions", "Huawei Technologies", "company_sanctions"),
     ("SMIC sanctions", "SMIC (Semiconductor Manufacturing International)", "company_sanctions"),
+    ("ZTE Corporation sanctions", "ZTE Corporation", "company_sanctions"),
     ("Rosneft sanctions", "Rosneft", "company_sanctions"),
     ("Sinopec", "Sinopec", "company_sanctions"),
+    ("Lukoil sanctions", "Lukoil", "company_sanctions"),
     ("Wagner Group sanctions", "Wagner Group / Africa Corps", "company_sanctions"),
     ("NSO Group", "NSO Group", "company_sanctions"),
     ("Mahan Air sanctions", "Mahan Air", "company_sanctions"),
     ("Volga-Dnepr sanctions", "Volga-Dnepr Group", "company_sanctions"),
-    # Markets — supply chain / logistics / commodities
+    # --- People sanctions (10) ---
+    ("Yevgeny Prigozhin network", "Yevgeny Prigozhin network", "people_sanctions"),
+    ("IRGC senior commanders", "IRGC senior commanders", "people_sanctions"),
+    ("Ramzan Kadyrov", "Ramzan Kadyrov", "people_sanctions"),
+    ("Roman Abramovich", "Roman Abramovich", "people_sanctions"),
+    ("Alisher Usmanov", "Alisher Usmanov", "people_sanctions"),
+    ("Igor Sechin", "Igor Sechin", "people_sanctions"),
+    ("Hassan Nasrallah successors", "Hezbollah leadership", "people_sanctions"),
+    ("Kim Jong Un", "Kim Jong Un inner circle", "people_sanctions"),
+    ("Bashar al-Assad regime", "Bashar al-Assad regime", "people_sanctions"),
+    ("Nicolas Maduro inner circle", "Nicolás Maduro inner circle", "people_sanctions"),
+    # --- Markets (2; rounds out the markets column to 10 alongside tickers/regions) ---
     ("rare earth export curbs", "Rare earth export controls", "markets"),
     ("semiconductor export controls China", "Semiconductor export controls", "markets"),
-    ("LNG terminal sanctions", "LNG terminal sanctions", "markets"),
-    # People — high-profile sanctioned/oligarch coverage
-    ("Yevgeny Prigozhin", "Yevgeny Prigozhin network", "people_sanctions"),
-    ("Iranian IRGC commander", "IRGC senior commanders", "people_sanctions"),
 ]
 
 # Thresholds
@@ -102,6 +124,9 @@ def _yfinance_move_to_item(
 ) -> dict[str, Any]:
     direction = "up" if pct_change > 0 else "down"
     headline = f"{name} ({ticker}) {direction} {abs(pct_change):.1f}% on the session"
+    # yfinance moves describe today's session — use UTC date as event_at proxy
+    # (close enough for a card; no need for tz lookup since cards are coarse-grained).
+    event_date = datetime.now(timezone.utc).date().isoformat()
     findings = [f"Intraday move: {'+' if pct_change > 0 else ''}{pct_change:.2f}%"]
     if current is not None:
         findings.append(f"Last price: {current:.2f}")
@@ -132,6 +157,7 @@ def _yfinance_move_to_item(
         "headline": headline,
         "entity": name,
         "source_url": f"https://finance.yahoo.com/quote/{ticker}",
+        "event_at": event_date,
         "fetched_at": _now_iso(),
         "synthetic_payload": payload,
     }
@@ -206,6 +232,9 @@ def _gdelt_event_to_item_region(
         "confidence": 0.65,
     }
 
+    primary_date = getattr(primary, "date", None)
+    event_at = primary_date.date().isoformat() if primary_date is not None else None
+
     return {
         "id": f"gdelt-region-{abs(hash((query, url))) % 10_000_000}",
         "category": "markets",
@@ -213,6 +242,7 @@ def _gdelt_event_to_item_region(
         "headline": headline,
         "entity": label,
         "source_url": url,
+        "event_at": event_at,
         "fetched_at": _now_iso(),
         "synthetic_payload": payload,
     }
@@ -285,6 +315,9 @@ def _gdelt_event_to_item_entity(
         "confidence": 0.7 if tone_known else 0.55,
     }
 
+    primary_date = getattr(primary, "date", None)
+    event_at = primary_date.date().isoformat() if primary_date is not None else None
+
     return {
         "id": f"gdelt-ent-{abs(hash((query, url))) % 10_000_000}",
         "category": category,
@@ -292,6 +325,7 @@ def _gdelt_event_to_item_entity(
         "headline": headline,
         "entity": label,
         "source_url": url,
+        "event_at": event_at,
         "fetched_at": _now_iso(),
         "synthetic_payload": payload,
     }
@@ -378,18 +412,32 @@ async def _fetch_entity_signal(query: str, label: str, category: str) -> dict[st
     )
 
 
-async def build_markets_feed() -> list[dict[str, Any]]:
+async def build_markets_feed(
+    tickers: list[tuple[str, str]] | None = None,
+    regions: list[tuple[str, str]] | None = None,
+    entities: list[tuple[str, str, str]] | None = None,
+) -> list[dict[str, Any]]:
     """Run all signal builders in parallel; return de-duped feed items.
 
-    Despite the historical name, this builder now produces cards for ALL three
+    Despite the historical name, this builder produces cards for ALL three
     feed categories (markets / company_sanctions / people_sanctions) via the
     entity-watch scan. The risk_feed router merges these with sanctions feed
     items.
+
+    Each parameter mirrors the shape of the corresponding SUGGESTED_*
+    constant in this module. Empty list = no fan-out for that signal type
+    (legitimate when the user hasn't added any of that kind to their
+    watch-list yet). None means "use SUGGESTED_*" — back-compat for any
+    caller that hasn't migrated to per-user watch-lists yet.
     """
+    tickers = tickers if tickers is not None else SUGGESTED_TICKERS
+    regions = regions if regions is not None else SUGGESTED_GDELT_REGIONS
+    entities = entities if entities is not None else SUGGESTED_ENTITIES
+
     yf = YFinanceClient()
-    yf_tasks = [_fetch_ticker_move(yf, t, name) for t, name in WATCH_TICKERS]
-    region_tasks = [_fetch_region_signal(q, label) for q, label in WATCH_GDELT_REGIONS]
-    entity_tasks = [_fetch_entity_signal(q, label, cat) for q, label, cat in WATCH_ENTITIES]
+    yf_tasks = [_fetch_ticker_move(yf, t, name) for t, name in tickers]
+    region_tasks = [_fetch_region_signal(q, label) for q, label in regions]
+    entity_tasks = [_fetch_entity_signal(q, label, cat) for q, label, cat in entities]
 
     results = await asyncio.gather(*yf_tasks, *region_tasks, *entity_tasks, return_exceptions=True)
 

@@ -33,9 +33,7 @@ def _extract_from_tool_response(graph: EntityGraph, tool_name: str, result: Any)
     _walk_and_extract(graph, tool_name, data, depth=0)
 
 
-def _walk_and_extract(
-    graph: EntityGraph, tool_name: str, obj: Any, depth: int
-) -> None:
+def _walk_and_extract(graph: EntityGraph, tool_name: str, obj: Any, depth: int) -> None:
     """Recursively walk nested dicts/lists to find entity-like objects."""
     if depth > 6:
         return
@@ -59,11 +57,15 @@ def _walk_and_extract(
 
     if name and isinstance(name, str) and len(name) > 1:
         entity_id = str(
-            obj.get("id") or obj.get("lei") or obj.get("node_id")
+            obj.get("id")
+            or obj.get("lei")
+            or obj.get("node_id")
             or name.lower().replace(" ", "_").replace(",", "")
         )
         entity_type = _infer_entity_type(obj, tool_name)
-        country = obj.get("country") or obj.get("jurisdiction") or obj.get("registered_address_country")
+        country = (
+            obj.get("country") or obj.get("jurisdiction") or obj.get("registered_address_country")
+        )
 
         entity = Entity(
             id=entity_id,
@@ -79,29 +81,31 @@ def _walk_and_extract(
         if parent and isinstance(parent, str):
             parent_id = parent.lower().replace(" ", "_").replace(",", "")
             graph.add_entity(Entity(id=parent_id, name=parent, entity_type="company"))
-            graph.add_relationship(Relationship(
-                source_id=entity_id,
-                target_id=parent_id,
-                relationship_type="subsidiary_of",
-                confidence=Confidence.MEDIUM,
-                sources=[SourceReference(name=tool_name)],
-            ))
+            graph.add_relationship(
+                Relationship(
+                    source_id=entity_id,
+                    target_id=parent_id,
+                    relationship_type="subsidiary_of",
+                    confidence=Confidence.MEDIUM,
+                    sources=[SourceReference(name=tool_name)],
+                )
+            )
 
         # Relationship: sanctions listing
         if obj.get("sanctions") or obj.get("programs") or obj.get("datasets"):
             sanction_node_id = f"sanctions_{entity_id}"
             programs = obj.get("programs") or obj.get("datasets") or ["sanctions"]
             label = ", ".join(programs) if isinstance(programs, list) else str(programs)
-            graph.add_entity(Entity(
-                id=sanction_node_id, name=label, entity_type="sanctions_list"
-            ))
-            graph.add_relationship(Relationship(
-                source_id=entity_id,
-                target_id=sanction_node_id,
-                relationship_type="listed_on",
-                confidence=Confidence.HIGH,
-                sources=[SourceReference(name=tool_name)],
-            ))
+            graph.add_entity(Entity(id=sanction_node_id, name=label, entity_type="sanctions_list"))
+            graph.add_relationship(
+                Relationship(
+                    source_id=entity_id,
+                    target_id=sanction_node_id,
+                    relationship_type="listed_on",
+                    confidence=Confidence.HIGH,
+                    sources=[SourceReference(name=tool_name)],
+                )
+            )
 
         # Relationship: officers/holders
         for holder_key in ("holders", "officers", "top_holders"):
@@ -114,14 +118,18 @@ def _walk_and_extract(
                             h_id = h_name.lower().replace(" ", "_").replace(",", "")
                             h_type = "person" if h.get("position") or h.get("role") else "company"
                             graph.add_entity(Entity(id=h_id, name=h_name, entity_type=h_type))
-                            rel_type = "officer_of" if holder_key == "officers" else "holds_shares_in"
-                            graph.add_relationship(Relationship(
-                                source_id=h_id,
-                                target_id=entity_id,
-                                relationship_type=rel_type,
-                                confidence=Confidence.MEDIUM,
-                                sources=[SourceReference(name=tool_name)],
-                            ))
+                            rel_type = (
+                                "officer_of" if holder_key == "officers" else "holds_shares_in"
+                            )
+                            graph.add_relationship(
+                                Relationship(
+                                    source_id=h_id,
+                                    target_id=entity_id,
+                                    relationship_type=rel_type,
+                                    confidence=Confidence.MEDIUM,
+                                    sources=[SourceReference(name=tool_name)],
+                                )
+                            )
 
     # Keep walking into nested dicts/lists to find more entities
     for key, val in obj.items():
@@ -150,66 +158,82 @@ def build_graph_from_assessment(assessment: Any) -> EntityGraph:
             raw = q.raw_query
             for prefix in ("What happens if we sanction ", "sanction ", "Impact of sanctioning "):
                 if raw.lower().startswith(prefix.lower()):
-                    target_name = raw[len(prefix):].rstrip("?. ")
+                    target_name = raw[len(prefix) :].rstrip("?. ")
                     break
             if not target_name:
                 target_name = raw[:60]
 
     if target_name:
         target_id = target_name.lower().replace(" ", "_").replace(",", "")
-        graph.add_entity(Entity(
-            id=target_id, name=target_name, entity_type="company", country=None
-        ))
+        graph.add_entity(
+            Entity(id=target_id, name=target_name, entity_type="company", country=None)
+        )
 
     # Extract entities from findings
     for finding in getattr(assessment, "findings", []):
         if not isinstance(finding, dict):
             continue
-        category = finding.get("category", "")
+        finding.get("category", "")
         data = finding.get("data", {})
         if not isinstance(data, dict):
             continue
 
         # LEI / corporate identity
         if data.get("legal_name"):
-            lei_id = str(data.get("lei", target_id))
+            str(data.get("lei", target_id))
             name = data["legal_name"]
             nid = name.lower().replace(" ", "_").replace(",", "")
-            graph.add_entity(Entity(
-                id=nid, name=name, entity_type="company",
-                country=data.get("country"),
-            ))
+            graph.add_entity(
+                Entity(
+                    id=nid,
+                    name=name,
+                    entity_type="company",
+                    country=data.get("country"),
+                )
+            )
             if nid != target_id:
-                graph.add_relationship(Relationship(
-                    source_id=target_id, target_id=nid,
-                    relationship_type="also_known_as",
-                    confidence=Confidence.MEDIUM,
-                ))
+                graph.add_relationship(
+                    Relationship(
+                        source_id=target_id,
+                        target_id=nid,
+                        relationship_type="also_known_as",
+                        confidence=Confidence.MEDIUM,
+                    )
+                )
 
         # Sanctions status
         if data.get("current_sanctions") and data["current_sanctions"] != "none_found":
             sid = "sanctions_list"
             graph.add_entity(Entity(id=sid, name="Sanctions List", entity_type="sanctions_list"))
-            graph.add_relationship(Relationship(
-                source_id=target_id, target_id=sid,
-                relationship_type="listed_on",
-                confidence=Confidence.HIGH,
-            ))
+            graph.add_relationship(
+                Relationship(
+                    source_id=target_id,
+                    target_id=sid,
+                    relationship_type="listed_on",
+                    confidence=Confidence.HIGH,
+                )
+            )
 
         # Geopolitical themes
         themes = data.get("key_themes", [])
         if isinstance(themes, list):
             for theme in themes[:5]:
                 tid = f"theme_{theme}"
-                graph.add_entity(Entity(
-                    id=tid, name=theme.replace("_", " ").title(),
-                    entity_type="theme",
-                ))
-                graph.add_relationship(Relationship(
-                    source_id=target_id, target_id=tid,
-                    relationship_type="related_to",
-                    confidence=Confidence.MEDIUM,
-                ))
+                graph.add_entity(
+                    Entity(
+                        id=tid,
+                        name=theme.replace("_", " ").title(),
+                        entity_type="theme",
+                    )
+                )
+                graph.add_relationship(
+                    Relationship(
+                        source_id=target_id,
+                        target_id=tid,
+                        relationship_type="related_to",
+                        confidence=Confidence.MEDIUM,
+                    )
+                )
 
         # Sectors
         for key in ("affected_sectors", "top_sectors"):
@@ -218,14 +242,21 @@ def build_graph_from_assessment(assessment: Any) -> EntityGraph:
                 for sector in sectors[:5]:
                     if isinstance(sector, str):
                         sid = f"sector_{sector.lower().replace(' ', '_')}"
-                        graph.add_entity(Entity(
-                            id=sid, name=sector, entity_type="sector",
-                        ))
-                        graph.add_relationship(Relationship(
-                            source_id=target_id, target_id=sid,
-                            relationship_type="affects_sector",
-                            confidence=Confidence.MEDIUM,
-                        ))
+                        graph.add_entity(
+                            Entity(
+                                id=sid,
+                                name=sector,
+                                entity_type="sector",
+                            )
+                        )
+                        graph.add_relationship(
+                            Relationship(
+                                source_id=target_id,
+                                target_id=sid,
+                                relationship_type="affects_sector",
+                                confidence=Confidence.MEDIUM,
+                            )
+                        )
 
     # Extract from friendly fire
     for ff in getattr(assessment, "friendly_fire", []):
@@ -237,15 +268,16 @@ def build_graph_from_assessment(assessment: Any) -> EntityGraph:
             ff_type = "company"
             if any(w in ff_name.lower() for w in ("government", "allied", "nato", "us ")):
                 ff_type = "government"
-            graph.add_entity(Entity(
-                id=ff_id, name=ff_name, entity_type=ff_type
-            ))
+            graph.add_entity(Entity(id=ff_id, name=ff_name, entity_type=ff_type))
             impact = ff.get("estimated_impact", "UNKNOWN")
-            graph.add_relationship(Relationship(
-                source_id=target_id, target_id=ff_id,
-                relationship_type=f"friendly_fire ({impact})",
-                confidence=Confidence.MEDIUM,
-            ))
+            graph.add_relationship(
+                Relationship(
+                    source_id=target_id,
+                    target_id=ff_id,
+                    relationship_type=f"friendly_fire ({impact})",
+                    confidence=Confidence.MEDIUM,
+                )
+            )
 
     return graph
 

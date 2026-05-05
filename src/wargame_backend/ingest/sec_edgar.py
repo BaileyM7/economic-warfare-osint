@@ -76,13 +76,11 @@ class SECEdgarSource(Source):
     name: ClassVar[str] = "sec_edgar"
     display_name: ClassVar[str] = "SEC EDGAR"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         ua = os.environ.get("SEC_EDGAR_USER_AGENT", _DEFAULT_UA)
         headers = {"User-Agent": ua, "Accept": "application/json"}
 
-        date_range = f"custom&startdt={since.strftime('%Y-%m-%d')}&enddt={until.strftime('%Y-%m-%d')}"
+        f"custom&startdt={since.strftime('%Y-%m-%d')}&enddt={until.strftime('%Y-%m-%d')}"
         for keyword, target_iso3, _label in _QUERIES:
             params = {
                 "q": keyword,
@@ -95,19 +93,13 @@ class SECEdgarSource(Source):
                 response = await self._get(_EFTS_URL, params=params, headers=headers)
                 payload = response.json()
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "sec_edgar.fetch_failed", keyword=keyword, error=str(exc)
-                )
+                log.warning("sec_edgar.fetch_failed", keyword=keyword, error=str(exc))
                 continue
 
             hits = (payload.get("hits") or {}).get("hits") or []
             for hit in hits:
                 source = hit.get("_source") or {}
-                accession = (
-                    hit.get("_id")
-                    or source.get("adsh")
-                    or source.get("accession_no")
-                )
+                accession = hit.get("_id") or source.get("adsh") or source.get("accession_no")
                 if not accession:
                     continue
                 filing_date = _parse_filing_date(source.get("file_date"))
@@ -153,8 +145,5 @@ class SECEdgarSource(Source):
                 "keyword": raw.keyword,
                 "filing_date": raw.filing_date.isoformat() if raw.filing_date else None,
             },
-            raw_text=(
-                f"EDGAR {raw.form_type}: {raw.company_name} "
-                f"(matched '{raw.keyword}')"
-            ),
+            raw_text=(f"EDGAR {raw.form_type}: {raw.company_name} (matched '{raw.keyword}')"),
         )

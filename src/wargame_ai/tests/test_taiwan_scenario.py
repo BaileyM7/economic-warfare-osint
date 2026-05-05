@@ -48,54 +48,250 @@ class DeterministicLLM:
     #: yields (tool_name, args) tuples; the index wraps modulo len(script).
     _SCRIPTS: dict[str, list[tuple[str, dict[str, Any]]]] = {
         "CHN": [
-            ("information_action", {"channel": "state_media", "target": "TWN", "content_type": "propaganda", "rationale": "Shape narrative domestically."}),
-            ("cyber_action", {"target": "TWN", "vector": "ddos", "intent": "disruption", "rationale": "Probe TWN networks."}),
-            ("economic_action", {"target": "TWN", "instrument": "export_control", "magnitude": "targeted", "rationale": "Signal costs."}),
-            ("kinetic_action", {"target": "TWN", "asset": "Type_055_destroyer", "posture": "show_of_force", "rationale": "Reinforce quarantine."}),
-            ("diplomatic_action", {"target": "USA", "action_type": "envoy_summons", "severity": "moderate", "message": "Warning about US interference.", "rationale": "Warn Washington."}),
+            (
+                "information_action",
+                {
+                    "channel": "state_media",
+                    "target": "TWN",
+                    "content_type": "propaganda",
+                    "rationale": "Shape narrative domestically.",
+                },
+            ),
+            (
+                "cyber_action",
+                {
+                    "target": "TWN",
+                    "vector": "ddos",
+                    "intent": "disruption",
+                    "rationale": "Probe TWN networks.",
+                },
+            ),
+            (
+                "economic_action",
+                {
+                    "target": "TWN",
+                    "instrument": "export_control",
+                    "magnitude": "targeted",
+                    "rationale": "Signal costs.",
+                },
+            ),
+            (
+                "kinetic_action",
+                {
+                    "target": "TWN",
+                    "asset": "Type_055_destroyer",
+                    "posture": "show_of_force",
+                    "rationale": "Reinforce quarantine.",
+                },
+            ),
+            (
+                "diplomatic_action",
+                {
+                    "target": "USA",
+                    "action_type": "envoy_summons",
+                    "severity": "moderate",
+                    "message": "Warning about US interference.",
+                    "rationale": "Warn Washington.",
+                },
+            ),
         ],
         "TWN": [
-            ("diplomatic_action", {"target": "USA", "action_type": "alliance_call", "severity": "severe", "message": "Formal request for consultation.", "rationale": "Seek backing."}),
-            ("information_action", {"channel": "press_conference", "target": "", "content_type": "public_statement", "rationale": "Rally domestic support."}),
-            ("economic_action", {"target": "CHN", "instrument": "export_control", "magnitude": "targeted", "rationale": "Chip leverage."}),
-            ("no_action", {"reason": "Observation turn.", "rationale": "Waiting for allied response."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "USA",
+                    "action_type": "alliance_call",
+                    "severity": "severe",
+                    "message": "Formal request for consultation.",
+                    "rationale": "Seek backing.",
+                },
+            ),
+            (
+                "information_action",
+                {
+                    "channel": "press_conference",
+                    "target": "",
+                    "content_type": "public_statement",
+                    "rationale": "Rally domestic support.",
+                },
+            ),
+            (
+                "economic_action",
+                {
+                    "target": "CHN",
+                    "instrument": "export_control",
+                    "magnitude": "targeted",
+                    "rationale": "Chip leverage.",
+                },
+            ),
+            (
+                "no_action",
+                {"reason": "Observation turn.", "rationale": "Waiting for allied response."},
+            ),
         ],
         "USA": [
-            ("diplomatic_action", {"target": "CHN", "action_type": "condemnation", "severity": "severe", "message": "Cease immediately.", "rationale": "Verbal deterrence."}),
-            ("economic_action", {"target": "CHN", "instrument": "sanction", "magnitude": "broad", "rationale": "Financial pressure."}),
-            ("kinetic_action", {"target": "CHN", "asset": "carrier_strike_group", "posture": "show_of_force", "rationale": "Signal commitment."}),
-            ("cyber_action", {"target": "CHN", "vector": "network_intrusion", "intent": "espionage", "rationale": "Collect ISR."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "CHN",
+                    "action_type": "condemnation",
+                    "severity": "severe",
+                    "message": "Cease immediately.",
+                    "rationale": "Verbal deterrence.",
+                },
+            ),
+            (
+                "economic_action",
+                {
+                    "target": "CHN",
+                    "instrument": "sanction",
+                    "magnitude": "broad",
+                    "rationale": "Financial pressure.",
+                },
+            ),
+            (
+                "kinetic_action",
+                {
+                    "target": "CHN",
+                    "asset": "carrier_strike_group",
+                    "posture": "show_of_force",
+                    "rationale": "Signal commitment.",
+                },
+            ),
+            (
+                "cyber_action",
+                {
+                    "target": "CHN",
+                    "vector": "network_intrusion",
+                    "intent": "espionage",
+                    "rationale": "Collect ISR.",
+                },
+            ),
         ],
         "JPN": [
-            ("diplomatic_action", {"target": "USA", "action_type": "alliance_consultation", "severity": "moderate", "message": "Coordinate response.", "rationale": "Align with US."}),
-            ("economic_action", {"target": "CHN", "instrument": "export_control", "magnitude": "targeted", "rationale": "Chip tools."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "USA",
+                    "action_type": "alliance_consultation",
+                    "severity": "moderate",
+                    "message": "Coordinate response.",
+                    "rationale": "Align with US.",
+                },
+            ),
+            (
+                "economic_action",
+                {
+                    "target": "CHN",
+                    "instrument": "export_control",
+                    "magnitude": "targeted",
+                    "rationale": "Chip tools.",
+                },
+            ),
             ("no_action", {"reason": "Wait for coalition.", "rationale": "Build coalition."}),
         ],
         "KOR": [
-            ("diplomatic_action", {"target": "USA", "action_type": "coordination_call", "severity": "mild", "message": "Discuss.", "rationale": "Hedge."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "USA",
+                    "action_type": "coordination_call",
+                    "severity": "mild",
+                    "message": "Discuss.",
+                    "rationale": "Hedge.",
+                },
+            ),
             ("no_action", {"reason": "Avoid entrapment.", "rationale": "Domestic politics."}),
         ],
         "PHL": [
-            ("diplomatic_action", {"target": "USA", "action_type": "edca_activation", "severity": "severe", "message": "Hosting US assets.", "rationale": "Treaty obligation."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "USA",
+                    "action_type": "edca_activation",
+                    "severity": "severe",
+                    "message": "Hosting US assets.",
+                    "rationale": "Treaty obligation.",
+                },
+            ),
             ("no_action", {"reason": "Defensive only.", "rationale": "Avoid PRC targeting."}),
         ],
         "AUS": [
-            ("diplomatic_action", {"target": "USA", "action_type": "aukus_activation", "severity": "moderate", "message": "Aligning.", "rationale": "AUKUS obligation."}),
-            ("cyber_action", {"target": "CHN", "vector": "network_intrusion", "intent": "espionage", "rationale": "Five Eyes contribution."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "USA",
+                    "action_type": "aukus_activation",
+                    "severity": "moderate",
+                    "message": "Aligning.",
+                    "rationale": "AUKUS obligation.",
+                },
+            ),
+            (
+                "cyber_action",
+                {
+                    "target": "CHN",
+                    "vector": "network_intrusion",
+                    "intent": "espionage",
+                    "rationale": "Five Eyes contribution.",
+                },
+            ),
             ("no_action", {"reason": "Logistics only.", "rationale": "Support role."}),
         ],
         "PRK": [
-            ("information_action", {"channel": "state_media", "target": "KOR", "content_type": "propaganda", "rationale": "Opportunistic noise."}),
-            ("kinetic_action", {"target": "KOR", "asset": "ballistic_missile", "posture": "show_of_force", "rationale": "Test launch for leverage."}),
+            (
+                "information_action",
+                {
+                    "channel": "state_media",
+                    "target": "KOR",
+                    "content_type": "propaganda",
+                    "rationale": "Opportunistic noise.",
+                },
+            ),
+            (
+                "kinetic_action",
+                {
+                    "target": "KOR",
+                    "asset": "ballistic_missile",
+                    "posture": "show_of_force",
+                    "rationale": "Test launch for leverage.",
+                },
+            ),
             ("no_action", {"reason": "Save resources.", "rationale": "Conserve."}),
         ],
         "RUS": [
-            ("diplomatic_action", {"target": "USA", "action_type": "public_statement", "severity": "mild", "message": "Condemn US provocations.", "rationale": "Support Beijing."}),
-            ("cyber_action", {"target": "USA", "vector": "phishing", "intent": "espionage", "rationale": "Opportunistic ISR."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "USA",
+                    "action_type": "public_statement",
+                    "severity": "mild",
+                    "message": "Condemn US provocations.",
+                    "rationale": "Support Beijing.",
+                },
+            ),
+            (
+                "cyber_action",
+                {
+                    "target": "USA",
+                    "vector": "phishing",
+                    "intent": "espionage",
+                    "rationale": "Opportunistic ISR.",
+                },
+            ),
             ("no_action", {"reason": "Observe.", "rationale": "Preserve optionality."}),
         ],
         "IND": [
-            ("diplomatic_action", {"target": "CHN", "action_type": "public_statement", "severity": "mild", "message": "Call for de-escalation.", "rationale": "Strategic autonomy."}),
+            (
+                "diplomatic_action",
+                {
+                    "target": "CHN",
+                    "action_type": "public_statement",
+                    "severity": "mild",
+                    "message": "Call for de-escalation.",
+                    "rationale": "Strategic autonomy.",
+                },
+            ),
             ("no_action", {"reason": "LAC focus.", "rationale": "Watch border."}),
         ],
     }
@@ -110,7 +306,9 @@ class DeterministicLLM:
         human_prompt: str,
         tools: list[dict[str, Any]],
     ) -> LLMResponse:
-        script = self._SCRIPTS.get(self.country_code, [("no_action", {"reason": "no script", "rationale": "stub"})])
+        script = self._SCRIPTS.get(
+            self.country_code, [("no_action", {"reason": "no script", "rationale": "stub"})]
+        )
         name, args = script[self._idx % len(script)]
         self._idx += 1
         # Default required rationale if absent
@@ -216,11 +414,7 @@ async def test_taiwan_scenario_end_to_end(taiwan_scenario: ScenarioSpec, world) 
     )
 
     # -------- Assertion 2: one event per domain across the whole trace
-    sim_events = [
-        f["payload"]["event"]
-        for f in redis.frames
-        if f["frame_type"] == "sim_event"
-    ]
+    sim_events = [f["payload"]["event"] for f in redis.frames if f["frame_type"] == "sim_event"]
     assert sim_events, "no sim_events emitted at all"
     domains_seen = {e["domain"] for e in sim_events}
     required = {

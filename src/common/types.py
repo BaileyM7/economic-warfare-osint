@@ -17,6 +17,7 @@ class Confidence(str, Enum):
 
 class SourceReference(BaseModel):
     """Provenance tracking for a data point."""
+
     name: str  # e.g. "OpenSanctions", "OFAC SDN"
     url: str | None = None  # API or product landing URL
     record_url: str | None = None  # entity-specific deep link, when available
@@ -30,6 +31,7 @@ class ToolResponse(BaseModel):
 
     The orchestrator always receives this shape — it never sees raw API responses.
     """
+
     data: Any  # tool-specific typed payload
     confidence: Confidence
     sources: list[SourceReference]
@@ -39,18 +41,23 @@ class ToolResponse(BaseModel):
 
 # --- Entity models used across tools ---
 
+
 class Entity(BaseModel):
     """A resolved real-world entity (company, person, vessel, etc.)."""
+
     id: str
     name: str
     entity_type: str  # "company", "person", "vessel", "government"
     aliases: list[str] = Field(default_factory=list)
     country: str | None = None
-    identifiers: dict[str, str] = Field(default_factory=dict)  # e.g. {"lei": "...", "ofac_id": "..."}
+    identifiers: dict[str, str] = Field(
+        default_factory=dict
+    )  # e.g. {"lei": "...", "ofac_id": "..."}
 
 
 class Relationship(BaseModel):
     """A directed edge between two entities."""
+
     source_id: str
     target_id: str
     relationship_type: str  # "subsidiary_of", "beneficial_owner", "supplies", "trades_with"
@@ -61,6 +68,7 @@ class Relationship(BaseModel):
 
 class EntityGraph(BaseModel):
     """A collection of entities and their relationships."""
+
     entities: list[Entity] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
 
@@ -88,6 +96,7 @@ class ScenarioType(str, Enum):
 
 class AnalystQuery(BaseModel):
     """Parsed representation of the analyst's original question."""
+
     raw_query: str
     scenario_type: ScenarioType | None = None
     target_entities: list[str] = Field(default_factory=list)
@@ -96,6 +105,7 @@ class AnalystQuery(BaseModel):
 
 class ImpactAssessment(BaseModel):
     """Final synthesized output from the orchestrator."""
+
     query: AnalystQuery
     scenario_type: ScenarioType
     executive_summary: str

@@ -59,12 +59,8 @@ class TestSignalCollector:
             Signal(source=f"S{i}", headline=f"hl{i}", magnitude=mag)
             for i, mag in enumerate([0.95, 0.10, 0.80, 0.50, 0.05, 0.90, 0.45, 0.20, 0.85, 0.60])
         ]
-        extractors = [
-            _StubExtractor(s.source, s) for s in signals
-        ]
-        collector = SignalCollector(
-            extractors, magnitude_floor=0.30, max_signals=5
-        )
+        extractors = [_StubExtractor(s.source, s) for s in signals]
+        collector = SignalCollector(extractors, magnitude_floor=0.30, max_signals=5)
         result = await collector.collect_for(session=None, iso3="CHN")  # type: ignore[arg-type]
 
         assert len(result) == 5

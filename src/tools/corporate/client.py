@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import date
 from typing import Any
@@ -49,10 +48,12 @@ def _parse_company(raw: dict[str, Any]) -> CompanyRecord:
     industry_codes: list[dict[str, str]] = []
     for ic in c.get("industry_codes", []) or []:
         code_obj = ic.get("industry_code", ic)
-        industry_codes.append({
-            "code": str(code_obj.get("code", "")),
-            "scheme": str(code_obj.get("code_scheme_name", code_obj.get("code_scheme_id", ""))),
-        })
+        industry_codes.append(
+            {
+                "code": str(code_obj.get("code", "")),
+                "scheme": str(code_obj.get("code_scheme_name", code_obj.get("code_scheme_id", ""))),
+            }
+        )
     return CompanyRecord(
         name=c.get("name", ""),
         jurisdiction=c.get("jurisdiction_code", ""),
@@ -105,14 +106,21 @@ async def oc_search_companies(query: str, jurisdiction: str = "") -> list[Compan
         else []
     )
     results = [_parse_company(cr) for cr in companies_raw]
-    set_cached([r.model_dump(mode="json") for r in results], cache_ns, query=query, jurisdiction=jurisdiction)
+    set_cached(
+        [r.model_dump(mode="json") for r in results],
+        cache_ns,
+        query=query,
+        jurisdiction=jurisdiction,
+    )
     return results
 
 
 async def oc_get_company(jurisdiction_code: str, company_number: str) -> CompanyRecord | None:
     """Fetch a specific company from OpenCorporates."""
     cache_ns = "oc_get_company"
-    cached = get_cached(cache_ns, jurisdiction_code=jurisdiction_code, company_number=company_number)
+    cached = get_cached(
+        cache_ns, jurisdiction_code=jurisdiction_code, company_number=company_number
+    )
     if cached is not None:
         return CompanyRecord(**cached)
 
@@ -131,14 +139,23 @@ async def oc_get_company(jurisdiction_code: str, company_number: str) -> Company
     officers = await oc_search_officers_for_company(jurisdiction_code, company_number)
     company.officers = officers
 
-    set_cached(company.model_dump(mode="json"), cache_ns, jurisdiction_code=jurisdiction_code, company_number=company_number)
+    set_cached(
+        company.model_dump(mode="json"),
+        cache_ns,
+        jurisdiction_code=jurisdiction_code,
+        company_number=company_number,
+    )
     return company
 
 
-async def oc_search_officers_for_company(jurisdiction_code: str, company_number: str) -> list[Officer]:
+async def oc_search_officers_for_company(
+    jurisdiction_code: str, company_number: str
+) -> list[Officer]:
     """Fetch officers for a specific company from OpenCorporates."""
     cache_ns = "oc_company_officers"
-    cached = get_cached(cache_ns, jurisdiction_code=jurisdiction_code, company_number=company_number)
+    cached = get_cached(
+        cache_ns, jurisdiction_code=jurisdiction_code, company_number=company_number
+    )
     if cached is not None:
         return [Officer(**o) for o in cached]
 
@@ -152,12 +169,15 @@ async def oc_search_officers_for_company(jurisdiction_code: str, company_number:
         return []
 
     officers_raw = (
-        data.get("results", {}).get("officers", [])
-        if isinstance(data.get("results"), dict)
-        else []
+        data.get("results", {}).get("officers", []) if isinstance(data.get("results"), dict) else []
     )
     results = [_parse_officer(o) for o in officers_raw]
-    set_cached([r.model_dump(mode="json") for r in results], cache_ns, jurisdiction_code=jurisdiction_code, company_number=company_number)
+    set_cached(
+        [r.model_dump(mode="json") for r in results],
+        cache_ns,
+        jurisdiction_code=jurisdiction_code,
+        company_number=company_number,
+    )
     return results
 
 
@@ -178,9 +198,7 @@ async def oc_search_officers(name: str) -> list[Officer]:
         return []
 
     officers_raw = (
-        data.get("results", {}).get("officers", [])
-        if isinstance(data.get("results"), dict)
-        else []
+        data.get("results", {}).get("officers", []) if isinstance(data.get("results"), dict) else []
     )
     results = [_parse_officer(o) for o in officers_raw]
     set_cached([r.model_dump(mode="json") for r in results], cache_ns, name=name)
@@ -247,7 +265,7 @@ async def gleif_get_direct_parent(lei: str) -> OwnershipLink | None:
             f"{_GLEIF_BASE}/lei-records/{lei}/direct-parent-relationship",
             headers=_GLEIF_HEADERS,
         )
-    except Exception as exc:
+    except Exception:
         logger.debug("GLEIF direct parent not found for %s", lei)
         set_cached({}, cache_ns, lei=lei)
         return None
@@ -263,7 +281,7 @@ async def gleif_get_direct_parent(lei: str) -> OwnershipLink | None:
         return None
 
     rel = relationships[0]
-    rel_attrs = rel.get("attributes", {})
+    rel.get("attributes", {})
     parent_id = ""
     # The parent LEI is in the relationship links
     rel_links = rel.get("relationships", {})
@@ -293,7 +311,7 @@ async def gleif_get_ultimate_parent(lei: str) -> OwnershipLink | None:
             f"{_GLEIF_BASE}/lei-records/{lei}/ultimate-parent-relationship",
             headers=_GLEIF_HEADERS,
         )
-    except Exception as exc:
+    except Exception:
         logger.debug("GLEIF ultimate parent not found for %s", lei)
         set_cached({}, cache_ns, lei=lei)
         return None
@@ -397,7 +415,9 @@ async def icij_search(query: str, entity_type: str = "entity") -> list[OffshoreE
         results_raw = []
 
     results = [_parse_offshore_entity(r) for r in results_raw if isinstance(r, dict)]
-    set_cached([r.model_dump(mode="json") for r in results], cache_ns, query=query, type=entity_type)
+    set_cached(
+        [r.model_dump(mode="json") for r in results], cache_ns, query=query, type=entity_type
+    )
     return results
 
 

@@ -33,6 +33,7 @@ def _api_key() -> str | None:
 # Datalastic API (real AIS data)
 # ---------------------------------------------------------------------------
 
+
 async def vessel_find(name: str) -> list[dict[str, Any]]:
     """Search for vessels by name. Returns list of vessel summaries."""
     key = _api_key()
@@ -153,6 +154,7 @@ async def vessel_history(mmsi: str, days: int = 30) -> list[dict[str, Any]]:
 # Normalization — map Datalastic fields to our standard shape
 # ---------------------------------------------------------------------------
 
+
 def _normalize_vessel(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize Datalastic vessel response to a consistent shape."""
     return {
@@ -192,6 +194,7 @@ def _normalize_position(raw: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Port call history (Datalastic API)
 # ---------------------------------------------------------------------------
+
 
 async def vessel_port_calls(mmsi: str, days: int = 90) -> list[dict[str, Any]]:
     """Fetch port call history from Datalastic.
@@ -248,7 +251,10 @@ def _normalize_port_call(raw: dict[str, Any]) -> dict[str, Any]:
 # Port stop inference from AIS positions (fallback)
 # ---------------------------------------------------------------------------
 
-def infer_port_stops(positions: list[dict[str, Any]], speed_threshold: float = 1.0) -> list[dict[str, Any]]:
+
+def infer_port_stops(
+    positions: list[dict[str, Any]], speed_threshold: float = 1.0
+) -> list[dict[str, Any]]:
     """Infer port stops from AIS position history by detecting low-speed clusters.
 
     Groups consecutive positions where speed < threshold into stops,
@@ -277,7 +283,10 @@ def infer_port_stops(positions: list[dict[str, Any]], speed_threshold: float = 1
     for stop in stops:
         is_dup = False
         for u in unique:
-            if abs(stop["latitude"] - u["latitude"]) < 0.1 and abs(stop["longitude"] - u["longitude"]) < 0.1:
+            if (
+                abs(stop["latitude"] - u["latitude"]) < 0.1
+                and abs(stop["longitude"] - u["longitude"]) < 0.1
+            ):
                 is_dup = True
                 break
         if not is_dup:

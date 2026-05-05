@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, ClassVar
 
 import structlog
@@ -103,9 +103,7 @@ class DatalasticSource(Source):
             return False
         return True
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         api_key = os.environ.get("DATALASTIC_API_KEY", "")
         # We sample the current zone state for ``until`` and a prior reading
         # exactly one week earlier, so we can compute a w/w delta.  Datalastic
@@ -188,8 +186,5 @@ class DatalasticSource(Source):
                 "ping_count_w_w_pct": raw.ping_count_w_w_pct,
                 "sample": raw.raw_sample,
             },
-            raw_text=(
-                f"Datalastic {raw.zone} {raw.flag_iso3}-flag pings: "
-                f"{raw.ping_count}"
-            ),
+            raw_text=(f"Datalastic {raw.zone} {raw.flag_iso3}-flag pings: {raw.ping_count}"),
         )

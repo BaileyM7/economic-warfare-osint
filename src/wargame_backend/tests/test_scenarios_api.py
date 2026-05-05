@@ -6,8 +6,6 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from wargame_backend.app.db.models import Scenario
 
@@ -103,9 +101,7 @@ async def test_list_scenarios_returns_paginated_response(
 
 
 @pytest.mark.asyncio
-async def test_list_scenarios_filter_by_status(
-    client: AsyncClient, scenario: Scenario
-) -> None:
+async def test_list_scenarios_filter_by_status(client: AsyncClient, scenario: Scenario) -> None:
     """Status filter should return only matching scenarios."""
     response = await client.get("/api/scenarios?status=ready")
     assert response.status_code == 200

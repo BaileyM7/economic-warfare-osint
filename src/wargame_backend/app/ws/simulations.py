@@ -105,16 +105,16 @@ async def ws_simulation(ws: WebSocket, sim_id: uuid.UUID) -> None:
     except Exception as exc:
         log.error("DB error on WS connect", sim_id=str(sim_id), error=str(exc))
         seq += 1
-        await _send_error(ws, sim_id, seq, "DB_ERROR", "Failed to load simulation.", recoverable=False)
+        await _send_error(
+            ws, sim_id, seq, "DB_ERROR", "Failed to load simulation.", recoverable=False
+        )
         await ws.close(code=1011)
         return
 
     if simulation is None:
         log.info("WS sim not found", sim_id=str(sim_id))
         seq += 1
-        await _send_error(
-            ws, sim_id, seq, "NOT_FOUND", "Simulation not found.", recoverable=False
-        )
+        await _send_error(ws, sim_id, seq, "NOT_FOUND", "Simulation not found.", recoverable=False)
         await ws.close(code=1008)
         return
 
@@ -220,12 +220,8 @@ async def ws_simulation(ws: WebSocket, sim_id: uuid.UUID) -> None:
     # -- Main fan-out loop --
     try:
         while True:
-            queue_get_task = asyncio.create_task(
-                message_queue.get(), name=f"ws-queue-{sim_id}"
-            )
-            client_recv_task = asyncio.create_task(
-                ws.receive_text(), name=f"ws-client-{sim_id}"
-            )
+            queue_get_task = asyncio.create_task(message_queue.get(), name=f"ws-queue-{sim_id}")
+            client_recv_task = asyncio.create_task(ws.receive_text(), name=f"ws-client-{sim_id}")
 
             done, pending = await asyncio.wait(
                 {queue_get_task, client_recv_task},
@@ -279,7 +275,9 @@ async def ws_simulation(ws: WebSocket, sim_id: uuid.UUID) -> None:
     except Exception as exc:
         log.error("WS loop error", sim_id=str(sim_id), error=str(exc))
         seq += 1
-        await _send_error(ws, sim_id, seq, "WS_ERROR", "An internal error occurred.", recoverable=False)
+        await _send_error(
+            ws, sim_id, seq, "WS_ERROR", "An internal error occurred.", recoverable=False
+        )
         try:
             await ws.close(code=1011)
         except Exception:

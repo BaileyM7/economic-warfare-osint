@@ -116,9 +116,7 @@ class YFinanceSource(Source):
     name: ClassVar[str] = "yfinance"
     display_name: ClassVar[str] = "Yahoo Finance"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         period1 = int(since.timestamp())
         period2 = int(until.timestamp())
         for idx, (ticker, iso3, label) in enumerate(_all_targets()):
@@ -170,9 +168,7 @@ class YFinanceSource(Source):
     async def normalize(self, raw: RawRecord) -> Event:
         assert isinstance(raw, YFinanceRawRecord)
         try:
-            occurred_at = datetime.strptime(raw.date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
-            )
+            occurred_at = datetime.strptime(raw.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
             occurred_at = datetime.now(timezone.utc)
 

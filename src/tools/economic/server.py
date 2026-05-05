@@ -18,8 +18,6 @@ from src.common.types import Confidence, SourceReference, ToolResponse
 
 from .client import (
     COMMODITY_SERIES,
-    FRED_WARFARE_SERIES,
-    IMF_INDICATORS,
     WB_INDICATORS,
     FREDClient,
     IMFClient,
@@ -29,9 +27,7 @@ from .client import (
     fetch_macro_series,
 )
 from .models import (
-    CommodityPrice,
     CountryEconomicProfile,
-    EconomicIndicator,
     SanctionImpactEstimate,
 )
 
@@ -133,20 +129,30 @@ def _estimate_affected_sectors(
 ) -> list[str]:
     """Pick which sectors are most affected based on sanction type."""
     exports = country_info.get("key_exports", [])
-    energy_dep = country_info.get("energy_dependence", 0.3)
+    country_info.get("energy_dependence", 0.3)
 
     if sanction_type == "comprehensive":
         return exports  # everything hit
     if sanction_type == "energy":
-        return [s for s in exports if any(k in s.lower() for k in ["oil", "gas", "energy", "petro", "coal"])] or exports[:2]
+        return [
+            s
+            for s in exports
+            if any(k in s.lower() for k in ["oil", "gas", "energy", "petro", "coal"])
+        ] or exports[:2]
     if sanction_type == "technology":
-        return [s for s in exports if any(k in s.lower() for k in ["tech", "electron", "machine", "chip"])] or ["Technology"]
+        return [
+            s
+            for s in exports
+            if any(k in s.lower() for k in ["tech", "electron", "machine", "chip"])
+        ] or ["Technology"]
     if sanction_type == "financial":
         return ["Finance", "Banking"] + exports[:2]
     if sanction_type == "trade":
         return exports[:3]
     if sanction_type == "arms":
-        return [s for s in exports if any(k in s.lower() for k in ["weapon", "defense", "military"])] or ["Defense"]
+        return [
+            s for s in exports if any(k in s.lower() for k in ["weapon", "defense", "military"])
+        ] or ["Defense"]
     if sanction_type == "sectoral":
         return exports[:2]
     return exports[:2]
@@ -155,6 +161,7 @@ def _estimate_affected_sectors(
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def get_country_profile(country: str) -> dict:
@@ -250,6 +257,7 @@ async def get_gdp_exposure(country: str, sector: str = "") -> dict:
 
     # Heuristic sector breakdown
     from .client import _DEFAULT_SECTORS
+
     sectors = _DEFAULT_SECTORS.get(iso3, ["Services", "Manufacturing", "Agriculture"])
 
     # Build exposure data
@@ -319,7 +327,9 @@ async def get_commodity_prices(commodity: str, period: str = "1y") -> dict:
             data={"commodity": commodity, "prices": [], "error": "Unknown commodity"},
             confidence=Confidence.LOW,
             sources=[],
-            errors=[f"Commodity '{commodity}' not found. Available: {', '.join(COMMODITY_SERIES.keys())}"],
+            errors=[
+                f"Commodity '{commodity}' not found. Available: {', '.join(COMMODITY_SERIES.keys())}"
+            ],
         ).model_dump()
 
     try:
@@ -401,7 +411,9 @@ async def get_macro_series(
             "years_requested": years,
             "observations": [s.model_dump() for s in series],
         },
-        confidence=Confidence.HIGH if len(series) >= years else (Confidence.MEDIUM if series else Confidence.LOW),
+        confidence=Confidence.HIGH
+        if len(series) >= years
+        else (Confidence.MEDIUM if series else Confidence.LOW),
         sources=[
             SourceReference(
                 name="IMF DataMapper",
@@ -462,12 +474,15 @@ async def estimate_sanction_impact(
         profile = CountryEconomicProfile(country=target_country)
 
     # Get country heuristics or defaults
-    country_info = _COUNTRY_HEURISTICS.get(iso3, {
-        "trade_share": 0.40,
-        "openness": 0.30,
-        "key_exports": profile.top_sectors[:4] if profile.top_sectors else ["General"],
-        "energy_dependence": 0.30,
-    })
+    country_info = _COUNTRY_HEURISTICS.get(
+        iso3,
+        {
+            "trade_share": 0.40,
+            "openness": 0.30,
+            "key_exports": profile.top_sectors[:4] if profile.top_sectors else ["General"],
+            "energy_dependence": 0.30,
+        },
+    )
 
     trade_share = country_info["trade_share"]
     openness = country_info["openness"]
@@ -487,7 +502,7 @@ async def estimate_sanction_impact(
 
     if sanction_type_lower == "energy":
         energy_dep = country_info.get("energy_dependence", 0.30)
-        base_impact *= (1.0 + energy_dep)  # amplify if energy-dependent
+        base_impact *= 1.0 + energy_dep  # amplify if energy-dependent
 
     gdp_impact_pct = round(base_impact * 100, 2)
 

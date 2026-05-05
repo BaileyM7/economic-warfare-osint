@@ -22,12 +22,12 @@ import enum as _enum
 
 
 class Domain(str, _enum.Enum):
-    info = "info"                            # violet  #9333ea
-    diplomatic = "diplomatic"               # blue    #3b82f6
-    economic = "economic"                   # amber   #f59e0b
-    cyber = "cyber"                          # cyan    #06b6d4
-    kinetic_limited = "kinetic_limited"     # orange  #f97316
-    kinetic_general = "kinetic_general"     # red     #ef4444
+    info = "info"  # violet  #9333ea
+    diplomatic = "diplomatic"  # blue    #3b82f6
+    economic = "economic"  # amber   #f59e0b
+    cyber = "cyber"  # cyan    #06b6d4
+    kinetic_limited = "kinetic_limited"  # orange  #f97316
+    kinetic_general = "kinetic_general"  # red     #ef4444
 
 
 class EscalationRung(IntEnum):
@@ -37,12 +37,12 @@ class EscalationRung(IntEnum):
     The frontend color-saturates arcs by rung value.
     """
 
-    peacetime = 0           # Normal diplomatic interactions
-    gray_zone = 1           # Sub-threshold covert ops, disinformation
+    peacetime = 0  # Normal diplomatic interactions
+    gray_zone = 1  # Sub-threshold covert ops, disinformation
     coercive_diplomacy = 2  # Explicit threats, military exercises near borders
-    limited_conflict = 3    # Blockades, limited strikes, cyber attacks on critical infra
-    regional_war = 4        # Sustained military engagement, multiple actors
-    general_war = 5         # Full-scale multi-domain conflict, nuclear signaling
+    limited_conflict = 3  # Blockades, limited strikes, cyber attacks on critical infra
+    regional_war = 4  # Sustained military engagement, multiple actors
+    general_war = 5  # Full-scale multi-domain conflict, nuclear signaling
 
 
 class Citation(BaseModel):
@@ -240,7 +240,7 @@ class SimEvent(SimEventCreate):
     """
 
     model_config = ConfigDict(
-        from_attributes=True,   # Enable ORM-mode for SQLAlchemy model hydration
+        from_attributes=True,  # Enable ORM-mode for SQLAlchemy model hydration
         populate_by_name=True,
         str_strip_whitespace=True,
     )

@@ -56,11 +56,19 @@ _WATCH_BASES: list[dict[str, Any]] = [
 # AIS MID prefix (first 3 digits of MMSI) → ISO3 (slice only).  This is
 # the standard mapping for vessel flag-of-registration.
 _MID_TO_ISO3: dict[str, str] = {
-    "412": "CHN", "413": "CHN", "414": "CHN",
+    "412": "CHN",
+    "413": "CHN",
+    "414": "CHN",
     "416": "TWN",
-    "338": "USA", "366": "USA", "367": "USA", "368": "USA", "369": "USA",
-    "431": "JPN", "432": "JPN",
-    "440": "KOR", "441": "KOR",
+    "338": "USA",
+    "366": "USA",
+    "367": "USA",
+    "368": "USA",
+    "369": "USA",
+    "431": "JPN",
+    "432": "JPN",
+    "440": "KOR",
+    "441": "KOR",
     "445": "PRK",
     "548": "PHL",
     "503": "AUS",
@@ -69,8 +77,7 @@ _MID_TO_ISO3: dict[str, str] = {
 }
 
 _DAILY_URL = (
-    "https://coast.noaa.gov/htdata/CMSP/AISDataHandler/"
-    "{year}/AIS_{year}_{month:02d}_{day:02d}.zip"
+    "https://coast.noaa.gov/htdata/CMSP/AISDataHandler/{year}/AIS_{year}_{month:02d}_{day:02d}.zip"
 )
 
 
@@ -79,10 +86,7 @@ def _flag_from_mmsi(mmsi: str) -> str | None:
 
 
 def _in_box(lat: float, lon: float, box: dict[str, Any]) -> bool:
-    return (
-        box["lat_min"] <= lat <= box["lat_max"]
-        and box["lon_min"] <= lon <= box["lon_max"]
-    )
+    return box["lat_min"] <= lat <= box["lat_max"] and box["lon_min"] <= lon <= box["lon_max"]
 
 
 class MarineCadastreRawRecord(BaseModel):
@@ -110,9 +114,7 @@ class MarineCadastreAISSource(Source):
     name: ClassVar[str] = "marinecadastre_ais"
     display_name: ClassVar[str] = "MarineCadastre AIS"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         for day in _days_in_window(since, until):
             url = _DAILY_URL.format(year=day.year, month=day.month, day=day.day)
             try:
@@ -154,9 +156,7 @@ class MarineCadastreAISSource(Source):
                                     counts[key] = counts.get(key, 0) + 1
                                     break
             except (zipfile.BadZipFile, KeyError, StopIteration) as exc:
-                log.warning(
-                    "marinecadastre.parse_failed", url=url, error=str(exc)
-                )
+                log.warning("marinecadastre.parse_failed", url=url, error=str(exc))
                 continue
 
             date = day.strftime("%Y-%m-%d")
@@ -172,9 +172,7 @@ class MarineCadastreAISSource(Source):
     async def normalize(self, raw: RawRecord) -> Event:
         assert isinstance(raw, MarineCadastreRawRecord)
         try:
-            occurred_at = datetime.strptime(raw.date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
-            )
+            occurred_at = datetime.strptime(raw.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
             occurred_at = datetime.now(timezone.utc)
         dedup_key = f"marinecadastre_ais:{raw.date}:{raw.base}:{raw.flag_iso3}"

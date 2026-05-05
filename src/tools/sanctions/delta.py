@@ -22,10 +22,23 @@ from src.tools.screening.client import search_csl
 
 logger = logging.getLogger(__name__)
 
-# Map raw OFAC sdnType -> our feed category
+# Map raw OFAC sdnType -> our feed category. The SDN CSV ships these
+# *lowercased* (`individual`, `vessel`, `aircraft`) and uses the literal
+# string `-0-` as the placeholder for **Entity** (companies / organizations
+# get no explicit type tag). Documented Treasury values stay as a backstop
+# in case the format ever changes.
 _TYPE_TO_CATEGORY = {
+    # Lowercase as actually shipped today
+    "individual": "people_sanctions",
+    "vessel": "markets",
+    "aircraft": "markets",
+    # OFAC's null-placeholder == Entity (~9,600 rows / >50% of the SDN list)
+    "-0-": "company_sanctions",
+    "": "company_sanctions",
+    # Capitalized backstops for forward-compat
     "Individual": "people_sanctions",
     "Entity": "company_sanctions",
+    "entity": "company_sanctions",
     "Vessel": "markets",
     "Aircraft": "markets",
 }
@@ -54,10 +67,10 @@ _PROGRAM_WEIGHTS: dict[str, int] = {
     "CUBA": 50,
 }
 
-# Keyword queries used to augment via Trade.gov CSL (Entity List / MEU / UVL).
-# Picked to bias the surface toward defense/intel-relevant designations
-# without being so broad that we drown in routine renewals.
-_CSL_WATCH_QUERIES: list[str] = [
+# Suggested CSL keyword queries surfaced as starter items in the empty-state
+# UI. After Phase 3, the active queries used at refresh time come from each
+# user's watchlist_items rows where entity_kind='sanctions_keyword'.
+SUGGESTED_CSL_KEYWORDS: list[str] = [
     "semiconductor",
     "drone",
     "missile",
@@ -200,6 +213,10 @@ def _ofac_entry_to_item(
         "headline": headline,
         "entity": name,
         "source_url": f"https://sanctionssearch.ofac.treas.gov/Details.aspx?id={ent_num}",
+        # OFAC SDN CSV doesn't carry a per-row designation date; the Risk Feed
+        # card shows fetch time only. Phase 3.5 will pull this from
+        # OpenSanctions enrichment.
+        "event_at": None,
         "fetched_at": _now_iso(),
         "synthetic_payload": _build_synthetic_payload_ofac(entry, address),
         "_score": score,  # private; risk_feed router strips before returning
@@ -287,6 +304,11 @@ def _csl_hit_to_item(hit: dict[str, Any]) -> dict[str, Any] | None:
 
     item_id = f"csl-{abs(hash((name, source, primary_program))) % 10_000_000}"
 
+    # CSL entries often carry a designation start_date (ISO YYYY-MM-DD) — the
+    # most accurate event_at we can offer for sanctions cards in Phase 3.
+    raw_start = hit.get("start_date")
+    event_at = raw_start.strip() if isinstance(raw_start, str) and raw_start.strip() else None
+
     return {
         "id": item_id,
         "category": category,
@@ -295,6 +317,7 @@ def _csl_hit_to_item(hit: dict[str, Any]) -> dict[str, Any] | None:
         "entity": name,
         "source_url": hit.get("source_list_url")
         or "https://www.trade.gov/consolidated-screening-list",
+        "event_at": event_at,
         "fetched_at": _now_iso(),
         "synthetic_payload": _build_synthetic_payload_csl(hit),
         "_score": score,
@@ -314,18 +337,25 @@ def _rank_and_cap(
     return out
 
 
-async def build_sanctions_feed() -> list[dict[str, Any]]:
+async def build_sanctions_feed(
+    csl_keywords: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Build the company-/people-sanctions slice of the Risk Feed.
 
     Strategy:
       1. Load OFAC SDN, take the most-recent _RECENCY_WINDOW entries by
          ent_num, score by program weight, split per category, cap.
-      2. Augment with Trade.gov CSL hits on a small watch-keyword list
-         (Entity List / MEU / UVL) — only when TRADE_GOV_API_KEY is set;
-         silently no-op otherwise.
+         (Always runs — global ranked surface, not driven by user watch-list.)
+      2. Augment with Trade.gov CSL hits using `csl_keywords`. Empty list =
+         skip CSL augmentation entirely (legitimate when the user hasn't
+         added any sanctions-keyword watch-list items). None = use
+         SUGGESTED_CSL_KEYWORDS — back-compat for callers that haven't
+         migrated yet.
       3. Dedupe (CSL hits that match an already-surfaced OFAC entity drop).
     """
     import asyncio
+
+    csl_keywords = csl_keywords if csl_keywords is not None else SUGGESTED_CSL_KEYWORDS
 
     client = OFACClient()
     await client._ensure_loaded()
@@ -365,8 +395,8 @@ async def build_sanctions_feed() -> list[dict[str, Any]]:
 
     seen_names: set[str] = {it["entity"].lower() for it in items}
 
-    # 2. CSL augmentation (gated on api key inside search_csl)
-    csl_tasks = [search_csl(q, limit=10, sources="Entity List") for q in _CSL_WATCH_QUERIES]
+    # 2. CSL augmentation (gated on api key inside search_csl + on user-supplied keywords)
+    csl_tasks = [search_csl(q, limit=10, sources="Entity List") for q in csl_keywords]
     csl_results = await asyncio.gather(*csl_tasks, return_exceptions=True)
 
     csl_items: list[dict[str, Any]] = []

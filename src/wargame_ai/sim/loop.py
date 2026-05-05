@@ -335,9 +335,7 @@ class SimLoop:
             recent_signals: list[Any] = []
             if self.signal_collector is not None and self._db_session is not None:
                 try:
-                    recent_signals = await self.signal_collector.collect_for(
-                        self._db_session, code
-                    )
+                    recent_signals = await self.signal_collector.collect_for(self._db_session, code)
                 except Exception as exc:  # noqa: BLE001
                     log.warning(
                         "signal_collector_failed",
@@ -798,9 +796,7 @@ class SimLoop:
 # ---------------------------------------------------------------------------
 
 
-def _synthesize_seed_explainability(
-    *, action_type: str, rationale: str
-) -> Explainability:
+def _synthesize_seed_explainability(*, action_type: str, rationale: str) -> Explainability:
     """Build an ``Explainability`` for a scenario seed event.
 
     Seed events don't have an agent behind them — they're pre-authored by
@@ -871,9 +867,7 @@ def seed_world_from_countries(
     state = WorldState()
     for c in countries:
         code = str(c["iso3"]).upper()
-        red_lines = [
-            RedLine(description=str(rl)) for rl in (c.get("red_lines") or [])
-        ]
+        red_lines = [RedLine(description=str(rl)) for rl in (c.get("red_lines") or [])]
         state.countries[code] = CountryState(
             iso3=code,
             name=str(c.get("name", code)),

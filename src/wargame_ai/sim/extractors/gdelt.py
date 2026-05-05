@@ -39,9 +39,7 @@ class GDELTExtractor:
         prior_start = now - timedelta(hours=window_hours * 2)
 
         async def _avg_tone(start: datetime, end: datetime) -> tuple[float | None, int]:
-            stmt = select(
-                func.avg(Event.severity), func.count(Event.id)
-            ).where(
+            stmt = select(func.avg(Event.severity), func.count(Event.id)).where(
                 and_(
                     Event.source == self._SOURCE_KEY,
                     Event.occurred_at >= start,
@@ -74,15 +72,16 @@ class GDELTExtractor:
         if magnitude < 0.1:
             return None
 
-        direction = "negative" if recent_avg < (prior_avg or 0) else (
-            "positive" if recent_avg > (prior_avg or 0) else "neutral"
+        direction = (
+            "negative"
+            if recent_avg < (prior_avg or 0)
+            else ("positive" if recent_avg > (prior_avg or 0) else "neutral")
         )
         if prior_avg is None:
             shift_phrase = f"avg tone {recent_avg:+.1f} ({recent_count} events)"
         else:
             shift_phrase = (
-                f"avg tone {recent_avg:+.1f} (was {prior_avg:+.1f}, "
-                f"{recent_count} events)"
+                f"avg tone {recent_avg:+.1f} (was {prior_avg:+.1f}, {recent_count} events)"
             )
         headline = f"{iso3} GDELT involvement: {shift_phrase}"
         return Signal(

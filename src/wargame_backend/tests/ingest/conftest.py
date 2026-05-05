@@ -12,7 +12,6 @@ credentials set in the environment; when credentials are absent, tests skip.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -56,8 +55,6 @@ async def async_session() -> AsyncGenerator[AsyncSession, None]:
     async with engine.begin() as conn:
         # agent_memory has a Vector column (pgvector) which SQLite can't handle;
         # create_all will fail on it.  We monkey-patch Vector to Numeric for testing.
-        from sqlalchemy import Numeric
-        from pgvector.sqlalchemy import Vector
         # Map Vector type to Text for SQLite compatibility
         from sqlalchemy import event as sa_event
 

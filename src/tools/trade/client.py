@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import io
 import logging
 from typing import Any
 
@@ -162,32 +161,133 @@ COUNTRY_NAME_TO_ISO3: dict[str, str] = {
 
 # ISO-3 alpha → UN Comtrade numeric reporter codes (subset of most-queried)
 ISO3_TO_COMTRADE_NUM: dict[str, str] = {
-    "AFG": "4", "ALB": "8", "DZA": "12", "AGO": "24", "ARG": "32",
-    "ARM": "51", "AUS": "36", "AUT": "40", "AZE": "31", "BHR": "48",
-    "BGD": "50", "BLR": "112", "BEL": "56", "BOL": "68", "BIH": "70",
-    "BRA": "76", "BRN": "96", "BGR": "100", "KHM": "116", "CMR": "120",
-    "CAN": "124", "CHL": "152", "CHN": "156", "COL": "170", "COG": "178",
-    "CRI": "188", "HRV": "191", "CUB": "192", "CYP": "196", "CZE": "203",
-    "COD": "180", "DNK": "208", "ECU": "218", "EGY": "818", "SLV": "222",
-    "EST": "233", "ETH": "231", "FIN": "246", "FRA": "251", "GEO": "268",
-    "DEU": "276", "GHA": "288", "GRC": "300", "GTM": "320", "HND": "340",
-    "HKG": "344", "HUN": "348", "ISL": "352", "IND": "356", "IDN": "360",
-    "IRN": "364", "IRQ": "368", "IRL": "372", "ISR": "376", "ITA": "381",
-    "JPN": "392", "JOR": "400", "KAZ": "398", "KEN": "404", "KWT": "414",
-    "KGZ": "417", "LAO": "418", "LVA": "428", "LBN": "422", "LBY": "434",
-    "LTU": "440", "LUX": "442", "MAC": "446", "MYS": "458", "MEX": "484",
-    "MNG": "496", "MAR": "504", "MOZ": "508", "MMR": "104", "NAM": "516",
-    "NPL": "524", "NLD": "528", "NZL": "554", "NIC": "558", "NGA": "566",
-    "PRK": "408", "MKD": "807", "NOR": "579", "OMN": "512", "PAK": "586",
-    "PAN": "591", "PRY": "600", "PER": "604", "PHL": "608", "POL": "616",
-    "PRT": "620", "QAT": "634", "ROU": "642", "RUS": "643", "SAU": "682",
-    "SEN": "686", "SRB": "688", "SGP": "702", "SVK": "703", "SVN": "705",
-    "ZAF": "710", "KOR": "410", "ESP": "724", "LKA": "144", "SDN": "729",
-    "SWE": "752", "CHE": "757", "SYR": "760", "TWN": "490", "TZA": "834",
-    "THA": "764", "TTO": "780", "TUN": "788", "TUR": "792", "TKM": "795",
-    "ARE": "784", "UGA": "800", "GBR": "826", "UKR": "804", "URY": "858",
-    "USA": "842", "UZB": "860", "VEN": "862", "VNM": "704", "YEM": "887",
-    "ZMB": "894", "ZWE": "716",
+    "AFG": "4",
+    "ALB": "8",
+    "DZA": "12",
+    "AGO": "24",
+    "ARG": "32",
+    "ARM": "51",
+    "AUS": "36",
+    "AUT": "40",
+    "AZE": "31",
+    "BHR": "48",
+    "BGD": "50",
+    "BLR": "112",
+    "BEL": "56",
+    "BOL": "68",
+    "BIH": "70",
+    "BRA": "76",
+    "BRN": "96",
+    "BGR": "100",
+    "KHM": "116",
+    "CMR": "120",
+    "CAN": "124",
+    "CHL": "152",
+    "CHN": "156",
+    "COL": "170",
+    "COG": "178",
+    "CRI": "188",
+    "HRV": "191",
+    "CUB": "192",
+    "CYP": "196",
+    "CZE": "203",
+    "COD": "180",
+    "DNK": "208",
+    "ECU": "218",
+    "EGY": "818",
+    "SLV": "222",
+    "EST": "233",
+    "ETH": "231",
+    "FIN": "246",
+    "FRA": "251",
+    "GEO": "268",
+    "DEU": "276",
+    "GHA": "288",
+    "GRC": "300",
+    "GTM": "320",
+    "HND": "340",
+    "HKG": "344",
+    "HUN": "348",
+    "ISL": "352",
+    "IND": "356",
+    "IDN": "360",
+    "IRN": "364",
+    "IRQ": "368",
+    "IRL": "372",
+    "ISR": "376",
+    "ITA": "381",
+    "JPN": "392",
+    "JOR": "400",
+    "KAZ": "398",
+    "KEN": "404",
+    "KWT": "414",
+    "KGZ": "417",
+    "LAO": "418",
+    "LVA": "428",
+    "LBN": "422",
+    "LBY": "434",
+    "LTU": "440",
+    "LUX": "442",
+    "MAC": "446",
+    "MYS": "458",
+    "MEX": "484",
+    "MNG": "496",
+    "MAR": "504",
+    "MOZ": "508",
+    "MMR": "104",
+    "NAM": "516",
+    "NPL": "524",
+    "NLD": "528",
+    "NZL": "554",
+    "NIC": "558",
+    "NGA": "566",
+    "PRK": "408",
+    "MKD": "807",
+    "NOR": "579",
+    "OMN": "512",
+    "PAK": "586",
+    "PAN": "591",
+    "PRY": "600",
+    "PER": "604",
+    "PHL": "608",
+    "POL": "616",
+    "PRT": "620",
+    "QAT": "634",
+    "ROU": "642",
+    "RUS": "643",
+    "SAU": "682",
+    "SEN": "686",
+    "SRB": "688",
+    "SGP": "702",
+    "SVK": "703",
+    "SVN": "705",
+    "ZAF": "710",
+    "KOR": "410",
+    "ESP": "724",
+    "LKA": "144",
+    "SDN": "729",
+    "SWE": "752",
+    "CHE": "757",
+    "SYR": "760",
+    "TWN": "490",
+    "TZA": "834",
+    "THA": "764",
+    "TTO": "780",
+    "TUN": "788",
+    "TUR": "792",
+    "TKM": "795",
+    "ARE": "784",
+    "UGA": "800",
+    "GBR": "826",
+    "UKR": "804",
+    "URY": "858",
+    "USA": "842",
+    "UZB": "860",
+    "VEN": "862",
+    "VNM": "704",
+    "YEM": "887",
+    "ZMB": "894",
+    "ZWE": "716",
 }
 
 
@@ -241,9 +341,9 @@ _TRADE_CACHE_TTL = 60 * 60 * 24 * 7
 # Full-data endpoint requires a paid subscription key.
 # Preview endpoint is free (no key needed) but limited to 500 rows per request.
 # We auto-select based on whether a key is configured.
-_COMTRADE_PAID_BASE    = "https://comtradeapi.un.org/data/v1/get"
+_COMTRADE_PAID_BASE = "https://comtradeapi.un.org/data/v1/get"
 _COMTRADE_PREVIEW_BASE = "https://comtradeapi.un.org/public/v1/preview"
-_COMTRADE_REF_BASE     = "https://comtradeapi.un.org/files/v1/app/reference"
+_COMTRADE_REF_BASE = "https://comtradeapi.un.org/files/v1/app/reference"
 
 
 def _comtrade_base() -> str:
@@ -343,9 +443,7 @@ def _parse_comtrade_records(records: list[dict[str, Any]]) -> list[TradeFlow]:
             or _num_to_iso3(rec.get("reporterCode"))
         )
         partner = (
-            rec.get("partnerISO")
-            or rec.get("partnerDesc")
-            or _num_to_iso3(rec.get("partnerCode"))
+            rec.get("partnerISO") or rec.get("partnerDesc") or _num_to_iso3(rec.get("partnerCode"))
         )
         cmd_desc = (
             rec.get("cmdDesc")
@@ -428,9 +526,7 @@ async def get_trade_partner_summary(
     iso3 = resolve_country(country)
     flow_code = "M" if flow == "import" else "X"
 
-    records = await fetch_comtrade_trade(
-        reporter_iso3=iso3, year=year, flow_code=flow_code
-    )
+    records = await fetch_comtrade_trade(reporter_iso3=iso3, year=year, flow_code=flow_code)
     flows = _parse_comtrade_records(records)
 
     total_imports = sum(f.trade_value_usd for f in flows if f.flow_type == "import")
@@ -444,7 +540,7 @@ async def get_trade_partner_summary(
         )
 
     # Sort by value descending and take top 20
-    sorted_partners = sorted(partner_totals.items(), key=lambda x: x[1], reverse=True)[:20]
+    sorted(partner_totals.items(), key=lambda x: x[1], reverse=True)[:20]
 
     # Aggregate by commodity
     commodity_totals: dict[str, dict[str, Any]] = {}
@@ -458,9 +554,9 @@ async def get_trade_partner_summary(
             }
         commodity_totals[key]["value_usd"] += f.trade_value_usd
 
-    top_commodities = sorted(
-        commodity_totals.values(), key=lambda x: x["value_usd"], reverse=True
-    )[:20]
+    top_commodities = sorted(commodity_totals.values(), key=lambda x: x["value_usd"], reverse=True)[
+        :20
+    ]
 
     return TradePartnerSummary(
         country=iso3,
@@ -477,9 +573,7 @@ async def get_trade_partner_summary(
     )
 
 
-async def get_supply_chain_dependency(
-    country: str, commodity_code: str
-) -> CommodityDependency:
+async def get_supply_chain_dependency(country: str, commodity_code: str) -> CommodityDependency:
     """Analyse how dependent a country is on a specific commodity import."""
     iso3 = resolve_country(country)
 
@@ -536,12 +630,8 @@ async def get_supply_chain_dependency(
 # UNCTADstat client — Liner Shipping Connectivity Index
 # ===========================================================================
 
-_UNCTAD_LSCI_URL = (
-    "https://unctadstat-api.unctad.org/bulkdownload/US.LSCI/US_LSCI"
-)
-_UNCTAD_BILATERAL_URL = (
-    "https://unctadstat-api.unctad.org/bulkdownload/US.LSBCI/US_LSBCI"
-)
+_UNCTAD_LSCI_URL = "https://unctadstat-api.unctad.org/bulkdownload/US.LSCI/US_LSCI"
+_UNCTAD_BILATERAL_URL = "https://unctadstat-api.unctad.org/bulkdownload/US.LSBCI/US_LSBCI"
 
 
 def _parse_unctad_csv(text: str) -> list[dict[str, str]]:
@@ -597,9 +687,18 @@ async def fetch_bilateral_lsci_data() -> list[dict[str, str]]:
 
 def _match_country_in_row(row: dict[str, str], iso3: str) -> bool:
     """Check if any economy/country field in a row matches the given ISO3 code."""
-    for key in ("Economy", "economy", "Reporter", "reporter",
-                "economyISO3", "reporterISO3", "Economy_ISO3",
-                "Economy Label", "Country", "country"):
+    for key in (
+        "Economy",
+        "economy",
+        "Reporter",
+        "reporter",
+        "economyISO3",
+        "reporterISO3",
+        "Economy_ISO3",
+        "Economy Label",
+        "Country",
+        "country",
+    ):
         val = row.get(key, "").strip().upper()
         if val == iso3:
             return True
@@ -655,8 +754,14 @@ async def get_shipping_connectivity_data(country: str) -> ShippingConnectivity:
         if _match_country_in_row(row, iso3):
             # Find the partner country field
             partner = ""
-            for key in ("Partner", "partner", "partnerISO3", "Partner_ISO3",
-                        "Economy_Partner", "Partner Label"):
+            for key in (
+                "Partner",
+                "partner",
+                "partnerISO3",
+                "Partner_ISO3",
+                "Economy_Partner",
+                "Partner Label",
+            ):
                 if row.get(key, "").strip():
                     partner = row[key].strip()
                     break

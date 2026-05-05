@@ -42,20 +42,14 @@ _SAMPLE_XML = """\
 
 class TestParsing:
     def test_parses_publish_date_in_known_formats(self) -> None:
-        assert _parse_publish_date("03/15/2026") == datetime(
-            2026, 3, 15, tzinfo=timezone.utc
-        )
-        assert _parse_publish_date("2026-03-15") == datetime(
-            2026, 3, 15, tzinfo=timezone.utc
-        )
+        assert _parse_publish_date("03/15/2026") == datetime(2026, 3, 15, tzinfo=timezone.utc)
+        assert _parse_publish_date("2026-03-15") == datetime(2026, 3, 15, tzinfo=timezone.utc)
         assert _parse_publish_date(None) is None
         assert _parse_publish_date("not a date") is None
 
     def test_entry_to_raw_extracts_fields(self) -> None:
         root = ET.fromstring(_SAMPLE_XML)
-        entry = next(
-            e for e in root.iter() if e.tag.split("}", 1)[-1] == "sdnEntry"
-        )
+        entry = next(e for e in root.iter() if e.tag.split("}", 1)[-1] == "sdnEntry")
         record = _entry_to_raw(entry)
         assert record is not None
         assert record.uid == "12345"

@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 _CACHE_NS = "sayari"
 _RESOLVE_TTL = 86400  # 24h — entity IDs are stable
-_UBO_TTL = 3600       # 1h
-_TRADE_TTL = 3600     # 1h
+_UBO_TTL = 3600  # 1h
+_TRADE_TTL = 3600  # 1h
 
 # Singleton SDK client
 _client = None
@@ -41,8 +41,10 @@ def _get_client():
         return None
     try:
         import warnings
+
         warnings.filterwarnings("ignore", category=UserWarning, module="sayari")
         from sayari import Sayari
+
         _client = Sayari(
             client_id=config.sayari_client_id,
             client_secret=config.sayari_client_secret,
@@ -56,6 +58,7 @@ def _get_client():
 # ---------------------------------------------------------------------------
 # Entity resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_sync(name: str, imo: str | None = None) -> tuple[str | None, str]:
     """Synchronous resolution — run via to_thread().
@@ -115,7 +118,9 @@ async def resolve_entity(name: str, imo: str | None = None) -> tuple[str | None,
 
     set_cached(
         {"entity_id": entity_id, "label": label},
-        _CACHE_NS, ttl=_RESOLVE_TTL, **cache_key,
+        _CACHE_NS,
+        ttl=_RESOLVE_TTL,
+        **cache_key,
     )
     return entity_id, label
 
@@ -123,6 +128,7 @@ async def resolve_entity(name: str, imo: str | None = None) -> tuple[str | None,
 # ---------------------------------------------------------------------------
 # UBO / Ownership chain
 # ---------------------------------------------------------------------------
+
 
 def _ubo_sync(entity_id: str) -> SayariOwnershipChain:
     """Synchronous UBO lookup — run via to_thread()."""
@@ -134,7 +140,7 @@ def _ubo_sync(entity_id: str) -> SayariOwnershipChain:
     chain: list[SayariOwnerLink] = []
     max_depth = 0
 
-    for path in (result.data or []):
+    for path in result.data or []:
         prev_eid = entity_id  # track parent within each path
         for i, node in enumerate(path.path or []):
             entity = getattr(node, "entity", None)
@@ -185,7 +191,7 @@ def _ubo_sync(entity_id: str) -> SayariOwnershipChain:
                 parent_entity_id=prev_eid,
             )
             # Deduplicate by entity_id (keep first occurrence with its parent)
-            if not any(l.entity_id == link.entity_id for l in chain):
+            if not any(existing.entity_id == link.entity_id for existing in chain):
                 chain.append(link)
 
             prev_eid = current_eid
@@ -207,7 +213,10 @@ async def get_ubo_chain(entity_id: str) -> SayariOwnershipChain:
 
     set_cached(
         result.model_dump(mode="json"),
-        _CACHE_NS, ttl=_UBO_TTL, action="ubo", entity_id=entity_id,
+        _CACHE_NS,
+        ttl=_UBO_TTL,
+        action="ubo",
+        entity_id=entity_id,
     )
     return result
 
@@ -218,38 +227,102 @@ async def get_ubo_chain(entity_id: str) -> SayariOwnershipChain:
 
 # HS code prefix → commodity category mapping
 _HS_CATEGORIES: dict[str, str] = {
-    "01": "Animal Products", "02": "Meat", "03": "Seafood", "04": "Dairy",
-    "05": "Animal Products", "06": "Plants", "07": "Vegetables", "08": "Fruits",
-    "09": "Coffee/Tea/Spices", "10": "Cereals", "11": "Milling Products",
-    "12": "Seeds/Oils", "13": "Gums/Resins", "14": "Vegetable Products",
-    "15": "Fats/Oils", "16": "Prepared Foods", "17": "Sugar", "18": "Cocoa",
-    "19": "Prepared Cereals", "20": "Prepared Foods", "21": "Prepared Foods",
-    "22": "Beverages", "23": "Animal Feed", "24": "Tobacco",
-    "25": "Minerals", "26": "Ores", "27": "Mineral Fuels/Oil",
-    "28": "Chemicals", "29": "Organic Chemicals", "30": "Pharmaceuticals",
-    "31": "Fertilizers", "32": "Dyes/Paints", "33": "Cosmetics",
-    "34": "Soap/Wax", "35": "Adhesives", "36": "Explosives",
-    "37": "Photographic", "38": "Chemicals",
-    "39": "Plastics", "40": "Rubber",
-    "41": "Leather", "42": "Leather Goods", "43": "Fur",
-    "44": "Wood", "45": "Cork", "46": "Straw/Basketware",
-    "47": "Pulp", "48": "Paper", "49": "Printed Materials",
-    "50": "Silk", "51": "Wool", "52": "Cotton", "53": "Vegetable Fibers",
-    "54": "Synthetic Filaments", "55": "Synthetic Staple", "56": "Nonwovens",
-    "57": "Carpets", "58": "Fabrics", "59": "Technical Textiles",
-    "60": "Knitted Fabrics", "61": "Apparel (Knitted)", "62": "Apparel (Woven)",
+    "01": "Animal Products",
+    "02": "Meat",
+    "03": "Seafood",
+    "04": "Dairy",
+    "05": "Animal Products",
+    "06": "Plants",
+    "07": "Vegetables",
+    "08": "Fruits",
+    "09": "Coffee/Tea/Spices",
+    "10": "Cereals",
+    "11": "Milling Products",
+    "12": "Seeds/Oils",
+    "13": "Gums/Resins",
+    "14": "Vegetable Products",
+    "15": "Fats/Oils",
+    "16": "Prepared Foods",
+    "17": "Sugar",
+    "18": "Cocoa",
+    "19": "Prepared Cereals",
+    "20": "Prepared Foods",
+    "21": "Prepared Foods",
+    "22": "Beverages",
+    "23": "Animal Feed",
+    "24": "Tobacco",
+    "25": "Minerals",
+    "26": "Ores",
+    "27": "Mineral Fuels/Oil",
+    "28": "Chemicals",
+    "29": "Organic Chemicals",
+    "30": "Pharmaceuticals",
+    "31": "Fertilizers",
+    "32": "Dyes/Paints",
+    "33": "Cosmetics",
+    "34": "Soap/Wax",
+    "35": "Adhesives",
+    "36": "Explosives",
+    "37": "Photographic",
+    "38": "Chemicals",
+    "39": "Plastics",
+    "40": "Rubber",
+    "41": "Leather",
+    "42": "Leather Goods",
+    "43": "Fur",
+    "44": "Wood",
+    "45": "Cork",
+    "46": "Straw/Basketware",
+    "47": "Pulp",
+    "48": "Paper",
+    "49": "Printed Materials",
+    "50": "Silk",
+    "51": "Wool",
+    "52": "Cotton",
+    "53": "Vegetable Fibers",
+    "54": "Synthetic Filaments",
+    "55": "Synthetic Staple",
+    "56": "Nonwovens",
+    "57": "Carpets",
+    "58": "Fabrics",
+    "59": "Technical Textiles",
+    "60": "Knitted Fabrics",
+    "61": "Apparel (Knitted)",
+    "62": "Apparel (Woven)",
     "63": "Textile Articles",
-    "64": "Footwear", "65": "Headgear", "66": "Umbrellas", "67": "Feathers",
-    "68": "Stone/Cement", "69": "Ceramics", "70": "Glass",
+    "64": "Footwear",
+    "65": "Headgear",
+    "66": "Umbrellas",
+    "67": "Feathers",
+    "68": "Stone/Cement",
+    "69": "Ceramics",
+    "70": "Glass",
     "71": "Precious Metals/Gems",
-    "72": "Iron/Steel", "73": "Iron/Steel Articles", "74": "Copper",
-    "75": "Nickel", "76": "Aluminum", "78": "Lead", "79": "Zinc",
-    "80": "Tin", "81": "Base Metals", "82": "Tools", "83": "Metal Articles",
-    "84": "Machinery", "85": "Electronics",
-    "86": "Railway", "87": "Vehicles", "88": "Aircraft", "89": "Ships",
-    "90": "Instruments", "91": "Clocks/Watches", "92": "Musical Instruments",
-    "93": "Arms/Ammunition", "94": "Furniture", "95": "Toys/Games",
-    "96": "Miscellaneous", "97": "Art/Antiques",
+    "72": "Iron/Steel",
+    "73": "Iron/Steel Articles",
+    "74": "Copper",
+    "75": "Nickel",
+    "76": "Aluminum",
+    "78": "Lead",
+    "79": "Zinc",
+    "80": "Tin",
+    "81": "Base Metals",
+    "82": "Tools",
+    "83": "Metal Articles",
+    "84": "Machinery",
+    "85": "Electronics",
+    "86": "Railway",
+    "87": "Vehicles",
+    "88": "Aircraft",
+    "89": "Ships",
+    "90": "Instruments",
+    "91": "Clocks/Watches",
+    "92": "Musical Instruments",
+    "93": "Arms/Ammunition",
+    "94": "Furniture",
+    "95": "Toys/Games",
+    "96": "Miscellaneous",
+    "97": "Art/Antiques",
 }
 
 
@@ -269,8 +342,17 @@ def _extract_entity_risks(entity) -> list[str]:
         if val is None:
             continue
         # Only surface actionable risk categories
-        if any(term in key for term in ("sanctioned", "forced_labor", "export_controls",
-                                         "pep", "military_civil_fusion", "state_owned")):
+        if any(
+            term in key
+            for term in (
+                "sanctioned",
+                "forced_labor",
+                "export_controls",
+                "pep",
+                "military_civil_fusion",
+                "state_owned",
+            )
+        ):
             flags.append(key)
     return flags[:10]  # cap to avoid noise
 
@@ -287,7 +369,7 @@ def _trade_sync(entity_name: str) -> SayariTradeActivity:
 
     try:
         shipments = client.trade.search_shipments(q=entity_name, limit=15)
-        for s in (shipments.data or []):
+        for s in shipments.data or []:
             # Extract supplier/buyer names (SDK: List[SourceOrDestinationEntity] with .names)
             supplier = ""
             supplier_risks: list[str] = []
@@ -329,7 +411,11 @@ def _trade_sync(entity_name: str) -> SayariTradeActivity:
 
             # Date
             date_val = s.departure_date or s.arrival_date
-            date_str = date_val[0] if isinstance(date_val, list) and date_val else (str(date_val) if date_val else "")
+            date_str = (
+                date_val[0]
+                if isinstance(date_val, list) and date_val
+                else (str(date_val) if date_val else "")
+            )
 
             # Weight and value
             weight_kg = None
@@ -341,20 +427,22 @@ def _trade_sync(entity_name: str) -> SayariTradeActivity:
                 mv = s.monetary_value[0]
                 value_usd = getattr(mv, "value", None)
 
-            records.append(SayariTradeRecord(
-                supplier=supplier,
-                buyer=buyer,
-                supplier_risks=supplier_risks,
-                buyer_risks=buyer_risks,
-                hs_code=hs_code,
-                hs_description=hs_desc,
-                commodity_category=commodity_cat,
-                departure_country=dep_str,
-                arrival_country=arr_str,
-                date=date_str,
-                weight_kg=weight_kg,
-                value_usd=value_usd,
-            ))
+            records.append(
+                SayariTradeRecord(
+                    supplier=supplier,
+                    buyer=buyer,
+                    supplier_risks=supplier_risks,
+                    buyer_risks=buyer_risks,
+                    hs_code=hs_code,
+                    hs_description=hs_desc,
+                    commodity_category=commodity_cat,
+                    departure_country=dep_str,
+                    arrival_country=arr_str,
+                    date=date_str,
+                    weight_kg=weight_kg,
+                    value_usd=value_usd,
+                )
+            )
     except Exception as exc:
         logger.warning("Sayari trade search error: %s", exc)
 
@@ -399,7 +487,10 @@ async def get_trade_activity(entity_name: str) -> SayariTradeActivity:
 
     set_cached(
         result.model_dump(mode="json"),
-        _CACHE_NS, ttl=_TRADE_TTL, action="trade", name=entity_name,
+        _CACHE_NS,
+        ttl=_TRADE_TTL,
+        action="trade",
+        name=entity_name,
     )
     return result
 
@@ -407,6 +498,7 @@ async def get_trade_activity(entity_name: str) -> SayariTradeActivity:
 # ---------------------------------------------------------------------------
 # Top-level entry point
 # ---------------------------------------------------------------------------
+
 
 def _get_related_companies_sync(entity_id: str) -> list[dict[str, Any]]:
     """Get companies related to a vessel entity.
@@ -423,7 +515,7 @@ def _get_related_companies_sync(entity_id: str) -> list[dict[str, Any]]:
         seen_ids: set[str] = set()
         rels = getattr(entity, "relationships", None)
         if rels and hasattr(rels, "data"):
-            for r in (rels.data or []):
+            for r in rels.data or []:
                 target = getattr(r, "target", None)
                 if not target:
                     continue
@@ -439,11 +531,15 @@ def _get_related_companies_sync(entity_id: str) -> list[dict[str, Any]]:
                 types_dict = getattr(r, "types", None) or {}
                 if isinstance(types_dict, dict):
                     for rel_infos in types_dict.values():
-                        for ri in (rel_infos or []):
+                        for ri in rel_infos or []:
                             attrs = getattr(ri, "attributes", None) or {}
                             positions = attrs.get("position", [])
                             if positions:
-                                rel_type = positions[0].get("value", "") if isinstance(positions[0], dict) else str(positions[0])
+                                rel_type = (
+                                    positions[0].get("value", "")
+                                    if isinstance(positions[0], dict)
+                                    else str(positions[0])
+                                )
                                 break
                         if rel_type:
                             break
@@ -464,15 +560,17 @@ def _get_related_companies_sync(entity_id: str) -> list[dict[str, Any]]:
                         if rd and hasattr(rd, "value") and rd.value is not None:
                             comp_risk_scores[rk] = float(rd.value)
 
-                results.append({
-                    "entity_id": target_id,
-                    "label": target_label,
-                    "sanctioned": is_sanctioned,
-                    "pep": is_pep,
-                    "relationship_type": rel_type,
-                    "country": target_country,
-                    "risk_scores": comp_risk_scores,
-                })
+                results.append(
+                    {
+                        "entity_id": target_id,
+                        "label": target_label,
+                        "sanctioned": is_sanctioned,
+                        "pep": is_pep,
+                        "relationship_type": rel_type,
+                        "country": target_country,
+                        "risk_scores": comp_risk_scores,
+                    }
+                )
         return results[:5]
     except Exception as exc:
         logger.warning("Sayari get_related_companies error: %s", exc)
@@ -512,17 +610,19 @@ async def get_vessel_intel(
             if comp["entity_id"] in seen_ids:
                 continue
             seen_ids.add(comp["entity_id"])
-            chain_links.append(SayariOwnerLink(
-                entity_id=comp["entity_id"],
-                name=comp["label"],
-                entity_type="company",
-                country=comp.get("country"),
-                is_sanctioned=comp["sanctioned"],
-                is_pep=comp["pep"],
-                depth=1,
-                relationship_type=comp["relationship_type"],
-                parent_entity_id=entity_id,  # parent is the vessel
-            ))
+            chain_links.append(
+                SayariOwnerLink(
+                    entity_id=comp["entity_id"],
+                    name=comp["label"],
+                    entity_type="company",
+                    country=comp.get("country"),
+                    is_sanctioned=comp["sanctioned"],
+                    is_pep=comp["pep"],
+                    depth=1,
+                    relationship_type=comp["relationship_type"],
+                    parent_entity_id=entity_id,  # parent is the vessel
+                )
+            )
 
         # Identify the primary owner for naming/trade lookup
         owner_comp = None
@@ -561,7 +661,7 @@ async def get_vessel_intel(
             owner_entity_id=owner_comp["entity_id"] if owner_comp else None,
             owner_name=owner_company_name,
             chain=chain_links,
-            max_depth_reached=max((l.depth for l in chain_links), default=0),
+            max_depth_reached=max((link.depth for link in chain_links), default=0),
         )
 
         # Step 4: Get trade data — query both vessel name AND owner for best coverage

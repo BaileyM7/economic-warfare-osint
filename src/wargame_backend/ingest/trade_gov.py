@@ -82,9 +82,7 @@ def _result_to_raw(result: dict[str, Any]) -> TradeGovRawRecord | None:
     if not entry_id:
         return None
     addresses = [
-        (a.get("country") or "")
-        for a in (result.get("addresses") or [])
-        if isinstance(a, dict)
+        (a.get("country") or "") for a in (result.get("addresses") or []) if isinstance(a, dict)
     ]
     country = next((c for c in addresses if c), None)
     return TradeGovRawRecord(
@@ -120,9 +118,7 @@ class TradeGovSource(Source):
             return False
         return True
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         api_key = os.environ.get("TRADE_GOV_API_KEY", "")
         # CSL search supports ``countries`` as ISO2 list and pagination.
         offset = 0

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class SayariOwnerLink(BaseModel):
     """One node in the beneficial ownership chain."""
+
     entity_id: str
     name: str
     entity_type: str = ""  # "company", "person"
@@ -21,6 +22,7 @@ class SayariOwnerLink(BaseModel):
 
 class SayariOwnershipChain(BaseModel):
     """Full UBO result for an entity."""
+
     vessel_entity_id: str | None = None
     owner_entity_id: str | None = None
     owner_name: str = ""
@@ -30,6 +32,7 @@ class SayariOwnershipChain(BaseModel):
 
 class SayariTradeRecord(BaseModel):
     """One shipment/trade record."""
+
     supplier: str = ""
     buyer: str = ""
     supplier_risks: list[str] = Field(default_factory=list)
@@ -46,6 +49,7 @@ class SayariTradeRecord(BaseModel):
 
 class SayariTradeActivity(BaseModel):
     """Aggregated trade data for an entity."""
+
     records: list[SayariTradeRecord] = Field(default_factory=list)
     top_hs_codes: list[dict[str, str]] = Field(default_factory=list)
     trade_countries: list[str] = Field(default_factory=list)
@@ -56,6 +60,7 @@ class SayariTradeActivity(BaseModel):
 
 class SayariVesselIntel(BaseModel):
     """Combined Sayari intelligence for a vessel."""
+
     resolved: bool = False
     owner_entity_id: str | None = None
     owner_name: str = ""

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any
+from datetime import date
 
 from pydantic import BaseModel, Field
 
 
 class Officer(BaseModel):
     """A company officer (director, secretary, etc.)."""
+
     name: str
     role: str  # "director", "secretary", "agent", etc.
     start_date: date | None = None
@@ -26,6 +26,7 @@ class Officer(BaseModel):
 
 class CompanyRecord(BaseModel):
     """A company as returned by OpenCorporates."""
+
     name: str
     jurisdiction: str  # ISO 3166-1 alpha-2 or OpenCorporates jurisdiction code
     company_number: str
@@ -33,12 +34,15 @@ class CompanyRecord(BaseModel):
     incorporation_date: date | None = None
     registered_address: str | None = None
     officers: list[Officer] = Field(default_factory=list)
-    industry_codes: list[dict[str, str]] = Field(default_factory=list)  # [{"code": "6201", "scheme": "SIC"}]
+    industry_codes: list[dict[str, str]] = Field(
+        default_factory=list
+    )  # [{"code": "6201", "scheme": "SIC"}]
     opencorporates_url: str | None = None
 
 
 class OwnershipLink(BaseModel):
     """An ownership relationship between two entities."""
+
     parent_id: str  # LEI or company identifier
     child_id: str
     ownership_pct: float | None = None
@@ -47,6 +51,7 @@ class OwnershipLink(BaseModel):
 
 class LEIRecord(BaseModel):
     """A Legal Entity Identifier record from GLEIF."""
+
     lei: str
     legal_name: str
     country: str | None = None
@@ -60,6 +65,7 @@ class LEIRecord(BaseModel):
 
 class OffshoreEntity(BaseModel):
     """An entity from the ICIJ Offshore Leaks database."""
+
     node_id: str
     name: str
     jurisdiction: str | None = None
@@ -71,6 +77,7 @@ class OffshoreEntity(BaseModel):
 
 class CorporateSearchResult(BaseModel):
     """Unified search result across all corporate data sources."""
+
     companies: list[CompanyRecord] = Field(default_factory=list)
     lei_records: list[LEIRecord] = Field(default_factory=list)
     offshore_entities: list[OffshoreEntity] = Field(default_factory=list)
@@ -78,6 +85,7 @@ class CorporateSearchResult(BaseModel):
 
 class CorporateTree(BaseModel):
     """Ownership tree for an entity."""
+
     entity_name: str
     ownership_links: list[OwnershipLink] = Field(default_factory=list)
     companies: list[CompanyRecord] = Field(default_factory=list)
@@ -86,6 +94,7 @@ class CorporateTree(BaseModel):
 
 class BeneficialOwnerResult(BaseModel):
     """Officers and beneficial ownership information."""
+
     entity_name: str
     officers: list[Officer] = Field(default_factory=list)
     offshore_connections: list[OffshoreEntity] = Field(default_factory=list)
@@ -94,12 +103,14 @@ class BeneficialOwnerResult(BaseModel):
 
 class OffshoreConnectionResult(BaseModel):
     """Offshore connections found for an entity."""
+
     entity_name: str
     entities: list[OffshoreEntity] = Field(default_factory=list)
 
 
 class ResolvedEntity(BaseModel):
     """An entity resolved across multiple sources."""
+
     name: str
     jurisdiction: str | None = None
     company_records: list[CompanyRecord] = Field(default_factory=list)

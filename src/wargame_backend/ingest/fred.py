@@ -86,9 +86,7 @@ class FREDSource(Source):
             return False
         return True
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         api_key = os.environ.get("FRED_API_KEY", "")
         # Pull a small look-back so we always have a prior observation to
         # compute delta against, even on the first day of the window.
@@ -108,9 +106,7 @@ class FREDSource(Source):
                 response = await self._get(_API_URL, params=params)
                 payload = response.json()
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "fred.fetch_failed", series_id=series_id, error=str(exc)
-                )
+                log.warning("fred.fetch_failed", series_id=series_id, error=str(exc))
                 continue
 
             observations = payload.get("observations") or []
@@ -119,11 +115,7 @@ class FREDSource(Source):
                 value = _safe_float(obs.get("value"))
                 if value is None:
                     continue
-                delta = (
-                    round(value - prior_value, 4)
-                    if prior_value is not None
-                    else None
-                )
+                delta = round(value - prior_value, 4) if prior_value is not None else None
                 yield FREDRawRecord(
                     series_id=series_id,
                     series_label=label,
@@ -138,9 +130,7 @@ class FREDSource(Source):
     async def normalize(self, raw: RawRecord) -> Event:
         assert isinstance(raw, FREDRawRecord)
         try:
-            occurred_at = datetime.strptime(raw.date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
-            )
+            occurred_at = datetime.strptime(raw.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
             occurred_at = datetime.now(timezone.utc)
 

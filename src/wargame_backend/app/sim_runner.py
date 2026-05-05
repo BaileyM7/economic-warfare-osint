@@ -353,6 +353,4 @@ def build_sim_runner(impl: str, redis_client: "aioredis.Redis") -> SimRunner:  #
                 "AGENT_RUNNER_IMPL=langgraph requires the 'ai' package to be installed. "
                 "Run 'uv sync' in the project root, or set AGENT_RUNNER_IMPL=null."
             ) from exc
-    raise ValueError(
-        f"Unknown AGENT_RUNNER_IMPL '{impl}'. Valid values: 'null', 'langgraph'."
-    )
+    raise ValueError(f"Unknown AGENT_RUNNER_IMPL '{impl}'. Valid values: 'null', 'langgraph'.")

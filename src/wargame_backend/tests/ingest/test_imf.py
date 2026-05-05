@@ -15,12 +15,8 @@ class TestHelpers:
         assert _period_to_dt("2026") == datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     def test_period_to_dt_quarterly(self) -> None:
-        assert _period_to_dt("2026-Q2") == datetime(
-            2026, 4, 1, tzinfo=timezone.utc
-        )
-        assert _period_to_dt("2026-Q4") == datetime(
-            2026, 10, 1, tzinfo=timezone.utc
-        )
+        assert _period_to_dt("2026-Q2") == datetime(2026, 4, 1, tzinfo=timezone.utc)
+        assert _period_to_dt("2026-Q4") == datetime(2026, 10, 1, tzinfo=timezone.utc)
 
 
 class TestNormalize:

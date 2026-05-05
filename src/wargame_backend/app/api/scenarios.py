@@ -59,7 +59,7 @@ async def create_scenario(
         status=ScenarioStatus.ready,
     )
     db.add(scenario)
-    await db.flush()   # get server-generated id / timestamps
+    await db.flush()  # get server-generated id / timestamps
     await db.refresh(scenario)
 
     log.info("Scenario created", scenario_id=str(scenario.id), title=scenario.title)

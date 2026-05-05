@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,13 +18,13 @@ from ingest.worldbank import (
     WorldBankSource,
     SLICE_ISO3,
     INDICATORS,
-    MRV,
 )
 
 
 # ---------------------------------------------------------------------------
 # WorldBankSource.normalize
 # ---------------------------------------------------------------------------
+
 
 def _make_wb_raw(**overrides) -> WorldBankRawRecord:
     defaults = dict(
@@ -79,7 +79,9 @@ async def test_normalize_null_value():
 @pytest.mark.asyncio
 async def test_normalize_raw_text_format():
     """raw_text should include country, indicator label, value, and year."""
-    raw = _make_wb_raw(iso3="USA", indicator_label="GDP (current USD)", value=27360000000000.0, year=2023)
+    raw = _make_wb_raw(
+        iso3="USA", indicator_label="GDP (current USD)", value=27360000000000.0, year=2023
+    )
     src = WorldBankSource()
     event = await src.normalize(raw)
     assert "USA" in (event.raw_text or "")
@@ -100,6 +102,7 @@ async def test_normalize_year_zero_fallback():
 # Slice coverage
 # ---------------------------------------------------------------------------
 
+
 def test_all_slice_countries_covered():
     """SLICE_ISO3 must cover all 10 vertical-slice countries."""
     expected = {"CHN", "TWN", "USA", "JPN", "KOR", "PHL", "AUS", "PRK", "RUS", "IND"}
@@ -118,6 +121,7 @@ def test_all_four_indicators_present():
 # ---------------------------------------------------------------------------
 # fetch — mock HTTP responses
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_fetch_yields_records_from_mock_response():
@@ -145,7 +149,7 @@ async def test_fetch_yields_records_from_mock_response():
 
     src = WorldBankSource()
 
-    with patch.object(src, "_get", return_value=mock_response) as mock_get:
+    with patch.object(src, "_get", return_value=mock_response):
         records = []
         since = datetime(2023, 1, 1, tzinfo=timezone.utc)
         until = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -186,6 +190,7 @@ async def test_fetch_handles_null_data_gracefully():
 # ---------------------------------------------------------------------------
 # VCR cassette replay placeholder
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_fetch_with_vcr_cassette():

@@ -29,12 +29,27 @@ logger = logging.getLogger(__name__)
 _CACHE_NS = "comparable_sourcer"
 _CACHE_TTL = 7 * 24 * 3600  # 7 days
 
-_INVALID_TICKERS = frozenset({
-    "UNLISTED", "N/A", "NA", "PRIVATE", "UNKNOWN", "TBD", "NONE",
-    "DELISTED", "OTC", "OTCPK", "N/L", "-", ".", "NULL", "NIL",
-})
+_INVALID_TICKERS = frozenset(
+    {
+        "UNLISTED",
+        "N/A",
+        "NA",
+        "PRIVATE",
+        "UNKNOWN",
+        "TBD",
+        "NONE",
+        "DELISTED",
+        "OTC",
+        "OTCPK",
+        "N/L",
+        "-",
+        ".",
+        "NULL",
+        "NIL",
+    }
+)
 
-_TICKER_RE = re.compile(r'^[A-Za-z0-9.\-\^]{1,15}$')
+_TICKER_RE = re.compile(r"^[A-Za-z0-9.\-\^]{1,15}$")
 
 
 def _fmt_market_cap(mc: float | None) -> str:
@@ -136,7 +151,8 @@ def _validate_event_sync(entry: dict[str, Any]) -> dict[str, Any] | None:
     if hist is None or len(hist) < 20:
         logger.debug(
             "Insufficient pre-event history for %s (%d rows)",
-            ticker, len(hist) if hist is not None else 0,
+            ticker,
+            len(hist) if hist is not None else 0,
         )
         return None
 
@@ -275,7 +291,8 @@ async def get_dynamic_comparables(
 
         logger.debug(
             "Comparable sourcer: %d/%d Claude candidates passed validation",
-            len(validated), len(candidates),
+            len(validated),
+            len(candidates),
         )
 
         # Intra-list dedup: if the same ticker appears for multiple event dates,
@@ -294,14 +311,18 @@ async def get_dynamic_comparables(
     except asyncio.TimeoutError:
         logger.warning("Comparable sourcer: Claude call timed out — falling back to static list")
     except Exception as exc:
-        logger.warning("Comparable sourcer: Claude call failed (%s) — falling back to static list", exc)
+        logger.warning(
+            "Comparable sourcer: Claude call failed (%s) — falling back to static list", exc
+        )
 
     if len(validated) >= 3:
         set_cached(validated, _CACHE_NS, ttl=_CACHE_TTL, **cache_params)
         return validated, "claude"
 
     # --- Layer 3: static fallback ---
-    logger.debug("Comparable sourcer: using static fallback (%d validated, need >=3)", len(validated))
+    logger.debug(
+        "Comparable sourcer: using static fallback (%d validated, need >=3)", len(validated)
+    )
     comparables = list(static_fallback)
 
     if sanction_type:
@@ -450,7 +471,13 @@ async def get_target_control_peers(
         peers = [t for t, ok in zip(candidates_clean, existence) if ok is True]
         peers = peers[:6]
 
-        logger.debug("Target peers for %s: %s (validated %d/%d)", ticker, peers, len(peers), len(candidates_clean))
+        logger.debug(
+            "Target peers for %s: %s (validated %d/%d)",
+            ticker,
+            peers,
+            len(peers),
+            len(candidates_clean),
+        )
         set_cached(peers, _PEERS_CACHE_NS, ttl=_PEERS_CACHE_TTL, **cache_params)
         return peers
 

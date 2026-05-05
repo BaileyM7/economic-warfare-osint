@@ -111,9 +111,7 @@ class OpenSanctionsSource(Source):
     name: ClassVar[str] = "opensanctions"  # match extractor's _SOURCE_KEY
     display_name: ClassVar[str] = "OpenSanctions"
 
-    async def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    async def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         api_key = os.environ.get("OPENSANCTIONS_API_KEY", "")
         headers = {"Authorization": f"ApiKey {api_key}"} if api_key else {}
 
@@ -128,14 +126,10 @@ class OpenSanctionsSource(Source):
                 "limit": 100,
             }
             try:
-                response = await self._get(
-                    _API_BASE, params=params, headers=headers
-                )
+                response = await self._get(_API_BASE, params=params, headers=headers)
                 payload = response.json()
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "opensanctions.fetch_failed", iso2=iso2, error=str(exc)
-                )
+                log.warning("opensanctions.fetch_failed", iso2=iso2, error=str(exc))
                 continue
 
             for hit in payload.get("results") or []:

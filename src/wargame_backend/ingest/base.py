@@ -32,7 +32,6 @@ from typing import Any, ClassVar
 import httpx
 import structlog
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import (
     retry,
@@ -41,7 +40,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from wargame_backend.app.db.models import DataSource, DataSourceStatus, Event, EventDomain
+from wargame_backend.app.db.models import DataSource, DataSourceStatus, Event
 
 log = structlog.get_logger(__name__)
 
@@ -63,6 +62,7 @@ def _make_client(**kwargs: Any) -> httpx.AsyncClient:
 # ---------------------------------------------------------------------------
 # Retry predicate — only retry on 5xx or 429
 # ---------------------------------------------------------------------------
+
 
 class _RetryableHTTPError(Exception):
     """Wraps httpx.HTTPStatusError when the status warrants a retry."""
@@ -92,15 +92,14 @@ def _is_retryable(exc: BaseException) -> bool:
 def raise_for_retryable(response: httpx.Response) -> None:
     """Raise ``_RetryableHTTPError`` for 429/5xx; propagate 4xx immediately."""
     if response.status_code == 429 or response.status_code >= 500:
-        raise _RetryableHTTPError(
-            f"HTTP {response.status_code} from {response.url}"
-        )
+        raise _RetryableHTTPError(f"HTTP {response.status_code} from {response.url}")
     response.raise_for_status()
 
 
 # ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class IngestionRunResult:
@@ -131,6 +130,7 @@ RawRecord = Any
 # Abstract Source base class
 # ---------------------------------------------------------------------------
 
+
 class Source(ABC):
     """Abstract base for every ingest adapter.
 
@@ -146,7 +146,7 @@ class Source(ABC):
     fetch → normalize → upsert → data_sources lineage pipeline.
     """
 
-    name: ClassVar[str]          # e.g. "gdelt", "acled"
+    name: ClassVar[str]  # e.g. "gdelt", "acled"
     display_name: ClassVar[str]  # e.g. "GDELT 2.0"
 
     def __init__(self) -> None:
@@ -195,6 +195,7 @@ class Source(ABC):
         Uses tenacity exponential backoff: 5xx / 429 responses are retried up
         to 5 times with delays 2 s, 4 s, 8 s, 16 s, 32 s (max 60 s).
         """
+
         @retry(
             retry=retry_if_exception(_is_retryable),
             wait=wait_exponential(multiplier=1, min=2, max=60),
@@ -218,6 +219,7 @@ class Source(ABC):
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         """POST form-urlencoded data with retry/backoff (OAuth2 token exchange)."""
+
         @retry(
             retry=retry_if_exception(_is_retryable),
             wait=wait_exponential(multiplier=1, min=2, max=60),
@@ -238,9 +240,7 @@ class Source(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def fetch(
-        self, since: datetime, until: datetime
-    ) -> AsyncIterator[RawRecord]:
+    def fetch(self, since: datetime, until: datetime) -> AsyncIterator[RawRecord]:
         """Yield raw records from the source API/feed.
 
         Parameters
@@ -332,9 +332,7 @@ class Source(ABC):
             result.errors.append(f"fetch error: {exc!r}")
             log.error("ingest.fetch_error", source=self.name, error=str(exc))
         finally:
-            await self._update_data_source(
-                session, data_source_id, result.upserted
-            )
+            await self._update_data_source(session, data_source_id, result.upserted)
 
         log.info(
             "ingest.complete",
@@ -377,8 +375,6 @@ class Source(ABC):
         """Insert event; skip (return False) if dedup_key already exists."""
         if dedup_key is not None:
             # Check for existing row via dedup key stored in payload
-            from sqlalchemy import cast
-            from sqlalchemy.dialects.postgresql import JSONB
 
             stmt = select(Event.id).where(
                 Event.source == event.source,
