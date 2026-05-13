@@ -524,10 +524,16 @@ def render_country_prompt(perception: Perception, memories: list[MemoryRecord]) 
             + _domain_variety_pressure_line(perception.recent_domains)
         ),
         "{persona}": perception.persona or "(no persona authored for this country)",
-        "{current_posture}": json.dumps(perception.current_posture, indent=2),
-        "{resource_budget}": json.dumps(perception.resource_budget, indent=2),
+        # Compact JSON (no indent, no padded separators) — the model parses these
+        # JSON blobs structurally, not visually. indent=2 + ", "/": " separators
+        # add ~30% extra tokens vs. the compact form; on a starter Anthropic tier
+        # (30k ITPM) that's enough to push multi-actor turns past the rate limit.
+        "{current_posture}": json.dumps(perception.current_posture, separators=(",", ":")),
+        "{resource_budget}": json.dumps(perception.resource_budget, separators=(",", ":")),
         "{memory_snippets}": memory_block,
-        "{recent_perception}": json.dumps(perception.world_view, indent=2, default=str),
+        "{recent_perception}": json.dumps(
+            perception.world_view, separators=(",", ":"), default=str
+        ),
     }
     rendered = template
     for token, value in subs.items():
@@ -543,38 +549,64 @@ def render_country_prompt(perception: Perception, memories: list[MemoryRecord]) 
 def _extract_explainability(args: dict[str, Any]) -> Explainability | None:
     """Build an :class:`Explainability` from raw tool-call args, or None.
 
-    Returns None (not a partial object) if any of the three required pieces is
-    missing or unparseable — keeps invariant "if Explainability exists, it is
-    fully populated and validated."
+    Requires ``summary`` and ``intended_outcome`` (the "Action" and "in hopes
+    of" halves of the explainability triplet). If ``triggering_factors`` is
+    missing or unparseable, synthesizes a single placeholder factor from the
+    ``rationale`` field so the frontend can still render the structured view
+    rather than falling back to the legacy free-text rationale.
+
+    Returns ``None`` only when the agent failed to produce the two essential
+    fields — at that point we have nothing to render structurally.
     """
     summary = str(args.get("summary", "")).strip()
     intended = str(args.get("intended_outcome", "")).strip()
-    raw_factors = args.get("triggering_factors") or []
-    if not summary or not intended or not isinstance(raw_factors, list) or not raw_factors:
+    if not summary or not intended:
         return None
 
+    raw_factors = args.get("triggering_factors") or []
     factors: list[TriggeringFactor] = []
-    for raw in raw_factors:
-        if not isinstance(raw, dict):
-            continue
-        kind_str = str(raw.get("kind", "")).strip().lower()
-        ref = str(raw.get("ref", "")).strip()
-        note = str(raw.get("note", "")).strip()
-        if not kind_str or not ref or not note:
-            continue
-        try:
-            kind = FactorKind(kind_str)
-        except ValueError:
-            log.debug("explainability_unknown_factor_kind", kind=kind_str)
-            continue
-        try:
-            factors.append(TriggeringFactor(kind=kind, ref=ref, note=note))
-        except Exception as exc:  # noqa: BLE001
-            log.debug("explainability_factor_dropped", error=str(exc), ref=ref)
-            continue
+    if isinstance(raw_factors, list):
+        for raw in raw_factors:
+            if not isinstance(raw, dict):
+                continue
+            kind_str = str(raw.get("kind", "")).strip().lower()
+            ref = str(raw.get("ref", "")).strip()
+            note = str(raw.get("note", "")).strip()
+            if not kind_str or not ref or not note:
+                continue
+            try:
+                kind = FactorKind(kind_str)
+            except ValueError:
+                log.debug("explainability_unknown_factor_kind", kind=kind_str)
+                continue
+            try:
+                factors.append(TriggeringFactor(kind=kind, ref=ref, note=note))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("explainability_factor_dropped", error=str(exc), ref=ref)
+                continue
 
     if not factors:
-        return None
+        # Synthesize a single placeholder factor so the UI renders the
+        # structured "Action / Because / In hopes of" triplet uniformly.
+        # The note carries the rationale (truncated to fit) so users still
+        # see why; the perception kind + 'rationale' ref tells the frontend
+        # this wasn't a clickable evidence anchor.
+        rationale_note = (
+            str(args.get("rationale", "")).strip() or "Agent did not cite a specific factor."
+        )
+        try:
+            factors.append(
+                TriggeringFactor(
+                    kind=FactorKind.perception,
+                    ref="rationale",
+                    note=rationale_note[:200],
+                    verified=False,
+                )
+            )
+            log.debug("explainability_factor_synthesized", summary=summary[:40])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("explainability_synth_failed", error=str(exc))
+            return None
 
     try:
         return Explainability(
