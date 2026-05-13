@@ -10,7 +10,7 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -152,11 +152,25 @@ class ExtractEventsRequest(BaseModel):
     )
 
 
+class SelectedCountry(BaseModel):
+    """One country chosen to participate in a free-form scenario.
+
+    Mirrors the frontend `SelectedCountry` type so the confirmation card
+    can render the rationale + relevance score next to each chip.
+    """
+
+    iso3: str
+    relevance_score: float = 0.0
+    rationale: str = ""
+
+
 class ExtractEventsResponse(BaseModel):
     """Response body — the same shape InitialConditions expects."""
 
     seed_events: list[SeedEvent]
+    selected_countries: list[SelectedCountry] = Field(default_factory=list)
     posture_overrides: dict[str, str]
+    source: Literal["llm", "partial_fallback", "fallback"] = "fallback"
     is_stub: bool = Field(
         default=True,
         description=(
@@ -187,7 +201,9 @@ async def extract_events(
     )
     response = ExtractEventsResponse(
         seed_events=[],
+        selected_countries=[],
         posture_overrides={},
+        source="fallback",
         is_stub=True,
     )
     return {"data": response.model_dump(mode="json"), "error": None}
