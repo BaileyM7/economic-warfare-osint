@@ -37,6 +37,8 @@ attrs==26.1.0
     #   referencing
 beautifulsoup4==4.14.3
     # via yfinance
+cachetools==7.1.1
+    # via economic-warfare-osint (pyproject.toml)
 certifi==2026.2.25
     # via
     #   curl-cffi
@@ -169,7 +171,9 @@ langsmith==0.7.33
     #   langchain-community
     #   langchain-core
 limits==5.8.0
-    # via slowapi
+    # via
+    #   economic-warfare-osint (pyproject.toml)
+    #   slowapi
 mako==1.3.11
     # via alembic
 markdown-it-py==4.0.0
@@ -302,6 +306,7 @@ redis==7.4.0
     # via
     #   economic-warfare-osint (pyproject.toml)
     #   fakeredis
+    #   limits
 referencing==0.37.0
     # via
     #   jsonschema
