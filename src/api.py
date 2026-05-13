@@ -17,6 +17,7 @@ from typing import Any
 
 from pathlib import Path
 
+from cachetools import TTLCache
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -394,7 +395,13 @@ async def ws_monitoring(websocket: WebSocket, token: str | None = None):
 
 
 # --- In-memory state for async orchestrator analyses ---
-_analyses: dict[str, dict[str, Any]] = {}
+# Bounded so that a long-running session or many concurrent analyses can't
+# blow past the Render instance memory cap (512 MB on starter).  Each entry
+# holds full GDELT/Comtrade JSON payloads in `result`, so the cap matters.
+_ANALYSES_MAX = 50
+_ANALYSES_TTL_SEC = 3600
+_ANALYSES_PROGRESS_CAP = 200
+_analyses: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=_ANALYSES_MAX, ttl=_ANALYSES_TTL_SEC)
 
 # Wire analyses dict into briefing router for generate endpoint
 _briefings_mod.set_analyses_ref(_analyses)
@@ -491,18 +498,28 @@ async def list_tools():
 
 async def _run_analysis(analysis_id: str, query: str) -> None:
     def on_progress(msg: str) -> None:
-        _analyses[analysis_id]["progress"].append(msg)
+        entry = _analyses.get(analysis_id)
+        if entry is None:
+            return  # evicted by TTL/LRU mid-run; drop further updates
+        progress = entry["progress"]
+        progress.append(msg)
+        if len(progress) > _ANALYSES_PROGRESS_CAP:
+            del progress[:-_ANALYSES_PROGRESS_CAP]
 
     on_progress("Starting analysis pipeline...")
     try:
         orchestrator = Orchestrator()
         assessment = await orchestrator.analyze(query, progress_callback=on_progress)
-        _analyses[analysis_id]["result"] = assessment.model_dump(mode="json")
-        _analyses[analysis_id]["status"] = "completed"
+        entry = _analyses.get(analysis_id)
+        if entry is not None:
+            entry["result"] = assessment.model_dump(mode="json")
+            entry["status"] = "completed"
         on_progress("Done.")
     except Exception as e:
-        _analyses[analysis_id]["status"] = "failed"
-        _analyses[analysis_id]["error"] = str(e)
+        entry = _analyses.get(analysis_id)
+        if entry is not None:
+            entry["status"] = "failed"
+            entry["error"] = str(e)
         on_progress(f"Error: {e}")
 
 

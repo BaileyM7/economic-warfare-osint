@@ -5,10 +5,10 @@ In production, set the corresponding env vars (see .env.example).
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -91,7 +91,7 @@ class Settings(BaseSettings):
         alias="LOG_LEVEL",
         description="Structlog log level.",
     )
-    cors_origins: list[str] = Field(
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:3000"],
         alias="CORS_ORIGINS",
         description=(
