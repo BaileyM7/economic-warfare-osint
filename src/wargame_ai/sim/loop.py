@@ -357,19 +357,46 @@ class SimLoop:
                 consecutive_no_action_turns=country_state.consecutive_no_action_turns,
                 recent_domains=list(country_state.recent_domains),
             )
-            try:
-                return await agent.act(perception, memories)
-            except Exception as exc:  # noqa: BLE001
-                log.error("agent_act_failed", actor=code, error=str(exc))
-                return ProposedAction(
-                    actor=code,
-                    target=None,
-                    domain=Domain.diplomatic,
-                    action_type="no_action",
-                    payload={"reason": f"agent error: {exc}"},
-                    rationale="Agent raised an exception; defaulting to no_action.",
-                    estimated_escalation_rung=0,
-                )
+            # Retry the agent call on Anthropic 429 / rate-limit errors. Without
+            # this, a single rate-limit blip wastes the whole turn for the actor
+            # and produces a no_action with no explainability — the user sees
+            # missing rationale in the UI. Two retries with exponential backoff
+            # cover the typical 30-60s ITPM cooldown on Tier 1.
+            max_attempts = 3
+            last_exc: Exception | None = None
+            for attempt in range(max_attempts):
+                try:
+                    return await agent.act(perception, memories)
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    msg = str(exc)
+                    is_rate_limit = "429" in msg or "rate_limit" in msg.lower()
+                    if is_rate_limit and attempt < max_attempts - 1:
+                        backoff = 5 * (2**attempt)  # 5s, 10s
+                        log.warning(
+                            "agent_act_rate_limited",
+                            actor=code,
+                            attempt=attempt + 1,
+                            backoff_s=backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    break
+            log.error(
+                "agent_act_failed",
+                actor=code,
+                error=str(last_exc),
+                attempts=max_attempts,
+            )
+            return ProposedAction(
+                actor=code,
+                target=None,
+                domain=Domain.diplomatic,
+                action_type="no_action",
+                payload={"reason": f"agent error: {last_exc}"},
+                rationale="Agent raised an exception; defaulting to no_action.",
+                estimated_escalation_rung=0,
+            )
 
         # Agent fan-out strategy keyed off AGENT_PACE_SECONDS:
         #   0   → parallel via asyncio.gather (requires Tier 2+ on Anthropic:
