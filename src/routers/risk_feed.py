@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.auth import require_auth
@@ -46,9 +47,15 @@ router = APIRouter(prefix="/api/risk-feed", tags=["risk-feed"])
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
 # Per-user in-memory store. Lifetime = process lifetime.
+# Bounded so an idle user's feed snapshot doesn't pin yfinance + GDELT
+# payloads forever on the 512 MB Render instance.
 # Phase 3.5 will replace this with a `feed_items` SQL table.
-_FEED_ITEMS: dict[str, list[dict[str, Any]]] = {}
-_LAST_REFRESH: dict[str, dict[str, Any]] = {}
+_FEED_MAX_USERS = 100
+_FEED_TTL_SEC = 1800
+_FEED_ITEMS: TTLCache[str, list[dict[str, Any]]] = TTLCache(
+    maxsize=_FEED_MAX_USERS, ttl=_FEED_TTL_SEC
+)
+_LAST_REFRESH: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=_FEED_MAX_USERS, ttl=_FEED_TTL_SEC)
 
 _EMPTY_REFRESH_META: dict[str, Any] = {
     "at": None,
@@ -212,12 +219,13 @@ async def refresh_risk_feed(username: str = Depends(require_auth)):
     items = _sort_items(_dedupe(items))
 
     _FEED_ITEMS[username] = items
-    _LAST_REFRESH[username] = {
+    last_refresh = {
         "at": _now_iso(),
         "source": source_used,
         "count": len(items),
         "errors": errors,
     }
+    _LAST_REFRESH[username] = last_refresh
 
     counts = _category_counts(items)
     counts_str = ", ".join(f"{k}={v}" for k, v in counts.items()) or "none"
@@ -244,7 +252,7 @@ async def refresh_risk_feed(username: str = Depends(require_auth)):
 
     return {
         "items": items,
-        "last_refresh": _LAST_REFRESH[username],
+        "last_refresh": last_refresh,
         "category_counts": counts,
     }
 
