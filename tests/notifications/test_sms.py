@@ -49,6 +49,21 @@ def test_format_sms_body_handles_missing_fields():
     assert len(body) <= 160
 
 
+def test_format_sms_body_clamps_pathological_long_entity():
+    """When entity+severity prefix consumes nearly all the budget,
+    final clamp ensures body never exceeds MAX_SMS_LEN."""
+    card = {
+        "severity": "CRITICAL",
+        "entity": "X" * 155,  # extremely long entity name
+        "synthesis": "some text",
+        "short_url": "ew.app/r/abc",
+    }
+    body = format_sms_body(card)
+    assert len(body) <= 160
+    # Prefix must survive even if the URL/suffix gets clipped
+    assert body.startswith("[CRITICAL] ")
+
+
 # --- send_sms_alert (gated) ---
 
 

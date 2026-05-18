@@ -51,19 +51,35 @@ def format_sms_body(card: dict) -> str:
         # whole thing at MAX_SMS_LEN with no synthesis.
         return (prefix + suffix)[:MAX_SMS_LEN]
     reason = synthesis if len(synthesis) <= budget else synthesis[: max(0, budget - 3)] + "..."
-    return f"{prefix}{reason}{suffix}"
+    # Final clamp: when budget is in [0, 3), the synthesis slice is empty but
+    # "..." + suffix still appends 3+ chars, which can push the body 1-3 chars
+    # past MAX_SMS_LEN and force Twilio to split into a second (billable) segment.
+    # Slicing the composed string trims the most-cuttable tail (URL) rather than
+    # the prefix, which is correct: the severity tag must always survive.
+    return f"{prefix}{reason}{suffix}"[:MAX_SMS_LEN]
 
 
 def send_sms_alert(user: dict, card: dict) -> SendResult:
     """Send a single SMS for one card to one user, with full safety gating.
 
     Gates (in order, short-circuit on first failing):
-      1. user is on the allowlist
-      2. user has sms_enabled=1 AND a phone_number on file
-      3. user is under the daily cap (queried from notification_log)
-      4. twilio client is configured (kill-switch + creds present)
-    On any gate failure, returns a SendResult with the appropriate status
-    and (for the cap case) writes a row to notification_log.
+      1. allowlist         -> skipped_allowlist    (no log row: global config)
+      2. opt-in + phone    -> skipped_disabled     (no log row: per-user state)
+      3. daily cap         -> skipped_cap          (LOGGED -- per-card event)
+      4. kill-switch/creds -> skipped_kill_switch  (no log row: global state)
+      5. send              -> sent OR failed       (LOGGED with provider id / error)
+
+    The asymmetry is intentional: allowlist/disabled/kill-switch reflect
+    global or per-user state (not per-card events), so persisting a row for
+    every card we never evaluated would just be noise. The cap check, by
+    contrast, rejects a specific card we did evaluate -- logging it lets us
+    answer "why didn't user X get SMS for card Y?" after the fact.
+
+    Dedupe is NOT performed here. Callers must call
+    `caps.already_sent_card(username, card["id"])` before invoking this
+    function if dedupe matters (it does for the risk-feed dispatcher; it may
+    not for a manual test-send button). Keeping dedupe in the caller keeps
+    this function's gate list short and lets callers pick their own windows.
     """
     username = user["username"]
 
@@ -73,6 +89,7 @@ def send_sms_alert(user: dict, card: dict) -> SendResult:
     if not user.get("sms_enabled") or not user.get("phone_number"):
         return SendResult(status="skipped_disabled")
 
+    # Cap check writes a log row so post-hoc "why didn't user X get card Y?" is answerable.
     if not can_send_sms(username):
         record_notification(username, "sms", card_id=card["id"], status="skipped_cap")
         return SendResult(status="skipped_cap")
