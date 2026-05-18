@@ -40,6 +40,27 @@ services:
           type: keyvalue
           name: swarm-redis
           property: connectionString
+      # ── Notifications (Twilio SMS + SendGrid email) ──
+      - key: NOTIFICATIONS_ENABLED
+        value: "true"
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_PHONE
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: NEWSLETTER_FROM_EMAIL
+        sync: false
+      - key: NEWSLETTER_FROM_NAME
+        value: "Emissary Weekly Brief"
+      - key: SMS_DAILY_CAP_PER_USER
+        value: "3"
+      - key: NOTIFICATIONS_CRON_TOKEN
+        generateValue: true
+      - key: NOTIFICATIONS_ALLOWLIST
+        sync: false
 
   # ─── Swarm Redis (world-state pub/sub during live sims) ──────────
   - type: keyvalue
