@@ -64,6 +64,22 @@ def test_format_sms_body_clamps_pathological_long_entity():
     assert body.startswith("[CRITICAL] ")
 
 
+def test_format_sms_body_clamps_when_budget_in_overflow_zone():
+    """Regression test for the off-by-one fixed in fac49a9: when
+    prefix+suffix leave 0..2 chars of budget, the '...' marker plus suffix
+    used to push the total past MAX_SMS_LEN by 1-3 chars. Here budget=1
+    (entity 127 chars + url 12 chars + structural 13+7 = 159, leaves 1)."""
+    card = {
+        "severity": "CRITICAL",
+        "entity": "Y" * 127,
+        "synthesis": "some text that would normally fit but won't here",
+        "short_url": "ew.app/r/abc",  # 12 chars
+    }
+    body = format_sms_body(card)
+    assert len(body) <= 160, f"body was {len(body)} chars: {body!r}"
+    assert body.startswith("[CRITICAL] YYY")
+
+
 # --- send_sms_alert (gated) ---
 
 
