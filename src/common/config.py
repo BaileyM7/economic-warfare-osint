@@ -98,6 +98,13 @@ class Config:
     notifications_allowlist: str = field(
         default_factory=lambda: os.getenv("NOTIFICATIONS_ALLOWLIST", "")
     )
+    # Local-dev stub: when true, get_twilio_client() returns a fake client
+    # that simulates Twilio responses (including magic-number errors) without
+    # making real API calls. Requires NOTIFICATIONS_ENABLED=true to take effect.
+    # Logs every "would-send" to data/twilio_stub.jsonl. NEVER set in prod.
+    twilio_stub_mode: bool = field(
+        default_factory=lambda: os.getenv("TWILIO_STUB_MODE", "false").lower() == "true"
+    )
     # Base URL used to construct preferences + unsubscribe links inside
     # outgoing email. Must be reachable by recipients — a broken unsubscribe
     # link is a CAN-SPAM compliance problem, not just bad UX.
