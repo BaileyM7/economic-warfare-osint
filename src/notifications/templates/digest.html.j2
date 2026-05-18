@@ -20,7 +20,7 @@
 <ol style="padding-left: 20px;">
 {% for card in week_data.top_cards %}
   <li style="margin-bottom: 12px;">
-    <strong>[{{ card.severity|default('INFO') }}]</strong> {{ card.entity|default('') }}
+    <strong>[{{ card.severity|default('INFO')|upper }}]</strong> {{ card.entity|default('') }}
     <span style="color: #718096; font-size: 13px;">· {{ card.source|default(card.category|default('feed')) }} · {{ (card.fetched_at|default(''))[:10] }}</span><br>
     <span style="font-size: 14px;">{{ card.synthesis|default(card.raw_text|default(''))|truncate(280) }}</span>
   </li>

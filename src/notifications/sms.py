@@ -39,7 +39,9 @@ def format_sms_body(card: dict) -> str:
     Truncates the synthesis text rather than calling an LLM - keeps sends
     cheap, deterministic, and free of latency variance.
     """
-    severity = card.get("severity", "INFO")
+    # Uppercase severity for display - real risk-feed cards emit lowercase
+    # ('high', 'critical'), but the SMS prefix convention is uppercase ([HIGH]).
+    severity = (card.get("severity") or "INFO").upper()
     entity = card.get("entity", "")
     synthesis = card.get("synthesis", "")
     url = card.get("short_url", "")

@@ -42,6 +42,23 @@ def test_format_sms_body_no_url():
     assert "More:" not in body
 
 
+def test_format_sms_body_uppercases_lowercase_severity():
+    """Regression: real risk-feed cards emit lowercase severity ('high').
+    The SMS prefix must be uppercase for the [HIGH] convention. Surfaced
+    by scripts/stub_e2e_demo.py on 2026-05-18."""
+    card = {"severity": "high", "entity": "COSCO", "synthesis": "x", "short_url": "ew.app/r/x"}
+    body = format_sms_body(card)
+    assert body.startswith("[HIGH] COSCO:")
+    card2 = {"severity": "critical", "entity": "X", "synthesis": "y", "short_url": ""}
+    assert format_sms_body(card2).startswith("[CRITICAL] X:")
+
+
+def test_format_sms_body_handles_none_severity():
+    """Card with severity=None (not just missing key) shouldn't crash on .upper()."""
+    body = format_sms_body({"severity": None, "entity": "E", "synthesis": "s"})
+    assert body.startswith("[INFO] E:")
+
+
 def test_format_sms_body_handles_missing_fields():
     body = format_sms_body({})  # totally empty card
     # Should not crash, should return something stable

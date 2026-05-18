@@ -8,7 +8,7 @@ WEEKLY BRIEF — {{ week_data.week_start.strftime('%b %d') }} - {{ week_data.wee
 {% if week_data.top_cards %}
 YOUR WATCHLIST THIS WEEK
 {% for card in week_data.top_cards %}
-{{ loop.index }}. [{{ card.severity|default('INFO') }}] {{ card.entity|default('') }} ({{ card.source|default(card.category|default('feed')) }}, {{ (card.fetched_at|default(''))[:10] }})
+{{ loop.index }}. [{{ card.severity|default('INFO')|upper }}] {{ card.entity|default('') }} ({{ card.source|default(card.category|default('feed')) }}, {{ (card.fetched_at|default(''))[:10] }})
    {{ card.synthesis|default(card.raw_text|default(''))|truncate(200) }}
 
 {% endfor %}
@@ -35,5 +35,6 @@ SCENARIO SPOTLIGHT
 
 {% endif %}
 ---
-{% if preferences_url %}Manage preferences: {{ preferences_url }}{% endif %}
-{% if unsubscribe_url %}Unsubscribe: {{ unsubscribe_url }}{% endif %}
+{% if preferences_url %}Manage preferences: {{ preferences_url }}
+{% endif %}{% if unsubscribe_url %}Unsubscribe: {{ unsubscribe_url }}
+{% endif %}

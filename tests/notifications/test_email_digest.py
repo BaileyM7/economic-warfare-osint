@@ -162,6 +162,54 @@ def test_render_digest_text_is_ascii_safe():
     assert "<body" not in text
 
 
+def test_render_digest_uppercases_lowercase_severity_in_html():
+    """Regression: cards from the live pipeline have lowercase severity.
+    The HTML template's [SEV] bracket must render uppercase. Surfaced by
+    scripts/stub_e2e_demo.py on 2026-05-18."""
+    wd = WeekData(
+        username="alice",
+        week_iso="2026-W21",
+        week_start=datetime(2026, 5, 18, tzinfo=timezone.utc),
+        week_end=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        top_cards=[
+            {"severity": "critical", "entity": "COSCO", "synthesis": "x", "fetched_at": ""},
+            {"severity": "high", "entity": "Sinopec", "synthesis": "y", "fetched_at": ""},
+        ],
+    )
+    html, text = render_digest(wd)
+    # HTML — uppercase brackets
+    assert "[CRITICAL]" in html
+    assert "[HIGH]" in html
+    assert "[critical]" not in html
+    assert "[high]" not in html
+    # Plain text — same
+    assert "[CRITICAL]" in text
+    assert "[HIGH]" in text
+    assert "[critical]" not in text
+    assert "[high]" not in text
+
+
+def test_render_digest_text_footer_links_on_separate_lines():
+    """Regression: trim_blocks=True was stripping the newline between the
+    'Manage preferences:' and 'Unsubscribe:' lines in the plain-text footer,
+    concatenating them. Surfaced by scripts/stub_e2e_demo.py on 2026-05-18."""
+    wd = _sample_week_data()
+    _html, text = render_digest(
+        wd, preferences_url="https://x/prefs", unsubscribe_url="https://x/u"
+    )
+    # The two links must be on separate lines, not concatenated
+    assert "Manage preferences: https://x/prefs" in text
+    assert "Unsubscribe: https://x/u" in text
+    assert "https://x/prefsUnsubscribe" not in text
+    # Check the actual separation: one of them must be followed by a newline
+    # before the other appears.
+    lines = text.splitlines()
+    prefs_line = next((i for i, ln in enumerate(lines) if "Manage preferences" in ln), -1)
+    unsub_line = next((i for i, ln in enumerate(lines) if "Unsubscribe" in ln), -1)
+    assert prefs_line != -1 and unsub_line != -1
+    assert prefs_line != unsub_line, "Both links ended up on the same line"
+
+
 def test_render_digest_omits_empty_sections():
     wd = WeekData(
         username="alice",
