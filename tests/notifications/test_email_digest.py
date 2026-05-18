@@ -274,7 +274,7 @@ def test_send_weekly_digest_sends_and_logs(allowlisted_user, monkeypatch):
     # Verify the Mail object has the right shape (SendGrid Mail is a complex object;
     # use string repr or its get() method for spot checks)
     mail_dict = sent_mail.get()
-    assert mail_dict["subject"] == f"Weekly Brief — {len(wd.top_cards)} watchlist updates"
+    assert mail_dict["subject"] == f"Weekly Brief - {len(wd.top_cards)} watchlist updates"
     assert mail_dict["personalizations"][0]["to"][0]["email"] == allowlisted_user["email"]
 
     # Verify log row landed

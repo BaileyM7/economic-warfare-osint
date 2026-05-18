@@ -191,7 +191,7 @@ def send_weekly_digest(user: dict, week_data: WeekData) -> SendResult:
     msg = Mail(
         from_email=(config.newsletter_from_email, config.newsletter_from_name),
         to_emails=user["email"],
-        subject=f"Weekly Brief — {len(week_data.top_cards)} watchlist updates",
+        subject=f"Weekly Brief - {len(week_data.top_cards)} watchlist updates",
         plain_text_content=text,
         html_content=html,
     )

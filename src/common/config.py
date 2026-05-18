@@ -38,8 +38,6 @@ class Config:
     aisstream_sample_seconds: int = field(
         default_factory=lambda: int(os.getenv("AISSTREAM_SAMPLE_SECONDS", "300"))
     )
-    sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
-    sayari_client_secret: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_SECRET", ""))
 
     # Sayari Graph API (entity resolution, traversal, UBO)
     sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
