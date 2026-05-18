@@ -39,6 +39,32 @@ def test_dispatch_filters_to_high_severity(allowlisted_user, monkeypatch):
     assert sorted(calls) == ["CRITICAL", "HIGH"]
 
 
+def test_dispatch_normalizes_lowercase_severity(allowlisted_user, monkeypatch):
+    """Real risk-feed pipeline emits lowercase severities (e.g. 'high').
+    The dispatcher must normalize via .upper() — regression test for the
+    case mismatch caught during Task 6 review."""
+    calls = []
+
+    def fake_send(user, card):
+        calls.append(card["severity"])
+        from src.notifications.sms import SendResult
+
+        return SendResult(status="sent", provider_message_id="SMabc")
+
+    monkeypatch.setattr(dispatcher_mod, "send_sms_alert", fake_send)
+
+    cards = [
+        {"id": "c1", "severity": "high", "entity": "X"},
+        {"id": "c2", "severity": "critical", "entity": "Y"},
+        {"id": "c3", "severity": "low", "entity": "Z"},
+        {"id": "c4", "severity": None, "entity": "W"},
+        {"id": "c5", "entity": "V"},  # missing severity key
+    ]
+    dispatch_sms_for_new_cards("alice", cards)
+    # Both lowercase HIGH+ entries fire; low/None/missing do not
+    assert sorted(calls) == ["critical", "high"]
+
+
 def test_dispatch_skips_already_sent_cards(allowlisted_user, monkeypatch):
     """already_sent_card returning True prevents the send_sms_alert call."""
     from src.notifications.caps import record_notification

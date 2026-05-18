@@ -19,6 +19,9 @@ log = logging.getLogger(__name__)
 
 # Severity values that trigger SMS. Mirrors the design decision from
 # brainstorming (event-driven SMS for HIGH+ watchlist matches).
+# Stored uppercase; the live risk-feed pipeline emits lowercase severities
+# (see src/tools/markets/feed.py:_severity_from_move), so the comparison
+# normalizes via .upper() at the call site.
 SMS_TRIGGER_SEVERITIES = frozenset({"HIGH", "CRITICAL"})
 
 
@@ -50,7 +53,8 @@ def dispatch_sms_for_new_cards(username: str, cards: list[dict]) -> None:
     sent = 0
     skipped = 0
     for card in cards:
-        if card.get("severity") not in SMS_TRIGGER_SEVERITIES:
+        sev = (card.get("severity") or "").upper()
+        if sev not in SMS_TRIGGER_SEVERITIES:
             continue
         card_id = card.get("id")
         if not card_id:
