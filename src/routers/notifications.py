@@ -4,9 +4,10 @@ Currently exposes:
 - POST /api/notifications/send-weekly-digest — token-protected; triggers
   the weekly email digest for every opt-in user. Designed to be called by
   the Render Cron Job (see render.yaml) on Monday mornings.
+- POST /api/notifications/twilio/sms-webhook — Twilio inbound SMS callback
+  for STOP / HELP / START keyword handling.
 
 Future tasks will add:
-- POST /api/notifications/twilio/sms-webhook (Task 8, STOP/HELP/START)
 - GET/PUT /api/me/preferences (Task 9, user-facing settings)
 """
 
@@ -15,7 +16,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Header, HTTPException
+from fastapi.responses import Response
 
 from src.common.config import config
 from src.db import get_db
@@ -103,3 +105,84 @@ async def send_weekly_digest_endpoint(background_tasks: BackgroundTasks):
         background_tasks.add_task(_send_one_digest, user, anthropic_client)
 
     return {"enqueued": len(users)}
+
+
+# --- Twilio inbound webhook (STOP / HELP / START) -------------------------
+#
+# Twilio configures this URL as the inbound-SMS callback for our Twilio
+# number. When a user replies to an SMS we sent, Twilio POSTs form-encoded
+# data here. Twilio also enforces STOP/HELP/START at the carrier level
+# regardless — this handler keeps our DB state aligned with what the user
+# actually did so future sends respect the opt-out / opt-in.
+#
+# NOTE: This endpoint is intentionally NOT protected by _require_cron_token
+# because Twilio calls it from their IP range and cannot present our token.
+# A future hardening pass should validate the X-Twilio-Signature header
+# (requires TWILIO_AUTH_TOKEN), but that is out of scope for the demo.
+
+_HELP_TEXT_TEMPLATE = (
+    "Emissary risk alerts. Reply STOP to unsubscribe, START to re-enable. Manage at {url}/settings"
+)
+_STOP_REPLY = "You have been unsubscribed from Emissary SMS alerts. Reply START to re-enable."
+_START_REPLY = "Subscribed. You will receive HIGH-severity alerts for items on your watchlist."
+_UNKNOWN_REPLY = "Number not recognized. Reply HELP for info."
+
+
+def _twiml(message: str) -> Response:
+    """Wrap `message` in TwiML XML and return as a 200 OK response."""
+    # XML-escape the message contents. Twilio enforces a 1600-char hard limit
+    # per response message; nothing we generate here comes close, but be
+    # defensive about user-supplied content if this template ever grows.
+    from xml.sax.saxutils import escape
+
+    xml = f"<Response><Message>{escape(message)}</Message></Response>"
+    return Response(content=xml, media_type="application/xml")
+
+
+@router.post("/twilio/sms-webhook")
+def twilio_inbound_sms(From: str = Form(...), Body: str = Form("")) -> Response:
+    """Handle inbound SMS from Twilio. Dispatches on the first keyword.
+
+    `Body` defaults to "" so a malformed/empty inbound POST falls through
+    to the conversational-help branch rather than 422-ing — Twilio retries
+    422s, and we'd rather degrade gracefully.
+    """
+    keyword = Body.strip().upper().split(maxsplit=1)[0] if Body.strip() else ""
+
+    conn = get_db()
+    try:
+        user_row = conn.execute(
+            "SELECT username FROM users WHERE phone_number = ?", (From,)
+        ).fetchone()
+
+        if user_row is None:
+            return _twiml(_UNKNOWN_REPLY)
+
+        if keyword == "STOP":
+            conn.execute(
+                "UPDATE users SET sms_enabled = 0, unsubscribed_at = CURRENT_TIMESTAMP "
+                "WHERE phone_number = ?",
+                (From,),
+            )
+            conn.commit()
+            log.info("STOP from %s; sms_enabled cleared", From)
+            return _twiml(_STOP_REPLY)
+
+        if keyword in ("START", "UNSTOP"):
+            conn.execute(
+                "UPDATE users SET sms_enabled = 1, unsubscribed_at = NULL WHERE phone_number = ?",
+                (From,),
+            )
+            conn.commit()
+            log.info("START/UNSTOP from %s; sms_enabled set", From)
+            return _twiml(_START_REPLY)
+
+        if keyword == "HELP":
+            return _twiml(_HELP_TEXT_TEMPLATE.format(url=config.app_base_url.rstrip("/")))
+
+        # Any other body: treat as conversational; don't change state, just
+        # echo a friendly help nudge. Logged at debug so it doesn't spam.
+        log.debug("inbound from %s with body=%r — no keyword match", From, Body)
+        return _twiml(_HELP_TEXT_TEMPLATE.format(url=config.app_base_url.rstrip("/")))
+    finally:
+        conn.close()
