@@ -98,6 +98,12 @@ class Config:
     notifications_allowlist: str = field(
         default_factory=lambda: os.getenv("NOTIFICATIONS_ALLOWLIST", "")
     )
+    # Base URL used to construct preferences + unsubscribe links inside
+    # outgoing email. Must be reachable by recipients — a broken unsubscribe
+    # link is a CAN-SPAM compliance problem, not just bad UX.
+    app_base_url: str = field(
+        default_factory=lambda: os.getenv("APP_BASE_URL", "https://emissary.onrender.com")
+    )
 
     def validate(self) -> list[str]:
         """Return list of missing required config values."""

@@ -61,6 +61,8 @@ services:
         generateValue: true
       - key: NOTIFICATIONS_ALLOWLIST
         sync: false
+      - key: APP_BASE_URL
+        sync: false  # set to the actual deployed URL (e.g. https://emissary.onrender.com)
 
   # ─── Swarm Redis (world-state pub/sub during live sims) ──────────
   - type: keyvalue

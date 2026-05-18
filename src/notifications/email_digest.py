@@ -183,8 +183,9 @@ def send_weekly_digest(user: dict, week_data: WeekData) -> SendResult:
     if client is None:
         return SendResult(status="skipped_kill_switch")
 
-    preferences_url = "https://emissary.onrender.com/settings"  # static for demo
-    unsubscribe_url = f"https://emissary.onrender.com/unsubscribe?u={username}"
+    base = config.app_base_url.rstrip("/")
+    preferences_url = f"{base}/settings"
+    unsubscribe_url = f"{base}/unsubscribe?u={username}"
     html, text = render_digest(week_data, preferences_url, unsubscribe_url)
 
     msg = Mail(
