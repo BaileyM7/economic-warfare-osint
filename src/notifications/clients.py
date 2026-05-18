@@ -43,9 +43,24 @@ def get_twilio_client():
 
 
 @lru_cache(maxsize=1)
-def get_sendgrid_client() -> SendGridAPIClient | None:
-    """Return a configured SendGrid client, or None if disabled/unconfigured."""
-    if not config.notifications_enabled or not config.sendgrid_api_key:
+def get_sendgrid_client():
+    """Return a configured SendGrid client, or None if disabled/unconfigured.
+
+    Returns a StubSendGridClient when SENDGRID_STUB_MODE is enabled -- useful
+    for local testing without burning the free-tier quota. The kill-switch
+    (NOTIFICATIONS_ENABLED=false) still applies to the stub.
+
+    Return type is intentionally untyped here: it's a union of SendGridAPIClient,
+    StubSendGridClient, and None. Callers only touch `.send(mail)` which both
+    real and stub satisfy duck-typed.
+    """
+    if not config.notifications_enabled:
+        return None
+    if config.sendgrid_stub_mode:
+        from src.notifications.stub_client_sendgrid import StubSendGridClient
+
+        return StubSendGridClient(api_key=config.sendgrid_api_key or "SG.stub-api-key")
+    if not config.sendgrid_api_key:
         return None
     return SendGridAPIClient(config.sendgrid_api_key)
 

@@ -36,6 +36,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # Force stub-mode env BEFORE importing project modules, so config picks it up.
 os.environ.setdefault("NOTIFICATIONS_ENABLED", "true")
 os.environ.setdefault("TWILIO_STUB_MODE", "true")
+os.environ.setdefault("SENDGRID_STUB_MODE", "true")
 os.environ.setdefault("NOTIFICATIONS_ALLOWLIST", "alice")
 os.environ.setdefault("TWILIO_FROM_PHONE", "+15005550006")
 os.environ.setdefault("APP_BASE_URL", "https://emissary.demo")
@@ -58,6 +59,14 @@ if _STUB_LOG.exists():
     _STUB_LOG.unlink()
 _stub.STUB_LOG_PATH = _STUB_LOG
 
+# Same redirect for the SendGrid stub log.
+import src.notifications.stub_client_sendgrid as _stub_sg  # noqa: E402
+
+_STUB_SG_LOG = Path(tempfile.gettempdir()) / "stub_e2e_demo_sendgrid.jsonl"
+if _STUB_SG_LOG.exists():
+    _STUB_SG_LOG.unlink()
+_stub_sg.STUB_LOG_PATH = _STUB_SG_LOG
+
 from src.common.config import config  # noqa: E402
 from src.db import get_db, init_db  # noqa: E402
 from src.notifications import clients as _clients  # noqa: E402
@@ -67,10 +76,15 @@ from src.notifications.email_digest import (  # noqa: E402
     TickerDelta,
     WeekData,
     render_digest,
+    send_weekly_digest,
 )
 from src.notifications.scenarios import select_scenario_for_week  # noqa: E402
 from src.notifications.sms import format_sms_body  # noqa: E402
 from src.notifications.stub_client import clear_sent_messages, sent_messages  # noqa: E402
+from src.notifications.stub_client_sendgrid import (  # noqa: E402
+    clear_sent_mails,
+    sent_mails,
+)
 from src.notifications.synthesis import generate_opening_synthesis  # noqa: E402
 
 
@@ -98,7 +112,9 @@ init_db()
 
 # Clear any prior caches from the import-time singleton.
 _clients.get_twilio_client.cache_clear()
+_clients.get_sendgrid_client.cache_clear()
 clear_sent_messages()
+clear_sent_mails()
 
 # Seed 'alice' as the demo recipient.
 conn = get_db()
@@ -313,6 +329,57 @@ section("Rendered plain-text email")
 for line in text.splitlines():
     print(f"  | {line}")
 
+# -- Dispatch the email through the SendGrid stub ----------------------------
+# This exercises the same code path SendGrid would in production: Mail
+# construction inside send_weekly_digest, dispatch to the (stubbed) client,
+# header parsing for X-Message-Id, and the notification_log write.
+
+section("Dispatching weekly digest via the SendGrid stub")
+# Patch the imported symbol in email_digest the same way the SMS path does --
+# send_weekly_digest imports get_sendgrid_client at module-load time.
+import src.notifications.email_digest as _digest_mod  # noqa: E402
+
+_digest_mod.get_sendgrid_client = _clients.get_sendgrid_client
+
+# alice's row was seeded earlier with email='alice@example.com', email_enabled=1.
+alice_user = {
+    "username": "alice",
+    "email": "alice@example.com",
+    "email_enabled": 1,
+}
+email_result = send_weekly_digest(alice_user, week_data)
+print(
+    f"  send_weekly_digest -> status={email_result.status!r} "
+    f"msg_id={email_result.provider_message_id!r}"
+)
+print(f"  In-memory sent_mails: {len(sent_mails)} entry(ies)")
+if sent_mails:
+    last = sent_mails[-1]
+    print(f"  Last send: to={last.to_email!r} subject={last.subject!r}")
+    print(f"  Status code: {last.status_code}, headers: {dict(last.headers)}")
+
+section("SendGrid stub JSONL audit log (contents of data/sendgrid_stub.jsonl)")
+if _STUB_SG_LOG.exists():
+    for line in _STUB_SG_LOG.read_text(encoding="utf-8").splitlines():
+        print(f"  {line}")
+else:
+    print("  (no entries)")
+
+section("notification_log rows for the email channel")
+conn = get_db()
+try:
+    email_rows = conn.execute(
+        "SELECT id, username, channel, digest_week, status, provider_message_id "
+        "FROM notification_log WHERE channel = 'email' ORDER BY id"
+    ).fetchall()
+finally:
+    conn.close()
+for r in email_rows:
+    print(
+        f"  id={r['id']} user={r['username']} week={r['digest_week']} "
+        f"status={r['status']} msg_id={r['provider_message_id']}"
+    )
+
 section("Summary")
 print(f"  Total SMS cards considered:  {len(SAMPLE_CARDS)}")
 print(
@@ -324,7 +391,12 @@ print(
 )
 print(f"  Email HTML size:             {len(html)} bytes ({len(html.splitlines())} lines)")
 print(f"  Email plain-text size:       {len(text)} bytes ({len(text.splitlines())} lines)")
+print(
+    f"  Email stub sends:            {len(sent_mails)} | audit lines: "
+    f"{sum(1 for _ in _STUB_SG_LOG.read_text().splitlines()) if _STUB_SG_LOG.exists() else 0}"
+)
 
 banner("DEMO COMPLETE — no real Twilio or SendGrid calls were made.")
 print("Re-run anytime with: uv run python scripts/stub_e2e_demo.py")
 print("Persistent JSONL audit (when run with real .env): data/twilio_stub.jsonl")
+print("                                                  data/sendgrid_stub.jsonl")

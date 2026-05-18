@@ -103,6 +103,12 @@ class Config:
     twilio_stub_mode: bool = field(
         default_factory=lambda: os.getenv("TWILIO_STUB_MODE", "false").lower() == "true"
     )
+    # Local-dev stub for SendGrid: same idea as TWILIO_STUB_MODE. Returns a
+    # fake client that records "would-send" entries to data/sendgrid_stub.jsonl
+    # and an in-memory list. Requires NOTIFICATIONS_ENABLED=true. NEVER prod.
+    sendgrid_stub_mode: bool = field(
+        default_factory=lambda: os.getenv("SENDGRID_STUB_MODE", "false").lower() == "true"
+    )
     # Base URL used to construct preferences + unsubscribe links inside
     # outgoing email. Must be reachable by recipients — a broken unsubscribe
     # link is a CAN-SPAM compliance problem, not just bad UX.
