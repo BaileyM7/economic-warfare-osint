@@ -64,6 +64,31 @@ services:
       - key: APP_BASE_URL
         sync: false  # set to the actual deployed URL (e.g. https://emissary.onrender.com)
 
+  # ─── Weekly email digest cron (Mondays 12:00 UTC ≈ 7 AM ET) ──────
+  - type: cron
+    name: emissary-weekly-digest
+    runtime: image
+    image:
+      url: docker.io/curlimages/curl:8.10.1
+    region: oregon
+    schedule: "0 12 * * 1"  # Mondays at 12:00 UTC
+    startCommand: >-
+      curl --fail --silent --show-error
+      -X POST
+      -H "X-Cron-Token: $NOTIFICATIONS_CRON_TOKEN"
+      "$APP_BASE_URL/api/notifications/send-weekly-digest"
+    envVars:
+      - key: NOTIFICATIONS_CRON_TOKEN
+        fromService:
+          type: web
+          name: emissary
+          envVarKey: NOTIFICATIONS_CRON_TOKEN
+      - key: APP_BASE_URL
+        fromService:
+          type: web
+          name: emissary
+          envVarKey: APP_BASE_URL
+
   # ─── Swarm Redis (world-state pub/sub during live sims) ──────────
   - type: keyvalue
     name: swarm-redis
