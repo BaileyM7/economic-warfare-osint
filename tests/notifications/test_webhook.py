@@ -5,6 +5,18 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _enable_stub_mode(monkeypatch):
+    """Default to stub mode for every test in this module so existing
+    keyword-dispatch tests don't have to compute real X-Twilio-Signature
+    headers. Signature-validation tests below override this with their
+    own monkeypatch calls to exercise the real validator path.
+    """
+    from src.common.config import config
+
+    monkeypatch.setattr(config, "twilio_stub_mode", True, raising=True)
+
+
 @pytest.fixture
 def subscribed_user(app_client):
     """Seed a user with sms_enabled=1 and a phone number."""
@@ -160,3 +172,76 @@ def test_empty_body_doesnt_crash(app_client, subscribed_user):
     assert resp.status_code == 200
     # Empty body falls through to "no keyword match" → help text
     assert "stop" in resp.text.lower()
+
+
+# --- Signature validation tests ---
+
+
+def test_webhook_503_when_token_unconfigured(app_client, monkeypatch):
+    """No auth token + stub mode off → refuse with 503."""
+    from src.common.config import config
+
+    monkeypatch.setattr(config, "twilio_stub_mode", False, raising=True)
+    monkeypatch.setattr(config, "twilio_auth_token", "", raising=True)
+    resp = _post(app_client, "+12025551234", "STOP")
+    assert resp.status_code == 503
+
+
+def test_webhook_403_when_signature_header_missing(app_client, monkeypatch):
+    """Token configured but no X-Twilio-Signature header → 403."""
+    from src.common.config import config
+
+    monkeypatch.setattr(config, "twilio_stub_mode", False, raising=True)
+    monkeypatch.setattr(config, "twilio_auth_token", "test-auth-token", raising=True)
+    resp = _post(app_client, "+12025551234", "STOP")
+    assert resp.status_code == 403
+
+
+def test_webhook_403_when_signature_doesnt_match(app_client, monkeypatch):
+    """Wrong signature → 403."""
+    from src.common.config import config
+
+    monkeypatch.setattr(config, "twilio_stub_mode", False, raising=True)
+    monkeypatch.setattr(config, "twilio_auth_token", "test-auth-token", raising=True)
+    resp = app_client.post(
+        "/api/notifications/twilio/sms-webhook",
+        data={"From": "+12025551234", "Body": "STOP"},
+        headers={"X-Twilio-Signature": "obviously-wrong"},
+    )
+    assert resp.status_code == 403
+
+
+def test_webhook_200_when_signature_valid(app_client, subscribed_user, monkeypatch):
+    """Valid signature computed correctly → request succeeds."""
+    from twilio.request_validator import RequestValidator
+
+    from src.common.config import config
+
+    monkeypatch.setattr(config, "twilio_stub_mode", False, raising=True)
+    monkeypatch.setattr(config, "twilio_auth_token", "test-auth-token", raising=True)
+    monkeypatch.setattr(config, "app_base_url", "https://emissary.test", raising=True)
+
+    # Compute the signature Twilio would send for this exact request.
+    validator = RequestValidator("test-auth-token")
+    url = "https://emissary.test/api/notifications/twilio/sms-webhook"
+    params = {"From": subscribed_user["phone_number"], "Body": "STOP"}
+    signature = validator.compute_signature(url, params)
+
+    resp = app_client.post(
+        "/api/notifications/twilio/sms-webhook",
+        data=params,
+        headers={"X-Twilio-Signature": signature},
+    )
+    assert resp.status_code == 200
+    assert "unsubscribed" in resp.text.lower()
+
+
+def test_webhook_stub_mode_bypasses_signature(app_client, subscribed_user, monkeypatch):
+    """Stub mode skips validation entirely — useful for local dev."""
+    from src.common.config import config
+
+    monkeypatch.setattr(config, "twilio_stub_mode", True, raising=True)
+    # No auth token set, no signature header — should still work.
+    monkeypatch.setattr(config, "twilio_auth_token", "", raising=True)
+    resp = _post(app_client, subscribed_user["phone_number"], "STOP")
+    assert resp.status_code == 200

@@ -16,9 +16,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from twilio.request_validator import RequestValidator
 
 from src.auth import require_auth
 from src.common.config import config
@@ -122,10 +123,10 @@ async def send_weekly_digest_endpoint(background_tasks: BackgroundTasks):
 # regardless — this handler keeps our DB state aligned with what the user
 # actually did so future sends respect the opt-out / opt-in.
 #
-# NOTE: This endpoint is intentionally NOT protected by _require_cron_token
-# because Twilio calls it from their IP range and cannot present our token.
-# A future hardening pass should validate the X-Twilio-Signature header
-# (requires TWILIO_AUTH_TOKEN), but that is out of scope for the demo.
+# Authenticity is enforced via X-Twilio-Signature (HMAC-SHA1 over the URL +
+# sorted POST params, keyed by TWILIO_AUTH_TOKEN). Without this check anyone
+# with the webhook URL could spoof STOP/HELP/START on behalf of other users.
+# See _validate_twilio_signature below.
 
 _HELP_TEXT_TEMPLATE = (
     "Emissary risk alerts. Reply STOP to unsubscribe, START to re-enable. Manage at {url}/settings"
@@ -146,20 +147,82 @@ def _twiml(message: str) -> Response:
     return Response(content=xml, media_type="application/xml")
 
 
+# --- Twilio signature validation helper -----------------------------------
+
+
+async def _validate_twilio_signature(
+    request: Request, prefetched_form: dict[str, str] | None = None
+) -> None:
+    """Reject the request if X-Twilio-Signature doesn't match.
+
+    Bypassed when TWILIO_STUB_MODE is on so local dev works without real
+    auth tokens. Returns 503 when the server has no TWILIO_AUTH_TOKEN
+    configured (refuse rather than silently accept). Returns 403 when the
+    signature is present but doesn't validate.
+
+    Production note: Twilio signs the URL it called, which on Render is
+    https:// even though the internal request is http:// behind the proxy.
+    Reconstruct using APP_BASE_URL so the signature matches.
+
+    `prefetched_form` lets the caller pass an already-parsed form dict so
+    we don't re-read the request body (Starlette caches form() but we
+    don't want to rely on that across FastAPI internals).
+    """
+    if config.twilio_stub_mode:
+        return  # local-dev bypass
+
+    if not config.twilio_auth_token:
+        raise HTTPException(503, "TWILIO_AUTH_TOKEN not configured on server")
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+    if not signature:
+        raise HTTPException(403, "missing X-Twilio-Signature header")
+
+    # Use APP_BASE_URL as the source of truth for what Twilio signed.
+    # request.url.path keeps the path FastAPI saw; query string preserved too.
+    base = config.app_base_url.rstrip("/")
+    full_url = f"{base}{request.url.path}"
+    if request.url.query:
+        full_url = f"{full_url}?{request.url.query}"
+
+    # Twilio signs ALL form params, not just From/Body — MessageSid, AccountSid,
+    # ToCity, etc. all participate in the HMAC.
+    if prefetched_form is None:
+        form = await request.form()
+        params = {k: v for k, v in form.items()}
+    else:
+        params = prefetched_form
+
+    validator = RequestValidator(config.twilio_auth_token)
+    if not validator.validate(full_url, params, signature):
+        raise HTTPException(403, "invalid Twilio signature")
+
+
 @router.post("/twilio/sms-webhook")
-def twilio_inbound_sms(From: str = Form(...), Body: str = Form("")) -> Response:
+async def twilio_inbound_sms(request: Request) -> Response:
     """Handle inbound SMS from Twilio. Dispatches on the first keyword.
 
-    `Body` defaults to "" so a malformed/empty inbound POST falls through
-    to the conversational-help branch rather than 422-ing — Twilio retries
-    422s, and we'd rather degrade gracefully.
+    We read the request body upfront so the signature validator can see
+    ALL form params (Twilio signs the full set, not just From/Body) and
+    so we don't double-parse the body. Empty Body falls through to the
+    conversational-help branch rather than 422-ing — Twilio retries 422s
+    and we'd rather degrade gracefully.
     """
-    keyword = Body.strip().upper().split(maxsplit=1)[0] if Body.strip() else ""
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    await _validate_twilio_signature(request, prefetched_form=params)
+
+    from_ = params.get("From", "")
+    body = params.get("Body", "")
+    if not from_:
+        raise HTTPException(422, "missing From field")
+
+    keyword = body.strip().upper().split(maxsplit=1)[0] if body.strip() else ""
 
     conn = get_db()
     try:
         user_row = conn.execute(
-            "SELECT username FROM users WHERE phone_number = ?", (From,)
+            "SELECT username FROM users WHERE phone_number = ?", (from_,)
         ).fetchone()
 
         if user_row is None:
@@ -169,19 +232,19 @@ def twilio_inbound_sms(From: str = Form(...), Body: str = Form("")) -> Response:
             conn.execute(
                 "UPDATE users SET sms_enabled = 0, unsubscribed_at = CURRENT_TIMESTAMP "
                 "WHERE phone_number = ?",
-                (From,),
+                (from_,),
             )
             conn.commit()
-            log.info("STOP from %s; sms_enabled cleared", From)
+            log.info("STOP from %s; sms_enabled cleared", from_)
             return _twiml(_STOP_REPLY)
 
         if keyword in ("START", "UNSTOP"):
             conn.execute(
                 "UPDATE users SET sms_enabled = 1, unsubscribed_at = NULL WHERE phone_number = ?",
-                (From,),
+                (from_,),
             )
             conn.commit()
-            log.info("START/UNSTOP from %s; sms_enabled set", From)
+            log.info("START/UNSTOP from %s; sms_enabled set", from_)
             return _twiml(_START_REPLY)
 
         if keyword == "HELP":
@@ -189,7 +252,7 @@ def twilio_inbound_sms(From: str = Form(...), Body: str = Form("")) -> Response:
 
         # Any other body: treat as conversational; don't change state, just
         # echo a friendly help nudge. Logged at debug so it doesn't spam.
-        log.debug("inbound from %s with body=%r — no keyword match", From, Body)
+        log.debug("inbound from %s with body=%r — no keyword match", from_, body)
         return _twiml(_HELP_TEXT_TEMPLATE.format(url=config.app_base_url.rstrip("/")))
     finally:
         conn.close()
