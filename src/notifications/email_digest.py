@@ -32,6 +32,16 @@ class TickerDelta:
     start: float
     end: float
     pct_change: float
+    # Full company name (e.g. "Sinopec"). When set and different from `symbol`,
+    # templates render as "Sinopec (SNP)" — more readable for non-finance audiences.
+    entity_name: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        """How the WHAT MOVED section labels this row."""
+        if self.entity_name and self.entity_name != self.symbol:
+            return f"{self.entity_name} ({self.symbol})"
+        return self.symbol
 
 
 @dataclass
@@ -99,6 +109,10 @@ async def build_week_data(username: str) -> WeekData:
         if c.get("category") != "markets":
             continue
         symbol = c.get("ticker") or c.get("symbol") or c.get("entity")
+        # Friendly name: prefer the card's "entity" field if it differs from the
+        # ticker symbol — gives the WHAT MOVED section "Sinopec (SNP)" instead
+        # of just "SNP" for readers who don't know the ticker.
+        entity_name = c.get("entity") if c.get("entity") != symbol else None
         start = c.get("price_start") or c.get("week_start_price")
         end = c.get("price_end") or c.get("week_end_price") or c.get("price")
         pct = c.get("pct_change") or c.get("change_pct")
@@ -106,6 +120,7 @@ async def build_week_data(username: str) -> WeekData:
             market_deltas.append(
                 TickerDelta(
                     symbol=str(symbol),
+                    entity_name=str(entity_name) if entity_name else None,
                     start=float(start) if start is not None else float(end),
                     end=float(end),
                     pct_change=float(pct),
@@ -133,12 +148,21 @@ _jinja_env: Environment | None = None
 def _get_jinja_env() -> Environment:
     global _jinja_env
     if _jinja_env is None:
+        from src.notifications.glossary import expand_acronyms
+
         _jinja_env = Environment(
             loader=FileSystemLoader(Path(__file__).parent / "templates"),
-            autoescape=select_autoescape(["html", "j2"]),
+            # Autoescape ONLY HTML templates. Earlier config used `["html","j2"]`
+            # which matched both `.html.j2` AND `.txt.j2` — the latter wrongly
+            # got '&#39;' substituted for apostrophes in plain-text emails.
+            autoescape=select_autoescape(enabled_extensions=("html", "html.j2")),
             trim_blocks=True,
             lstrip_blocks=True,
         )
+        # `|expand_acronyms` adds plain-English expansions on first mention of
+        # known terms (OFAC, IRGC, mbpd, ...) so a non-specialist reader can
+        # decode the card synthesis text. See src/notifications/glossary.py.
+        _jinja_env.filters["expand_acronyms"] = expand_acronyms
     return _jinja_env
 
 

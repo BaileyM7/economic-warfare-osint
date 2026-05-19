@@ -272,7 +272,11 @@ top_cards = sorted(
 
 market_deltas = [
     TickerDelta(
-        symbol=c["ticker"], start=c["price_start"], end=c["price_end"], pct_change=c["pct_change"]
+        symbol=c["ticker"],
+        entity_name=c.get("entity"),
+        start=c["price_start"],
+        end=c["price_end"],
+        pct_change=c["pct_change"],
     )
     for c in SAMPLE_CARDS
     if c.get("category") == "markets"

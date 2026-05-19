@@ -22,7 +22,7 @@
   <li style="margin-bottom: 12px;">
     <strong>[{{ card.severity|default('INFO')|upper }}]</strong> {{ card.entity|default('') }}
     <span style="color: #718096; font-size: 13px;">· {{ card.source|default(card.category|default('feed')) }} · {{ (card.fetched_at|default(''))[:10] }}</span><br>
-    <span style="font-size: 14px;">{{ card.synthesis|default(card.raw_text|default(''))|truncate(280) }}</span>
+    <span style="font-size: 14px;">{{ card.synthesis|default(card.raw_text|default(''))|truncate(280)|expand_acronyms }}</span>
   </li>
 {% endfor %}
 </ol>
@@ -33,9 +33,9 @@
 <table style="border-collapse: collapse; width: 100%; font-size: 14px;">
 {% for d in week_data.market_deltas %}
   <tr style="border-bottom: 1px solid #e2e8f0;">
-    <td style="padding: 6px 12px; font-weight: 600;">{{ d.symbol }}</td>
-    <td style="padding: 6px 12px; color: #718096;">{{ "%.2f"|format(d.start) }} → {{ "%.2f"|format(d.end) }}</td>
-    <td style="padding: 6px 12px; color: {% if d.pct_change > 0 %}#22543d{% else %}#822727{% endif %}; text-align: right;">{{ "%+.1f"|format(d.pct_change) }}%</td>
+    <td style="padding: 6px 12px; font-weight: 600;">{{ d.display_name }}</td>
+    <td style="padding: 6px 12px; color: #718096;">${{ "%.2f"|format(d.start) }} → ${{ "%.2f"|format(d.end) }}</td>
+    <td style="padding: 6px 12px; color: {% if d.pct_change > 0 %}#22543d{% else %}#822727{% endif %}; text-align: right;">{% if d.pct_change > 0 %}up {% else %}down {% endif %}{{ "%.1f"|format(d.pct_change|abs) }}%</td>
   </tr>
 {% endfor %}
 </table>
@@ -45,7 +45,7 @@
 <h2 style="color: #1a365d; font-size: 18px; margin-top: 32px;">Sanctions Roll-up</h2>
 <ul style="padding-left: 20px; font-size: 14px;">
 {% for s in week_data.sanctions %}
-  <li style="margin-bottom: 6px;">{{ s.entity|default(s.raw_text|default(''))|truncate(140) }}</li>
+  <li style="margin-bottom: 6px;">{{ s.entity|default(s.raw_text|default(''))|truncate(140)|expand_acronyms }}</li>
 {% endfor %}
 </ul>
 {% endif %}

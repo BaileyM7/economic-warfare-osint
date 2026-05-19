@@ -19,13 +19,22 @@ log = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-4-5-20251001"
 
-PROMPT_TEMPLATE = """You are summarizing a weekly geopolitical/economic risk brief for a single analyst.
+PROMPT_TEMPLATE = """You are summarizing a weekly geopolitical/economic risk brief for a single reader.
 
-Their watchlist saw {n_cards} updates this week ({n_high} high-severity).
+Their watchlist saw {n_cards} updates this week ({n_high} at the highest urgency level).
 Top entities mentioned: {top_entities}.
 Standout event: {standout}
 
-Write a 2-3 sentence opening paragraph that synthesizes the week from THIS user's perspective. Be concrete, no fluff, no hedging. Refer to specific entities by name. Output only the paragraph — no greeting, no headers, no markdown."""
+Write a 2-3 sentence opening paragraph that synthesizes the week from THIS reader's perspective.
+
+Audience and tone:
+- Write for an executive who follows business and geopolitics generally but is NOT an OSINT/sanctions specialist.
+- Expand acronyms on first mention (e.g. "OFAC (the U.S. Treasury's sanctions office)", "OPEC+ (major oil producers plus Russia)").
+- When you mention a company by ticker, also use the full name (e.g. "Sinopec" not just "SNP").
+- Use plain English. Avoid insider phrases like "SDN designation," "secondary sanctions exposure," "feedstock disruption" — translate them.
+- Replace "high-severity" with concrete framing: "the most urgent," "the one to read first," etc.
+
+Be concrete, no fluff, no hedging. Refer to specific entities by name. Output only the paragraph — no greeting, no headers, no markdown."""
 
 FALLBACK_TEMPLATE = (
     "This week your watchlist saw {n_cards} updates across the feed, "

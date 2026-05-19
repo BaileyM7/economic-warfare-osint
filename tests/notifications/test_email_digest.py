@@ -143,7 +143,8 @@ def test_render_digest_html_includes_all_sections():
     assert "COSCO" in html
     assert "What Moved" in html
     assert "XOM" in html
-    assert "+5.0%" in html
+    # Up/down phrasing replaced the +/- prefix for non-finance readers
+    assert "up 5.0%" in html
     assert "Sanctions Roll-up" in html
     assert "Scenario Spotlight" in html
     assert "Test scenario" in html
