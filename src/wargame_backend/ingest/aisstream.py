@@ -137,6 +137,44 @@ class AISStreamRawRecord(BaseModel):
     raw_sample: dict[str, Any] = Field(default_factory=dict)
 
 
+def _parse_aisstream_timestamp(ts_str: str | None) -> datetime:
+    """Parse the ``MetaData.time_utc`` value from an AISStream message.
+
+    AISStream emits Go-formatted timestamps like
+    ``"2024-01-15 10:30:00.123456 +0000 UTC"`` — the trailing ``UTC`` literal
+    makes ``datetime.fromisoformat()`` fail, which used to fall back to
+    ``datetime.now()`` for every record and cluster every buffered position
+    at the ingest moment instead of its actual broadcast time.
+
+    Returns ``datetime.now(timezone.utc)`` as a last resort so callers always
+    get a UTC-aware datetime.
+    """
+    ts_str = (ts_str or "").strip()
+    if not ts_str:
+        return datetime.now(timezone.utc)
+
+    # Strip Go's literal " UTC" suffix and try a sequence of formats.
+    cleaned = ts_str.removesuffix(" UTC").strip()
+    formats = (
+        "%Y-%m-%d %H:%M:%S.%f %z",  # Go: "2024-01-15 10:30:00.123456 +0000"
+        "%Y-%m-%d %H:%M:%S %z",  # Go without microseconds
+        "%Y-%m-%dT%H:%M:%S.%f%z",  # ISO with µs + offset
+        "%Y-%m-%dT%H:%M:%S%z",  # ISO + offset
+    )
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(cleaned, fmt)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    # fromisoformat handles ``Z`` suffix only in 3.11+; normalize it.
+    try:
+        dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return datetime.now(timezone.utc)
+
+
 def _message_to_position(msg: dict[str, Any]) -> dict[str, Any] | None:
     """Extract a raw AIS position dict from one AISStream PositionReport message.
 
@@ -152,17 +190,7 @@ def _message_to_position(msg: dict[str, Any]) -> dict[str, Any] | None:
     if not mmsi or lat is None or lon is None:
         return None
 
-    ts_str = (meta.get("time_utc") or "").strip()
-    timestamp: datetime
-    if ts_str:
-        try:
-            timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        except ValueError:
-            timestamp = datetime.now(timezone.utc)
-    else:
-        timestamp = datetime.now(timezone.utc)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    timestamp = _parse_aisstream_timestamp(meta.get("time_utc"))
 
     return {
         "mmsi": str(mmsi),
