@@ -134,19 +134,23 @@ async def test_vessel_by_imo_falls_back_to_fixture(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_vessel_history_empty_when_buffer_unreachable(monkeypatch: pytest.MonkeyPatch):
-    """When the wargame DB can't be opened, vessel_history degrades to []."""
+async def test_vessel_history_empty_when_wargame_import_fails(monkeypatch: pytest.MonkeyPatch):
+    """When wargame_backend can't be imported, vessel_history degrades to [].
 
-    class _BoomSession:
-        async def __aenter__(self):
-            raise RuntimeError("DB unreachable")
+    The test forces the lazy import inside vessel_history() to raise so it
+    works in both environments — with and without the optional `wargame`
+    extra installed (CI's unit job runs without it).
+    """
+    import builtins
 
-        async def __aexit__(self, *args):
-            return False
+    real_import = builtins.__import__
 
-    import wargame_backend.app.db.session as ws
+    def _fail_wargame(name, *args, **kwargs):
+        if name.startswith("wargame_backend"):
+            raise ImportError(f"forced failure for {name}")
+        return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(ws, "AsyncSessionLocal", lambda: _BoomSession())
+    monkeypatch.setattr(builtins, "__import__", _fail_wargame)
     assert await vc.vessel_history("353136000", days=30) == []
 
 
