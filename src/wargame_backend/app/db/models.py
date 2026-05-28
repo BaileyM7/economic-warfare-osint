@@ -13,13 +13,16 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
     func,
@@ -472,6 +475,38 @@ class AgentMemory(Base):
     )
 
 
+class AISPosition(Base):
+    """Live AIS position points collected by the AISStream ingest adapter.
+
+    Each row is one raw position broadcast from one MMSI. The vessels tool
+    queries this table by (mmsi, timestamp) for vessel_history() tracks and
+    derives port stops from it via infer_port_stops(). A nightly prune
+    keeps the table bounded to roughly 30 days of recent data.
+    """
+
+    __tablename__ = "ais_positions"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    mmsi: Mapped[str] = mapped_column(String(16), nullable=False)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    course: Mapped[float | None] = mapped_column(Float, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_ais_positions_mmsi_timestamp", "mmsi", "timestamp"),
+        Index("ix_ais_positions_timestamp", "timestamp"),
+    )
+
+
 # Convenience re-export so `from app.db.models import *` works cleanly
 __all__ = [
     "Base",
@@ -483,6 +518,7 @@ __all__ = [
     "Simulation",
     "SimEvent",
     "AgentMemory",
+    "AISPosition",
     "RelationshipPosture",
     "DataSourceStatus",
     "EventDomain",

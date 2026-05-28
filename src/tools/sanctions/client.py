@@ -36,9 +36,124 @@ OFAC_ALT_CSV_URL = "https://www.treasury.gov/ofac/downloads/alt.csv"
 OFAC_ADD_CSV_URL = "https://www.treasury.gov/ofac/downloads/add.csv"
 
 _CACHE_NS_OPENSANCTIONS = "opensanctions"
+_CACHE_NS_OPENSANCTIONS_VESSEL = "opensanctions_vessel"
 _CACHE_NS_OFAC = "ofac"
 _CACHE_TTL_SEARCH = 3600  # 1 hour for search results
+_CACHE_TTL_VESSEL = 6 * 3600  # 6 hours — vessel identity is stable
 _CACHE_TTL_SDN = 86400  # 24 hours for SDN list download
+
+
+def _opensanctions_auth_headers() -> dict[str, str]:
+    """Authorization header if a key is configured; public tier works without one."""
+    key = config.opensanctions_api_key
+    return {"Authorization": f"ApiKey {key}"} if key else {}
+
+
+async def vessel_find_opensanctions(name: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Search OpenSanctions for vessel entities matching *name*.
+
+    Returns the raw entity dicts (with ``caption``, ``schema``, ``properties``,
+    ``datasets``) — the caller normalizes them to the canonical vessel shape.
+    Works on the public tier without an API key; uses the configured key for
+    higher rate limits when present.
+    """
+    cache_params = {"q": name, "limit": limit}
+    cached = get_cached(_CACHE_NS_OPENSANCTIONS_VESSEL, action="find", **cache_params)
+    if cached is not None:
+        return cached
+
+    try:
+        data = await fetch_json(
+            f"{OPENSANCTIONS_BASE}/search/default",
+            params={"q": name, "schema": "Vessel", "limit": limit},
+            headers=_opensanctions_auth_headers(),
+        )
+    except Exception as exc:
+        logger.warning("OpenSanctions vessel_find error (q=%s): %s", name, type(exc).__name__)
+        return []
+
+    results = data.get("results") or []
+    if not isinstance(results, list):
+        results = []
+    set_cached(
+        results,
+        _CACHE_NS_OPENSANCTIONS_VESSEL,
+        ttl=_CACHE_TTL_VESSEL,
+        action="find",
+        **cache_params,
+    )
+    return results
+
+
+async def vessel_by_imo_opensanctions(imo: str) -> dict[str, Any] | None:
+    """Look up a vessel by IMO number via OpenSanctions; returns one entity or None.
+
+    OpenSanctions ``/search/default`` doesn't accept ``imoNumber`` as a direct
+    filter, so we query by the IMO string and post-filter results that
+    actually carry the matching IMO in their properties.
+    """
+    cached = get_cached(_CACHE_NS_OPENSANCTIONS_VESSEL, action="imo", imo=imo)
+    if cached is not None:
+        return cached or None
+
+    try:
+        data = await fetch_json(
+            f"{OPENSANCTIONS_BASE}/search/default",
+            params={"q": imo, "schema": "Vessel", "limit": 5},
+            headers=_opensanctions_auth_headers(),
+        )
+    except Exception as exc:
+        logger.warning("OpenSanctions vessel_by_imo error (imo=%s): %s", imo, type(exc).__name__)
+        return None
+
+    match: dict[str, Any] | None = None
+    for result in data.get("results") or []:
+        imo_values = (result.get("properties") or {}).get("imoNumber") or []
+        if any(str(v).strip() == str(imo).strip() for v in imo_values):
+            match = result
+            break
+
+    set_cached(
+        match or {},
+        _CACHE_NS_OPENSANCTIONS_VESSEL,
+        ttl=_CACHE_TTL_VESSEL,
+        action="imo",
+        imo=imo,
+    )
+    return match
+
+
+async def vessel_by_mmsi_opensanctions(mmsi: str) -> dict[str, Any] | None:
+    """Look up a vessel by MMSI via OpenSanctions; returns one entity or None."""
+    cached = get_cached(_CACHE_NS_OPENSANCTIONS_VESSEL, action="mmsi", mmsi=mmsi)
+    if cached is not None:
+        return cached or None
+
+    try:
+        data = await fetch_json(
+            f"{OPENSANCTIONS_BASE}/search/default",
+            params={"q": mmsi, "schema": "Vessel", "limit": 5},
+            headers=_opensanctions_auth_headers(),
+        )
+    except Exception as exc:
+        logger.warning("OpenSanctions vessel_by_mmsi error (mmsi=%s): %s", mmsi, type(exc).__name__)
+        return None
+
+    match: dict[str, Any] | None = None
+    for result in data.get("results") or []:
+        mmsi_values = (result.get("properties") or {}).get("mmsi") or []
+        if any(str(v).strip() == str(mmsi).strip() for v in mmsi_values):
+            match = result
+            break
+
+    set_cached(
+        match or {},
+        _CACHE_NS_OPENSANCTIONS_VESSEL,
+        ttl=_CACHE_TTL_VESSEL,
+        action="mmsi",
+        mmsi=mmsi,
+    )
+    return match
 
 
 # ---------------------------------------------------------------------------

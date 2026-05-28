@@ -1,10 +1,8 @@
-"""Datalastic AIS signal extractor (Phase B — implemented).
+"""AISStream.io signal extractor.
 
-Datalastic provides AIS ship-tracking data.  Per-turn signal: count of
-flagged-vessel pings inside a watch zone for the country (e.g. PLA-flagged
-vessels in TWN's ADIZ buffer).  The ingest adapter is expected to populate
-``payload.{flag_iso3, zone, ping_count_w_w_pct}`` so we can emit a
-"week-over-week change in flagged pings" headline.
+Reads ``payload.ping_count_w_w_pct`` rows produced by the AISStream ingest
+adapter and emits a per-country "week-over-week change in flagged AIS
+position pings" signal when the magnitude crosses the 25% threshold.
 """
 
 from __future__ import annotations
@@ -19,9 +17,9 @@ from wargame_backend.app.db.models import Event
 from wargame_ai.sim.signals import Signal
 
 
-class DatalasticExtractor:
-    source = "Datalastic"
-    _SOURCE_KEY = "datalastic"
+class AISStreamExtractor:
+    source = "AISStream"
+    _SOURCE_KEY = "aisstream"
 
     async def extract(
         self,
@@ -47,7 +45,7 @@ class DatalasticExtractor:
         if not rows:
             return None
 
-        # Pick the largest |w/w pct change| ping observation in the window.
+        # Pick the observation with the largest |w/w pct change| in the window.
         best: tuple[float, Event] | None = None
         for row in rows:
             pct = (row.payload or {}).get("ping_count_w_w_pct")
@@ -65,7 +63,7 @@ class DatalasticExtractor:
         zone = (row.payload or {}).get("zone", "watch zone")
         magnitude = round(min(1.0, abs(pct) / 200.0), 2)
         direction = "negative" if pct > 0 else "positive"
-        headline = f"{flag}-flagged AIS pings in {zone}: {pct:+.0f}% w/w"
+        headline = f"{flag}-flagged AIS position pings in {zone}: {pct:+.0f}% w/w"
         return Signal(
             source=self.source,
             headline=headline[:120],

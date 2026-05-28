@@ -39,7 +39,7 @@ uv run --extra dev pytest
 - `FRED_API_KEY` — set
 - `COMTRADE_API_KEY` — set
 - `ACLED_API_KEY` + `ACLED_EMAIL` + `ACLED_PASSWORD` + `REFRESH_TOKEN` — set
-- `DATALASTIC_API_KEY` — **empty** (this is a gap — see vessel work below)
+- `AISSTREAM_API_KEY` — usually empty; weekly zone-presence ingest is the only consumer
 - `OPENCORPORATES_API_KEY` — empty (works without it, just rate-limited)
 
 **Frontend:** There are two frontends — understand the distinction before touching anything:
@@ -102,7 +102,7 @@ The canonical data model is `src/common/types.py`. Every tool returns a `ToolRes
 - `/api/sanctions-impact` — end-to-end: yfinance stock data + OFAC check + comparable price curves + chart projection
 - `/api/person-profile` — end-to-end: OpenSanctions + OFAC + OpenCorporates officers + ICIJ + GDELT; returns full JSON including vis.js graph
 - `/api/sector-analysis` — works for 5 pre-defined sectors only; runs OFAC checks per company in parallel
-- `/api/vessel-track` — OFAC check on vessel name is real; AIS lookup (Datalastic) **falls back to mock data** because `DATALASTIC_API_KEY` is empty
+- `/api/vessel-track` — OFAC check on vessel name is real; particulars come from OpenSanctions vessel-schema (sanctioned vessels) or the curated `data/fixtures/vessels.json` fallback. Live AIS positions are not yet wired up.
 - `/api/entity-graph` — GLEIF corporate tree + OFAC sanctions network + sector peers; real data
 - `/api/resolve-entity` — Claude classifies query as company/person/sector/vessel; works
 
@@ -113,7 +113,7 @@ The canonical data model is `src/common/types.py`. Every tool returns a `ToolRes
 
 3. **Comparables dataset is narrow** — `SANCTIONS_COMPARABLES` in `src/sanctions_impact.py` contains **11 entries** (ZTE, Alibaba, Xiaomi, Full Truck Alliance, Tencent Music, Bilibili, NIO, PDD, Baidu, Micron, KWEB), all Chinese-listed or US-listed Chinese ADRs. A `SECTOR_GROUPS` dict already exists for sector-based filtering. Fix: add a `sanction_type` field to each entry and append new cases (Nvidia, ASML, Gazprom, etc.) — do not restructure the data format.
 
-4. **Vessel AIS is always mock** — `src/tools/vessels/client.py` checks for `DATALASTIC_API_KEY` and if absent returns `_mock_vessel_list()` / `_mock_vessel_detail()` / `_mock_vessel_history()` with a `"note": "Demo mode"` field. There is no `server.py` in `src/tools/vessels/` — the vessel functions are called directly from `src/api.py`.
+4. **Live vessel AIS not wired up** — `src/tools/vessels/client.py` resolves particulars via OpenSanctions + `data/fixtures/vessels.json`. Position/history fields return zeros / `[]`; a follow-up AIS position buffer fed by the AISStream ingest would fill them in. There is no `server.py` in `src/tools/vessels/` — the vessel functions are called directly from `src/api.py`.
 
 5. **No LLM narratives** — all 4 endpoints return structured data only. A clean person profile looks like an empty result rather than "no derogatory findings across X sources." The narrative layer is what makes these look like analyst outputs rather than raw data dumps.
 
@@ -260,9 +260,9 @@ Add a new function `vessel_find_opensanctions(name: str) -> list[dict]` that:
 1. Calls `https://api.opensanctions.org/entities/_search?q={name}&schema=Vessel` (no API key required)
 2. Parses the response: extract `id`, `caption`, properties for `imoNumber`, `mmsi`, `flag`, `owner`, `pastOwners`, `sanctionedVessel`
 3. For each result, pull associated `Organization` entities (the owner/operator) by following the `owner` relationship
-4. Returns a list of dicts in the same shape as the Datalastic response so `vessel_track` endpoint doesn't need changes
+4. Returns a list of dicts in the canonical vessel shape so `vessel_track` endpoint doesn't need changes
 
-Update `vessel_find()`, `vessel_by_imo()`, `vessel_by_mmsi()` to call `vessel_find_opensanctions()` as primary source when Datalastic key is absent, instead of calling `_mock_vessel_list()`.
+`vessel_find()`, `vessel_by_imo()`, `vessel_by_mmsi()` now call `vessel_find_opensanctions()` as the primary source and fall through to the curated fixture set below.
 
 Add a `data/fixtures/vessels.json` file with 5–6 curated vessel objects for non-sanctioned vessel lookups (use real IMO numbers from public AIS sources — e.g., a container ship, a bulk carrier, a product tanker). Shape:
 ```json

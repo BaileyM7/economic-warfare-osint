@@ -1,255 +1,272 @@
-"""Datalastic AIS client for vessel tracking, position, and port history.
+"""Vessel-tracking client backed by OpenSanctions + a curated fixture.
 
-API docs: https://www.datalastic.com/en/api/
-Base URL: https://api.datalastic.com/api/v0/
+OpenSanctions vessel-schema gives queryable particulars + owner/sanctions
+data for *sanctioned* vessels. Clean commercial vessels (Maersk, COSCO,
+Maran, …) aren't on OpenSanctions, so we fall back to
+``data/fixtures/vessels.json`` for the demo's curated set.
 
-Requires DATALASTIC_API_KEY in environment.  Falls back to OpenSanctions
-vessel schema search when no key is configured (no position/history data).
+Live AIS positions (used by ``vessel_history`` / ``vessel_port_calls``) come
+from the wargame_backend ``ais_positions`` table, populated by the AISStream
+ingest adapter. When that buffer isn't reachable (DB down, WARGAME disabled)
+the position queries degrade gracefully to an empty result.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import date, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-from src.common.cache import get_cached, set_cached
-from src.common.config import config
-from src.common.http_client import fetch_json
+from src.tools.sanctions.client import (
+    vessel_by_imo_opensanctions,
+    vessel_by_mmsi_opensanctions,
+    vessel_find_opensanctions,
+)
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://api.datalastic.com/api/v0"
-_CACHE_NS = "datalastic"
-_CACHE_TTL = 1800  # 30 min
+# Project-root-relative path to the demo fixture set.
+_FIXTURE_PATH = Path(__file__).resolve().parents[3] / "data" / "fixtures" / "vessels.json"
+
+_SOURCE_OPENSANCTIONS = "OpenSanctions Vessels"
+_SOURCE_FIXTURE = "fixture"
+
+_fixture_cache: list[dict[str, Any]] | None = None
 
 
-def _api_key() -> str | None:
-    key = getattr(config, "datalastic_api_key", None)
-    return key if key else None
+def _load_fixtures() -> list[dict[str, Any]]:
+    """Read the curated vessel fixture set, caching the parsed JSON in memory."""
+    global _fixture_cache
+    if _fixture_cache is not None:
+        return _fixture_cache
+    try:
+        with _FIXTURE_PATH.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            _fixture_cache = data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logger.warning("vessel fixture unavailable (%s): %s", _FIXTURE_PATH, exc)
+        _fixture_cache = []
+    return _fixture_cache
+
+
+def _first(values: Any) -> Any:
+    """Return the first element of a list-ish value, or the value itself."""
+    if isinstance(values, list):
+        return values[0] if values else None
+    return values
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_vessel(raw: dict[str, Any]) -> dict[str, Any]:
+    """Map an OpenSanctions vessel entity to the canonical vessel shape.
+
+    Position fields are zeroed — OpenSanctions has no live AIS. The
+    ``status`` field surfaces sanctions status as a useful demo signal.
+    """
+    if not raw:
+        return {}
+
+    props = raw.get("properties") or {}
+    caption = raw.get("caption") or _first(props.get("name")) or "Unknown"
+    owner_raw = _first(props.get("owner"))
+    operator_raw = _first(props.get("operator"))
+    # Owner can be either an entity ID string or a richer dict; pick a name.
+    if isinstance(owner_raw, dict):
+        owner = owner_raw.get("caption") or owner_raw.get("name") or ""
+    else:
+        owner = owner_raw or ""
+    sanctioned = bool(_first(props.get("sanctionedVessel"))) or any(
+        ds for ds in (raw.get("datasets") or []) if "ofac" in str(ds).lower()
+    )
+
+    return {
+        "name": caption,
+        "imo": _first(props.get("imoNumber")) or "",
+        "mmsi": _first(props.get("mmsi")) or "",
+        "callsign": _first(props.get("callSign")) or "",
+        "flag": _first(props.get("flag")) or "",
+        "vessel_type": _first(props.get("type")) or _first(props.get("shipType")) or "",
+        "length": _to_float(_first(props.get("lengthMeters")), default=0.0) or None,
+        "width": _to_float(_first(props.get("widthMeters")), default=0.0) or None,
+        "deadweight": _to_int(_first(props.get("deadweightTonnage")), default=0),
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "speed": 0.0,
+        "course": 0,
+        "heading": 0,
+        "status": "Sanctioned" if sanctioned else "Unknown",
+        "destination": "",
+        "eta": "",
+        "last_position_epoch": 0,
+        "source": _SOURCE_OPENSANCTIONS,
+        "owner": owner,
+        "operator": operator_raw or "",
+        "sanctioned": sanctioned,
+        "opensanctions_id": raw.get("id") or "",
+    }
+
+
+def _normalize_fixture(entry: dict[str, Any]) -> dict[str, Any]:
+    """Pass through a fixture row, filling any missing canonical keys with zeros."""
+    base = {
+        "name": "Unknown",
+        "imo": "",
+        "mmsi": "",
+        "callsign": "",
+        "flag": "",
+        "vessel_type": "",
+        "length": None,
+        "width": None,
+        "deadweight": 0,
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "speed": 0.0,
+        "course": 0,
+        "heading": 0,
+        "status": "Unknown",
+        "destination": "",
+        "eta": "",
+        "last_position_epoch": 0,
+        "source": _SOURCE_FIXTURE,
+        "owner": "",
+        "operator": "",
+        "sanctioned": False,
+        "opensanctions_id": "",
+    }
+    base.update(entry)
+    if base.get("source") == "fixture":
+        base["source"] = _SOURCE_FIXTURE
+    return base
+
+
+def _fixture_search_by_name(query: str) -> list[dict[str, Any]]:
+    """Return fixture entries whose name contains *query* (case-insensitive)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    return [_normalize_fixture(v) for v in _load_fixtures() if q in (v.get("name") or "").lower()]
+
+
+def _fixture_lookup(field: str, value: str) -> dict[str, Any] | None:
+    """Return the first fixture entry whose *field* equals *value* (string match)."""
+    target = str(value).strip()
+    if not target:
+        return None
+    for v in _load_fixtures():
+        if str(v.get(field) or "").strip() == target:
+            return _normalize_fixture(v)
+    return None
 
 
 # ---------------------------------------------------------------------------
-# Datalastic API (real AIS data)
+# Public API
 # ---------------------------------------------------------------------------
 
 
 async def vessel_find(name: str) -> list[dict[str, Any]]:
-    """Search for vessels by name. Returns list of vessel summaries."""
-    key = _api_key()
-    if not key:
-        logger.warning("No DATALASTIC_API_KEY — vessel search unavailable")
+    """Search for vessels by name across OpenSanctions, falling back to fixtures."""
+    if not name:
         return []
-
-    cached = get_cached(_CACHE_NS, action="find", name=name)
-    if cached is not None:
-        return cached
-
     try:
-        data = await fetch_json(
-            f"{_BASE}/vessel_find",
-            params={"api-key": key, "name": name},
-            timeout=10.0,
-        )
-        results = data.get("data", [])
-        if isinstance(results, dict):
-            results = [results]
-        # Normalize field names
-        normalized = [_normalize_vessel(r) for r in results]
-        set_cached(normalized, _CACHE_NS, action="find", name=name, ttl=_CACHE_TTL)
-        return normalized
+        raw_results = await vessel_find_opensanctions(name)
     except Exception as exc:
-        logger.warning("Datalastic vessel_find error: %s", exc)
-        return []
+        logger.warning("vessel_find OpenSanctions error: %s", exc)
+        raw_results = []
+    normalized = [_normalize_vessel(r) for r in raw_results if r]
+    normalized = [n for n in normalized if n]
+    if normalized:
+        return normalized
+    return _fixture_search_by_name(name)
 
 
 async def vessel_by_mmsi(mmsi: str) -> dict[str, Any] | None:
-    """Get current position and details for a vessel by MMSI."""
-    key = _api_key()
-    if not key:
+    """Resolve a vessel by MMSI via OpenSanctions, falling back to fixtures."""
+    if not mmsi:
         return None
-
-    cached = get_cached(_CACHE_NS, action="mmsi", mmsi=mmsi)
-    if cached is not None:
-        return cached
-
     try:
-        data = await fetch_json(
-            f"{_BASE}/vessel",
-            params={"api-key": key, "mmsi": mmsi},
-            timeout=10.0,
-        )
-        result = _normalize_vessel(data.get("data", {}))
-        set_cached(result, _CACHE_NS, action="mmsi", mmsi=mmsi, ttl=_CACHE_TTL)
-        return result
+        raw = await vessel_by_mmsi_opensanctions(mmsi)
     except Exception as exc:
-        logger.warning("Datalastic vessel_by_mmsi error: %s", exc)
-        return None
+        logger.warning("vessel_by_mmsi OpenSanctions error: %s", exc)
+        raw = None
+    if raw:
+        return _normalize_vessel(raw)
+    return _fixture_lookup("mmsi", mmsi)
 
 
 async def vessel_by_imo(imo: str) -> dict[str, Any] | None:
-    """Get current details for a vessel by IMO number."""
-    key = _api_key()
-    if not key:
+    """Resolve a vessel by IMO via OpenSanctions, falling back to fixtures."""
+    if not imo:
         return None
-
-    cached = get_cached(_CACHE_NS, action="imo", imo=imo)
-    if cached is not None:
-        return cached
-
     try:
-        data = await fetch_json(
-            f"{_BASE}/vessel",
-            params={"api-key": key, "imo": imo},
-            timeout=10.0,
-        )
-        result = _normalize_vessel(data.get("data", {}))
-        set_cached(result, _CACHE_NS, action="imo", imo=imo, ttl=_CACHE_TTL)
-        return result
+        raw = await vessel_by_imo_opensanctions(imo)
     except Exception as exc:
-        logger.warning("Datalastic vessel_by_imo error: %s", exc)
-        return None
+        logger.warning("vessel_by_imo OpenSanctions error: %s", exc)
+        raw = None
+    if raw:
+        return _normalize_vessel(raw)
+    return _fixture_lookup("imo", imo)
 
 
 async def vessel_history(mmsi: str, days: int = 30) -> list[dict[str, Any]]:
-    """Fetch AIS position history for the last *days* days.
+    """Read AIS position history for *mmsi* from the ais_positions buffer.
 
-    Returns list of position dicts with: latitude, longitude, speed, course, timestamp.
-    Supports up to 30 days for the 24h/1w/1m map toggles.
+    Lazy-imports the wargame_backend DB helpers so this module stays
+    importable when the wargame backend isn't mounted or its DB connection
+    isn't configured. Returns ``[]`` on any error.
     """
-    key = _api_key()
-    if not key:
-        logger.warning("No DATALASTIC_API_KEY — vessel history unavailable")
+    if not mmsi:
         return []
-
-    end_dt = date.today()
-    start_dt = end_dt - timedelta(days=days)
-
-    cached = get_cached(_CACHE_NS, action="history", mmsi=mmsi, days=days)
-    if cached is not None:
-        return cached
-
     try:
-        data = await fetch_json(
-            f"{_BASE}/vessel_history",
-            params={
-                "api-key": key,
-                "mmsi": mmsi,
-                "date_from": start_dt.isoformat(),
-                "date_to": end_dt.isoformat(),
-            },
-            timeout=20.0,
-        )
-        # Response: data.positions[] with lat, lon, speed, course, last_position_epoch
-        raw_positions = data.get("data", {}).get("positions", [])
-        positions = [_normalize_position(p) for p in raw_positions]
-        set_cached(positions, _CACHE_NS, action="history", mmsi=mmsi, days=days, ttl=_CACHE_TTL)
-        return positions
-    except Exception as exc:
-        logger.warning("Datalastic vessel_history error: %s", exc)
+        from wargame_backend.app.db.ais_positions import read_positions_for_mmsi
+        from wargame_backend.app.db.session import AsyncSessionLocal
+    except ImportError:
+        logger.info("vessel_history: wargame_backend not available")
         return []
 
-
-# ---------------------------------------------------------------------------
-# Normalization — map Datalastic fields to our standard shape
-# ---------------------------------------------------------------------------
-
-
-def _normalize_vessel(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize Datalastic vessel response to a consistent shape."""
-    return {
-        "name": raw.get("name") or raw.get("name_ais") or "Unknown",
-        "imo": raw.get("imo") or "",
-        "mmsi": raw.get("mmsi") or "",
-        "callsign": raw.get("callsign") or "",
-        "flag": raw.get("country_iso") or "",
-        "vessel_type": raw.get("type_specific") or raw.get("type") or "",
-        "length": raw.get("length") or raw.get("a") or None,
-        "width": raw.get("width") or raw.get("b") or None,
-        "deadweight": raw.get("dwt") or raw.get("deadweight") or 0,
-        "latitude": raw.get("lat") or 0.0,
-        "longitude": raw.get("lon") or 0.0,
-        "speed": raw.get("speed") or 0.0,
-        "course": raw.get("course") or 0,
-        "heading": raw.get("heading") or 0,
-        "status": raw.get("navigation_status") or "Unknown",
-        "destination": raw.get("destination") or "",
-        "eta": raw.get("eta_UTC") or raw.get("eta") or "",
-        "last_position_epoch": raw.get("last_position_epoch") or 0,
-        "source": "Datalastic AIS",
-    }
-
-
-def _normalize_position(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a single AIS position point."""
-    return {
-        "latitude": raw.get("lat") or 0.0,
-        "longitude": raw.get("lon") or 0.0,
-        "speed": raw.get("speed") or 0.0,
-        "course": raw.get("course") or 0,
-        "timestamp": raw.get("last_position_epoch") or 0,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Port call history (Datalastic API)
-# ---------------------------------------------------------------------------
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    try:
+        async with AsyncSessionLocal() as session:
+            return await read_positions_for_mmsi(session, mmsi, since)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("vessel_history DB error: %s", exc)
+        return []
 
 
 async def vessel_port_calls(mmsi: str, days: int = 90) -> list[dict[str, Any]]:
-    """Fetch port call history from Datalastic.
-
-    Returns list of port calls with: port_name, country, arrival, departure, duration.
-    Falls back to infer_port_stops() if no Datalastic key or API fails.
-    """
-    key = _api_key()
-    if not key:
-        return []
-
-    cached = get_cached(_CACHE_NS, action="port_calls", mmsi=mmsi, days=days)
-    if cached is not None:
-        return cached
-
-    end_dt = date.today()
-    start_dt = end_dt - timedelta(days=days)
-
-    try:
-        data = await fetch_json(
-            f"{_BASE}/port_calls",
-            params={
-                "api-key": key,
-                "mmsi": mmsi,
-                "date_from": start_dt.isoformat(),
-                "date_to": end_dt.isoformat(),
-            },
-            timeout=15.0,
-        )
-        raw_calls = data.get("data", [])
-        if isinstance(raw_calls, dict):
-            raw_calls = [raw_calls]
-        calls = [_normalize_port_call(c) for c in raw_calls]
-        set_cached(calls, _CACHE_NS, action="port_calls", mmsi=mmsi, days=days, ttl=_CACHE_TTL)
-        return calls
-    except Exception as exc:
-        logger.warning("Datalastic port_calls error: %s", exc)
-        return []
+    """Infer port calls from the position buffer via ``infer_port_stops()``."""
+    positions = await vessel_history(mmsi, days=days)
+    return infer_port_stops(positions)
 
 
-def _normalize_port_call(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a Datalastic port call record."""
+# ---------------------------------------------------------------------------
+# Position normalization / port-stop inference — provider-agnostic geometry
+# ---------------------------------------------------------------------------
+
+
+def _normalize_position(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a single AIS position point — kept for downstream callers."""
     return {
-        "port_name": raw.get("port_name") or raw.get("port", {}).get("name", "Unknown"),
-        "country": raw.get("country_iso") or raw.get("port", {}).get("country_iso", ""),
-        "latitude": raw.get("lat") or 0.0,
-        "longitude": raw.get("lon") or 0.0,
-        "arrival": raw.get("arrival") or raw.get("timestamp_arrival") or "",
-        "departure": raw.get("departure") or raw.get("timestamp_departure") or "",
+        "latitude": raw.get("lat") or raw.get("latitude") or 0.0,
+        "longitude": raw.get("lon") or raw.get("longitude") or 0.0,
+        "speed": raw.get("speed") or 0.0,
+        "course": raw.get("course") or 0,
+        "timestamp": raw.get("last_position_epoch") or raw.get("timestamp") or 0,
     }
-
-
-# ---------------------------------------------------------------------------
-# Port stop inference from AIS positions (fallback)
-# ---------------------------------------------------------------------------
 
 
 def infer_port_stops(
@@ -257,8 +274,8 @@ def infer_port_stops(
 ) -> list[dict[str, Any]]:
     """Infer port stops from AIS position history by detecting low-speed clusters.
 
-    Groups consecutive positions where speed < threshold into stops,
-    returns unique stops deduplicated by proximity (within ~10km).
+    Groups consecutive positions where speed < threshold into stops, returning
+    unique stops deduplicated by proximity (within ~10 km).
     """
     if not positions:
         return []
@@ -278,7 +295,6 @@ def infer_port_stops(
     if len(current_stop) >= 2:
         stops.append(_cluster_to_stop(current_stop))
 
-    # Deduplicate by proximity (~0.1 degree ≈ 11km)
     unique: list[dict[str, Any]] = []
     for stop in stops:
         is_dup = False

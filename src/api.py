@@ -1490,9 +1490,9 @@ def _build_vessel_sources(vessel_name: str, sayari_intel: Any) -> list[dict[str,
     """
     sources: list[dict[str, Any]] = [
         {
-            "name": "Datalastic AIS",
-            "url": "https://datalastic.com/",
-            "description": f"Vessel position, IMO/MMSI registration, and 47+ point route history for {vessel_name}",
+            "name": "OpenSanctions Vessels",
+            "url": "https://opensanctions.org/",
+            "description": f"Vessel particulars (IMO, MMSI, flag, owner) and sanctioned-vessel flag for {vessel_name}",
         },
         {
             "name": "OFAC SDN",
@@ -1696,7 +1696,9 @@ async def vessel_track(req: VesselTrackRequest):
         async def _get_port_data():
             nonlocal port_calls_data, countries_visited, port_stops_inferred
             mmsi_str = str(vessel_detail.get("mmsi", ""))
-            # Try Datalastic port call API first
+            # Port calls require an AIS position history we don't yet have in
+            # Phase 1 of the AISStream migration — returns [] and we fall
+            # through to infer_port_stops() on whatever history is available.
             if mmsi_str:
                 port_calls_data = await vessel_port_calls(mmsi_str, days=90)
             # Get countries from AIS positions

@@ -32,7 +32,7 @@ All 4 endpoints already exist with real data behind them. The gaps are **present
 - **Frontend only shows the sanctions impact chart** — person, sector, and vessel results are returned but never displayed
 - **Sector coverage is narrow** — only semiconductor, energy, shipping, rare earth, telecom. Any other sector returns a semiconductor fallback
 - **Comparables dataset is narrow** — all 12 cases are Chinese-listed tech ADRs being sanctioned by the US; wrong profile for US companies facing export controls or for non-tech sectors
-- **Vessel AIS is mock** — `DATALASTIC_API_KEY` is empty; client returns fake coordinates with a "demo" watermark
+- **Vessel positions are unavailable** — `/api/vessel-track` resolves particulars via OpenSanctions + the curated fixture; live AIS positions require an AIS position buffer that isn't wired up yet
 - **No LLM narratives** — all 4 endpoints return structured JSON but no natural-language analysis; a clean profile looks like an empty result without synthesis
 - **`/api/analyze` (full orchestrator)** — the code exists and is wired, but hasn't been validated end-to-end
 
@@ -82,7 +82,7 @@ The sectors most likely to come up in real queries:
 **Fix:** Expand registry to ~15 sectors; add LLM-assisted sector resolution for unknowns; wire trade + geopolitical tools into the sector endpoint.
 
 ### Vessel Tracking
-The OFAC check is real and catches any vessel on the SDN list. The AIS data is the problem — without a Datalastic key, position and route history are always fake.
+The OFAC check is real and catches any vessel on the SDN list. Particulars (IMO, MMSI, flag, owner, sanctioned flag) come from OpenSanctions for sanctioned vessels and a curated fixture set for clean commercial ships. Position and route history are blank in this build — an AIS position buffer fed by AISStream would fill them in.
 
 For demo purposes, the most analytically interesting vessel queries are **sanctioned vessels** (dark shipping, Iranian tankers, oligarch yachts, DPRK freighters) — and for those, OpenSanctions vessel schema provides ownership, flag, IMO, and associated entities for free. The gap is live AIS.
 

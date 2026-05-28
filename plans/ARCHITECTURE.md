@@ -190,7 +190,7 @@ All API calls check the local diskcache before hitting the network:
 - **Cache key**: SHA256 of `(namespace + sorted params)`
 - **Default TTL**: 3600 s (1 hour) for search results
 - **SDN list TTL**: 86400 s (24 hours)
-- **Purpose**: Respect free-tier rate limits (UN Comtrade: 500 calls/day; Datalastic: per-credit)
+- **Purpose**: Respect free-tier rate limits (UN Comtrade: 500 calls/day; AISStream: one concurrent WS per token)
 
 ---
 
@@ -289,7 +289,7 @@ REFRESH_TOKEN=...           # ACLED OAuth refresh token
 OPENCORPORATES_API_KEY=...  # Optional (improves rate limits)
 OPENSANCTIONS_API_KEY=...   # Optional (higher rate limits)
 TRADE_GOV_API_KEY=...       # Optional (Trade.gov CSL)
-DATALASTIC_API_KEY=...      # Optional (vessel tracking)
+AISSTREAM_API_KEY=...       # Optional (AIS zone-presence ingest)
 
 CLAUDE_MODEL=claude-sonnet-4-6   # Recommended — defaults to claude-sonnet-4-20250514 if unset
 CACHE_TTL_SECONDS=3600
