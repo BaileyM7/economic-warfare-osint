@@ -211,8 +211,6 @@ def test_message_to_position_extracts_canonical_fields() -> None:
             }
         },
     }
-    # AISStream uses a non-ISO timestamp format; the parser falls back to "now"
-    # when fromisoformat can't read it. We just verify the shape is right.
     pos = _message_to_position(msg)
     assert pos is not None
     assert pos["mmsi"] == "412111111"
@@ -220,7 +218,62 @@ def test_message_to_position_extracts_canonical_fields() -> None:
     assert pos["longitude"] == 120.5
     assert pos["speed"] == 12.5
     assert pos["course"] == 90.0
+    # Go-format timestamp must be parsed, not silently replaced with now().
+    assert pos["timestamp"].year == 2026
+    assert pos["timestamp"].month == 5
+    assert pos["timestamp"].day == 27
+    assert pos["timestamp"].hour == 12
     assert pos["timestamp"].tzinfo is not None
+
+
+def test_parse_aisstream_timestamp_handles_go_format() -> None:
+    """The actual format AISStream emits — the bug that clustered all
+    positions at the ingest moment because fromisoformat couldn't handle it."""
+    from ingest.aisstream import _parse_aisstream_timestamp
+
+    dt = _parse_aisstream_timestamp("2026-05-27 12:34:56.123456 +0000 UTC")
+    assert dt.year == 2026
+    assert dt.minute == 34
+    assert dt.microsecond == 123456
+    assert dt.tzinfo is not None
+
+
+def test_parse_aisstream_timestamp_handles_go_format_without_microseconds() -> None:
+    from ingest.aisstream import _parse_aisstream_timestamp
+
+    dt = _parse_aisstream_timestamp("2026-05-27 12:34:56 +0000 UTC")
+    assert dt.year == 2026
+    assert dt.second == 56
+    assert dt.tzinfo is not None
+
+
+def test_parse_aisstream_timestamp_handles_iso() -> None:
+    from ingest.aisstream import _parse_aisstream_timestamp
+
+    dt = _parse_aisstream_timestamp("2026-05-27T12:34:56+00:00")
+    assert dt.year == 2026
+    assert dt.hour == 12
+    assert dt.tzinfo is not None
+
+
+def test_parse_aisstream_timestamp_falls_back_to_now_on_garbage() -> None:
+    """Unparseable input must return a UTC-aware datetime close to now() —
+    the safety net so the buffer write never explodes on a weird message."""
+    from ingest.aisstream import _parse_aisstream_timestamp
+
+    before = datetime.now(timezone.utc)
+    dt = _parse_aisstream_timestamp("not a timestamp")
+    after = datetime.now(timezone.utc)
+    assert dt.tzinfo is not None
+    assert before <= dt <= after
+
+
+def test_parse_aisstream_timestamp_handles_none_and_empty() -> None:
+    from ingest.aisstream import _parse_aisstream_timestamp
+
+    assert _parse_aisstream_timestamp(None).tzinfo is not None
+    assert _parse_aisstream_timestamp("").tzinfo is not None
+    assert _parse_aisstream_timestamp("   ").tzinfo is not None
 
 
 def test_message_to_position_handles_iso_timestamp() -> None:
