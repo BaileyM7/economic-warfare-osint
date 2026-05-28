@@ -1536,9 +1536,13 @@ async def vessel_track(req: VesselTrackRequest):
         history = []
 
         if digits_only.isdigit() and len(digits_only) == 9:
-            vessel_detail = await vessel_by_mmsi(digits_only)
-            if vessel_detail:
-                history = await vessel_history(digits_only, days=30)
+            # AIS positions live in a buffer keyed by MMSI; fetch them in parallel
+            # with particulars so the map renders even for vessels that aren't
+            # in OpenSanctions / the fixture (buffer-only AIS captures).
+            vessel_detail, history = await asyncio.gather(
+                vessel_by_mmsi(digits_only),
+                vessel_history(digits_only, days=30),
+            )
         elif digits_only.upper().startswith("IMO") or (
             digits_only.isdigit() and len(digits_only) == 7
         ):
