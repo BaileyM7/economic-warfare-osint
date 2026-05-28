@@ -77,7 +77,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from src.routers.admin import router as admin_router
 from src.routers.auth import router as auth_router
-from src.routers.notifications import me_router, router as notifications_router
+from src.routers.notifications import router as notifications_router
 
 logger = logging.getLogger(__name__)
 
@@ -229,9 +229,6 @@ app.include_router(watchlist_router, dependencies=[Depends(require_auth)])
 # Notifications: cron-token-protected endpoints; no bearer-auth dependency
 # (cron services authenticate via the X-Cron-Token shared secret instead).
 app.include_router(notifications_router)
-# Per-user settings endpoints (GET/PUT /api/me/preferences); each route uses
-# Depends(require_auth) directly so bearer-auth is enforced per-handler.
-app.include_router(me_router)
 
 # --- Wargame subapp (embedded swarm backend) ---
 # Gated by WARGAME_ENABLED so Emissary's baseline behavior is unaffected

@@ -7,8 +7,9 @@ Currently exposes:
 - POST /api/notifications/twilio/sms-webhook — Twilio inbound SMS callback
   for STOP / HELP / START keyword handling.
 
-Future tasks will add:
-- GET/PUT /api/me/preferences (Task 9, user-facing settings)
+User enrollment (phone/email/opt-in flags) is admin-only and lives on the
+admin router — see src/routers/admin.py. End-users have no self-service
+preferences endpoint here.
 """
 
 from __future__ import annotations
@@ -18,10 +19,8 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
 from twilio.request_validator import RequestValidator
 
-from src.auth import require_auth
 from src.common.config import config
 from src.db import get_db
 from src.notifications.email_digest import build_week_data, send_weekly_digest
@@ -33,11 +32,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
-
-# Separate router for /api/me/... endpoints. The notifications-admin router
-# is prefixed at /api/notifications; /me/preferences is user-facing so it
-# lives under /api/me/.
-me_router = APIRouter(prefix="/api/me", tags=["me"])
 
 
 def _require_cron_token(x_cron_token: str | None = Header(None)) -> None:
@@ -256,73 +250,3 @@ async def twilio_inbound_sms(request: Request) -> Response:
         return _twiml(_HELP_TEXT_TEMPLATE.format(url=config.app_base_url.rstrip("/")))
     finally:
         conn.close()
-
-
-# --- /api/me/preferences (per-user GET/PUT) -------------------------------
-#
-# Bearer-authenticated. Returns / updates the calling user's row in the
-# users table. PUT is upsert semantics (ON CONFLICT DO UPDATE) so the
-# first-time save creates the row.
-
-# E.164 phone format: '+' followed by 1-15 digits, leading digit non-zero.
-_E164_PATTERN = r"^\+[1-9]\d{1,14}$"
-
-
-class Preferences(BaseModel):
-    email: str | None = Field(None, max_length=320)  # RFC 5321 max
-    phone_number: str | None = Field(None, pattern=_E164_PATTERN)
-    sms_enabled: bool = False
-    email_enabled: bool = False
-    timezone: str = Field("America/New_York", max_length=64)
-
-
-@me_router.get("/preferences", response_model=Preferences)
-def get_my_preferences(username: str = Depends(require_auth)) -> Preferences:
-    conn = get_db()
-    try:
-        row = conn.execute(
-            "SELECT email, phone_number, sms_enabled, email_enabled, timezone "
-            "FROM users WHERE username = ?",
-            (username,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        # No row yet — return defaults. Caller is expected to PUT to create one.
-        return Preferences()
-    return Preferences(
-        email=row["email"],
-        phone_number=row["phone_number"],
-        sms_enabled=bool(row["sms_enabled"]),
-        email_enabled=bool(row["email_enabled"]),
-        timezone=row["timezone"] or "America/New_York",
-    )
-
-
-@me_router.put("/preferences", response_model=Preferences)
-def put_my_preferences(prefs: Preferences, username: str = Depends(require_auth)) -> Preferences:
-    conn = get_db()
-    try:
-        conn.execute(
-            "INSERT INTO users "
-            "(username, email, phone_number, sms_enabled, email_enabled, timezone) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(username) DO UPDATE SET "
-            "email = excluded.email, "
-            "phone_number = excluded.phone_number, "
-            "sms_enabled = excluded.sms_enabled, "
-            "email_enabled = excluded.email_enabled, "
-            "timezone = excluded.timezone",
-            (
-                username,
-                prefs.email,
-                prefs.phone_number,
-                int(prefs.sms_enabled),
-                int(prefs.email_enabled),
-                prefs.timezone,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return prefs
