@@ -768,6 +768,7 @@ wargame = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
     { name = "tenacity" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -820,6 +821,7 @@ requires-dist = [
     { name = "twilio", specifier = ">=9.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "vcrpy", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "websockets", marker = "extra == 'wargame'", specifier = ">=12" },
     { name = "yfinance", specifier = ">=0.2.40" },
 ]
 provides-extras = ["dev", "wargame"]
