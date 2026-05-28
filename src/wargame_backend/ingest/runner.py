@@ -37,7 +37,7 @@ from ingest.open_sanctions import OpenSanctionsSource
 from ingest.opencorporates import OpenCorporatesSource
 from ingest.sec_edgar import SECEdgarSource
 from ingest.gleif import GLEIFSource
-from ingest.datalastic import DatalasticSource
+from ingest.aisstream import AISStreamSource
 from ingest.trade_gov import TradeGovSource
 from ingest.marinecadastre_ais import MarineCadastreAISSource
 from ingest.icij_offshore import ICIJOffshoreSource
@@ -62,7 +62,7 @@ _ALL_SOURCES: dict[str, Source] = {
         OpenCorporatesSource(),
         SECEdgarSource(),
         GLEIFSource(),
-        DatalasticSource(),
+        AISStreamSource(),
         TradeGovSource(),
         MarineCadastreAISSource(),
         ICIJOffshoreSource(),

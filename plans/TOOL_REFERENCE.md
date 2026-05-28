@@ -239,7 +239,7 @@ Tools never raise exceptions to the orchestrator — failures go into `errors[]`
 These are available directly in `src/api.py` and called from specific endpoints:
 
 **`src/tools/vessels/client.py`**
-- `vessel_find(name)` — search vessel by name (Datalastic)
+- `vessel_find(name)` — search vessel by name (OpenSanctions vessel-schema + curated fixture fallback)
 - `vessel_by_mmsi(mmsi)` — lookup by MMSI
 - `vessel_by_imo(imo)` — lookup by IMO number
 - `vessel_history(mmsi, days)` — AIS position history

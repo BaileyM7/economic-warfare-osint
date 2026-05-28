@@ -22,8 +22,8 @@ from __future__ import annotations
 from wargame_ai.sim.signals import SignalExtractor
 
 from wargame_ai.sim.extractors.acled import ACLEDExtractor
+from wargame_ai.sim.extractors.aisstream import AISStreamExtractor
 from wargame_ai.sim.extractors.comtrade import ComtradeExtractor
-from wargame_ai.sim.extractors.datalastic import DatalasticExtractor
 from wargame_ai.sim.extractors.eia import EIAExtractor
 from wargame_ai.sim.extractors.fred import FREDExtractor
 from wargame_ai.sim.extractors.gdelt import GDELTExtractor
@@ -47,7 +47,7 @@ def default_extractors() -> list[SignalExtractor]:
         GDELTExtractor(),
         ACLEDExtractor(),
         ComtradeExtractor(),
-        DatalasticExtractor(),
+        AISStreamExtractor(),
         OpenSanctionsExtractor(),
         OFACSDNExtractor(),
         TradeGovExtractor(),
@@ -62,8 +62,8 @@ def default_extractors() -> list[SignalExtractor]:
 
 __all__ = [
     "ACLEDExtractor",
+    "AISStreamExtractor",
     "ComtradeExtractor",
-    "DatalasticExtractor",
     "EIAExtractor",
     "FREDExtractor",
     "GDELTExtractor",

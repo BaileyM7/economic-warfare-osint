@@ -77,6 +77,8 @@ wargame = [
     # Test helpers swarm expects at runtime (fakeredis is imported defensively)
     "fakeredis>=2.26.0",
     "aiosqlite>=0.20.0",
+    # AISStream.io — WebSocket client for global AIS firehose
+    "websockets>=12",
 ]
 
 [tool.pytest.ini_options]
