@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Weekly Brief — {{ week_data.week_start.strftime('%b %d') }}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; color: #1a202c;">
+
+<h1 style="color: #1a365d; font-size: 24px; margin-bottom: 8px;">Weekly Brief</h1>
+<p style="color: #718096; font-size: 13px; margin-top: 0;">{{ week_data.week_start.strftime('%B %d') }} – {{ week_data.week_end.strftime('%B %d, %Y') }} · {{ week_data.week_iso }}</p>
+
+{% if week_data.opening_synthesis %}
+<p style="font-size: 16px; line-height: 1.6; padding: 16px; background: #f7fafc; border-left: 3px solid #1a365d;">
+  {{ week_data.opening_synthesis }}
+</p>
+{% endif %}
+
+{% if week_data.top_cards %}
+<h2 style="color: #1a365d; font-size: 18px; margin-top: 32px;">Your Watchlist This Week</h2>
+<ol style="padding-left: 20px;">
+{% for card in week_data.top_cards %}
+  <li style="margin-bottom: 12px;">
+    <strong>[{{ card.severity|default('INFO')|upper }}]</strong> {{ card.entity|default('') }}
+    <span style="color: #718096; font-size: 13px;">· {{ card.source|default(card.category|default('feed')) }} · {{ (card.fetched_at|default(''))[:10] }}</span><br>
+    <span style="font-size: 14px;">{{ card.synthesis|default(card.raw_text|default(''))|truncate(280)|expand_acronyms }}</span>
+  </li>
+{% endfor %}
+</ol>
+{% endif %}
+
+{% if week_data.market_deltas %}
+<h2 style="color: #1a365d; font-size: 18px; margin-top: 32px;">What Moved</h2>
+<table style="border-collapse: collapse; width: 100%; font-size: 14px;">
+{% for d in week_data.market_deltas %}
+  <tr style="border-bottom: 1px solid #e2e8f0;">
+    <td style="padding: 6px 12px; font-weight: 600;">{{ d.display_name }}</td>
+    <td style="padding: 6px 12px; color: #718096;">${{ "%.2f"|format(d.start) }} → ${{ "%.2f"|format(d.end) }}</td>
+    <td style="padding: 6px 12px; color: {% if d.pct_change > 0 %}#22543d{% else %}#822727{% endif %}; text-align: right;">{% if d.pct_change > 0 %}up {% else %}down {% endif %}{{ "%.1f"|format(d.pct_change|abs) }}%</td>
+  </tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{% if week_data.sanctions %}
+<h2 style="color: #1a365d; font-size: 18px; margin-top: 32px;">Sanctions Roll-up</h2>
+<ul style="padding-left: 20px; font-size: 14px;">
+{% for s in week_data.sanctions %}
+  <li style="margin-bottom: 6px;">{{ s.entity|default(s.raw_text|default(''))|truncate(140)|expand_acronyms }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if week_data.scenario %}
+<h2 style="color: #1a365d; font-size: 18px; margin-top: 32px;">Scenario Spotlight</h2>
+<p style="font-size: 16px; font-weight: 600;">{{ week_data.scenario.headline }}</p>
+<p style="font-size: 14px; line-height: 1.6;">{{ week_data.scenario.summary }}</p>
+{% endif %}
+
+<hr style="margin-top: 40px; border: none; border-top: 1px solid #e2e8f0;">
+<p style="font-size: 11px; color: #a0aec0;">
+{% if preferences_url %}<a href="{{ preferences_url }}" style="color: #4a5568;">Manage preferences</a> · {% endif %}
+{% if unsubscribe_url %}<a href="{{ unsubscribe_url }}" style="color: #4a5568;">Unsubscribe</a>{% endif %}
+</p>
+
+</body>
+</html>

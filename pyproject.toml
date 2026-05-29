@@ -34,6 +34,9 @@ dependencies = [
     "redis>=5.2.0",
     "limits[redis]>=3.13.0",
     "cachetools>=7.1.1",
+    # Notifications (Twilio SMS + SendGrid email)
+    "twilio>=9.0.0",
+    "sendgrid>=6.11.0",
 ]
 
 [project.optional-dependencies]

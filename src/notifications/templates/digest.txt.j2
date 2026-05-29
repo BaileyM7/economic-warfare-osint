@@ -1,0 +1,40 @@
+WEEKLY BRIEF — {{ week_data.week_start.strftime('%b %d') }} - {{ week_data.week_end.strftime('%b %d, %Y') }}
+{{ week_data.week_iso }}
+
+{% if week_data.opening_synthesis %}
+{{ week_data.opening_synthesis }}
+
+{% endif %}
+{% if week_data.top_cards %}
+YOUR WATCHLIST THIS WEEK
+{% for card in week_data.top_cards %}
+{{ loop.index }}. [{{ card.severity|default('INFO')|upper }}] {{ card.entity|default('') }} ({{ card.source|default(card.category|default('feed')) }}, {{ (card.fetched_at|default(''))[:10] }})
+   {{ card.synthesis|default(card.raw_text|default(''))|truncate(200)|expand_acronyms }}
+
+{% endfor %}
+{% endif %}
+{% if week_data.market_deltas %}
+WHAT MOVED
+{% for d in week_data.market_deltas %}
+  {{ d.display_name }}: ${{ "%.2f"|format(d.start) }} -> ${{ "%.2f"|format(d.end) }} ({% if d.pct_change > 0 %}up {% else %}down {% endif %}{{ "%.1f"|format(d.pct_change|abs) }}%)
+{% endfor %}
+
+{% endif %}
+{% if week_data.sanctions %}
+SANCTIONS ROLL-UP
+{% for s in week_data.sanctions %}
+  - {{ s.entity|default(s.raw_text|default(''))|truncate(100)|expand_acronyms }}
+{% endfor %}
+
+{% endif %}
+{% if week_data.scenario %}
+SCENARIO SPOTLIGHT
+{{ week_data.scenario.headline }}
+
+{{ week_data.scenario.summary }}
+
+{% endif %}
+---
+{% if preferences_url %}Manage preferences: {{ preferences_url }}
+{% endif %}{% if unsubscribe_url %}Unsubscribe: {{ unsubscribe_url }}
+{% endif %}

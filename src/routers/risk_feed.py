@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from cachetools import TTLCache
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from src.auth import require_auth
 from src.db import log_activity
@@ -192,7 +192,10 @@ async def get_risk_feed(username: str = Depends(require_auth)):
 
 
 @router.post("/refresh")
-async def refresh_risk_feed(username: str = Depends(require_auth)):
+async def refresh_risk_feed(
+    background_tasks: BackgroundTasks,
+    username: str = Depends(require_auth),
+):
     """Rebuild *this user's* feed from configured sources. Synchronous so the
     caller sees the new items immediately."""
     mode = (os.getenv("RISK_FEED_MODE") or "auto").strip().lower()
@@ -249,6 +252,14 @@ async def refresh_risk_feed(username: str = Depends(require_auth)):
             severity=it.get("severity", "info"),
             related_id=it.get("id"),
         )
+
+    # Dispatch SMS alerts for HIGH+ items in the background so the user's
+    # refresh response isn't delayed by Twilio latency. dispatch_sms_for_new_cards
+    # is dedupe-aware (notification_log lookup per card_id) so repeated refreshes
+    # don't re-send.
+    from src.notifications.dispatcher import dispatch_sms_for_new_cards
+
+    background_tasks.add_task(dispatch_sms_for_new_cards, username, items)
 
     return {
         "items": items,

@@ -118,6 +118,35 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_watchlist_username ON watchlist_items(username);
             CREATE INDEX IF NOT EXISTS idx_watchlist_active ON watchlist_items(username, active);
+
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                email TEXT,
+                phone_number TEXT,           -- E.164 format, e.g. +12025551234
+                sms_enabled INTEGER DEFAULT 0,
+                email_enabled INTEGER DEFAULT 0,
+                timezone TEXT DEFAULT 'America/New_York',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                unsubscribed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                channel TEXT NOT NULL,           -- 'sms' | 'email'
+                card_id TEXT,                    -- nullable; risk-feed card id that triggered SMS
+                digest_week TEXT,                -- nullable; ISO week for emails (e.g. '2026-W21')
+                provider_message_id TEXT,        -- Twilio SID or SendGrid x-message-id
+                status TEXT NOT NULL,            -- 'sent' | 'failed' | 'skipped_cap' | 'skipped_dedupe' | 'skipped_disabled' | 'skipped_allowlist' | 'skipped_kill_switch'
+                error_text TEXT,
+                sent_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (username) REFERENCES users(username)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_notif_log_user_channel_date
+                ON notification_log(username, channel, sent_at);
+            CREATE INDEX IF NOT EXISTS idx_notif_log_card_dedupe
+                ON notification_log(username, card_id) WHERE card_id IS NOT NULL;
             """
         )
         conn.commit()

@@ -38,8 +38,6 @@ class Config:
     aisstream_sample_seconds: int = field(
         default_factory=lambda: int(os.getenv("AISSTREAM_SAMPLE_SECONDS", "300"))
     )
-    sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
-    sayari_client_secret: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_SECRET", ""))
 
     # Sayari Graph API (entity resolution, traversal, UBO)
     sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
@@ -73,6 +71,49 @@ class Config:
     # Model settings
     model: str = field(
         default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+    )
+
+    # --- Notifications (Twilio SMS + SendGrid email) ---
+    notifications_enabled: bool = field(
+        default_factory=lambda: os.getenv("NOTIFICATIONS_ENABLED", "false").lower() == "true"
+    )
+    twilio_account_sid: str = field(default_factory=lambda: os.getenv("TWILIO_ACCOUNT_SID", ""))
+    twilio_auth_token: str = field(default_factory=lambda: os.getenv("TWILIO_AUTH_TOKEN", ""))
+    twilio_from_phone: str = field(default_factory=lambda: os.getenv("TWILIO_FROM_PHONE", ""))
+    sendgrid_api_key: str = field(default_factory=lambda: os.getenv("SENDGRID_API_KEY", ""))
+    newsletter_from_email: str = field(
+        default_factory=lambda: os.getenv("NEWSLETTER_FROM_EMAIL", "noreply@emissary.demo")
+    )
+    newsletter_from_name: str = field(
+        default_factory=lambda: os.getenv("NEWSLETTER_FROM_NAME", "Emissary Weekly Brief")
+    )
+    sms_daily_cap_per_user: int = field(
+        default_factory=lambda: int(os.getenv("SMS_DAILY_CAP_PER_USER", "3"))
+    )
+    notifications_cron_token: str = field(
+        default_factory=lambda: os.getenv("NOTIFICATIONS_CRON_TOKEN", "")
+    )
+    notifications_allowlist: str = field(
+        default_factory=lambda: os.getenv("NOTIFICATIONS_ALLOWLIST", "")
+    )
+    # Local-dev stub: when true, get_twilio_client() returns a fake client
+    # that simulates Twilio responses (including magic-number errors) without
+    # making real API calls. Requires NOTIFICATIONS_ENABLED=true to take effect.
+    # Logs every "would-send" to data/twilio_stub.jsonl. NEVER set in prod.
+    twilio_stub_mode: bool = field(
+        default_factory=lambda: os.getenv("TWILIO_STUB_MODE", "false").lower() == "true"
+    )
+    # Local-dev stub for SendGrid: same idea as TWILIO_STUB_MODE. Returns a
+    # fake client that records "would-send" entries to data/sendgrid_stub.jsonl
+    # and an in-memory list. Requires NOTIFICATIONS_ENABLED=true. NEVER prod.
+    sendgrid_stub_mode: bool = field(
+        default_factory=lambda: os.getenv("SENDGRID_STUB_MODE", "false").lower() == "true"
+    )
+    # Base URL used to construct preferences + unsubscribe links inside
+    # outgoing email. Must be reachable by recipients — a broken unsubscribe
+    # link is a CAN-SPAM compliance problem, not just bad UX.
+    app_base_url: str = field(
+        default_factory=lambda: os.getenv("APP_BASE_URL", "https://emissary.onrender.com")
     )
 
     def validate(self) -> list[str]:
