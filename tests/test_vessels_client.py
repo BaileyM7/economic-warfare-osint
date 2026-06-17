@@ -77,6 +77,8 @@ def test_normalize_vessel_clean_dataset_not_marked_sanctioned():
 
 @pytest.mark.asyncio
 async def test_vessel_find_returns_opensanctions_normalized(monkeypatch: pytest.MonkeyPatch):
+    """AKIN HALAY is not in the fixture, so OpenSanctions wins for that name."""
+
     async def _fake_search(name: str, limit: int = 5):
         assert name == "AKIN HALAY"
         return [_OPENSANCTIONS_ENTITY]
@@ -86,6 +88,92 @@ async def test_vessel_find_returns_opensanctions_normalized(monkeypatch: pytest.
     assert len(results) == 1
     assert results[0]["sanctioned"] is True
     assert results[0]["source"] == "OpenSanctions Vessels"
+
+
+@pytest.mark.asyncio
+async def test_vessel_find_prefers_fixture_over_opensanctions(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Option A: fixture wins for known commercial vessels.
+
+    The bug this guards against: OpenSanctions' fuzzy /search/default ranker
+    can return an unrelated sanctioned tanker (HATTI) at rank 1 for an
+    unrelated query like "ever given" because HATTI's indexed metadata
+    happens to score higher than the actual EVER GIVEN record. The old code
+    would take that result and the UI showed HATTI's particulars for the
+    EVER GIVEN query.
+    """
+    hatti = {
+        "id": "NK-hatti",
+        "caption": "HATTI",
+        "schema": "Vessel",
+        "datasets": ["us_ofac_sdn"],
+        "properties": {
+            "name": ["HATTI"],
+            "imoNumber": ["9247883"],
+            "mmsi": ["577396000"],
+            "flag": ["SL"],
+            "type": ["Oil Tanker"],
+            "owner": ["EVYAP INTERNATIONALDIS"],
+            "sanctionedVessel": [True],
+        },
+    }
+    call_count = 0
+
+    async def _fake_search(name: str, limit: int = 5):
+        nonlocal call_count
+        call_count += 1
+        return [hatti]
+
+    monkeypatch.setattr(vc, "vessel_find_opensanctions", _fake_search)
+    results = await vc.vessel_find("ever given")
+    assert any(r["name"] == "EVER GIVEN" for r in results)
+    assert all(r["source"] == "fixture" for r in results)
+    # OS shouldn't even be called when the fixture has a match.
+    assert call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_vessel_find_rejects_opensanctions_name_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Defense in depth: even when fixture has no match, OS results whose name
+    doesn't lexically overlap with the query should be rejected.
+
+    Without this, a query for an obscure vessel not in the fixture could
+    still surface HATTI-style false matches.
+    """
+    hatti = {
+        "id": "NK-hatti",
+        "caption": "HATTI",
+        "schema": "Vessel",
+        "datasets": ["us_ofac_sdn"],
+        "properties": {
+            "name": ["HATTI"],
+            "imoNumber": ["9247883"],
+            "mmsi": ["577396000"],
+        },
+    }
+
+    async def _fake_search(name: str, limit: int = 5):
+        return [hatti]
+
+    monkeypatch.setattr(vc, "vessel_find_opensanctions", _fake_search)
+    # "OBSCURE TANKER" isn't in the fixture and shouldn't match HATTI either.
+    results = await vc.vessel_find("OBSCURE TANKER")
+    assert results == []
+
+
+def test_vessel_name_matches_helper():
+    """_vessel_name_matches: significant-token (>=4 chars) overlap with the
+    vessel's name, mirroring _ofac_hit_matches_company_label semantics."""
+    assert vc._vessel_name_matches("EVER GIVEN", {"name": "EVER GIVEN"}) is True
+    assert vc._vessel_name_matches("ever given", {"name": "EVER GIVEN"}) is True
+    assert vc._vessel_name_matches("EVER GIVEN", {"name": "HATTI"}) is False
+    assert vc._vessel_name_matches("EVER", {"name": "EVER GIVEN"}) is True
+    # Short-token fallback when no significant tokens (>=4 chars) exist.
+    assert vc._vessel_name_matches("M/V", {"name": "Some Vessel"}) is False
+    assert vc._vessel_name_matches("", {"name": "EVER GIVEN"}) is False
 
 
 @pytest.mark.asyncio

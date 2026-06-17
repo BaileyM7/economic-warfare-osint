@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -181,28 +182,62 @@ def _fixture_lookup(field: str, value: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-async def vessel_find(name: str) -> list[dict[str, Any]]:
-    """Search for vessels by name across OpenSanctions, falling back to fixtures.
+def _vessel_name_matches(query: str, vessel: dict[str, Any]) -> bool:
+    """True iff a significant token from *query* appears in the vessel's
+    name field. Mirrors :func:`_ofac_hit_matches_company_label` in api.py.
 
-    OpenSanctions sometimes returns metadata stubs (caption only, no IMO/MMSI)
-    for vessels of media interest like EVER GIVEN. A stub used to short-circuit
-    the fixture fallback and leave the UI with all-blank particulars; we now
-    treat stub-only OS results as a miss and consult the fixture instead.
+    Without this filter, OpenSanctions' fuzzy ``/search/default`` ranker
+    can surface a high-profile sanctioned tanker (e.g. HATTI) at the top
+    of results for an unrelated query like "ever given" -- it scores a
+    match somewhere in the indexed text (notes, owner, designations)
+    rather than the actual name. Requiring name-token overlap forces a
+    real lexical match before we accept the hit.
+    """
+    tokens = [t for t in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(t) >= 2]
+    if not tokens:
+        return False
+    significant = [t for t in tokens if len(t) >= 4] or tokens
+    name_text = (vessel.get("name") or "").lower()
+    name_tokens = set(re.findall(r"[a-z0-9]+", name_text))
+    return any(t in name_tokens for t in significant)
+
+
+async def vessel_find(name: str) -> list[dict[str, Any]]:
+    """Search for vessels by name. Fixture wins; OpenSanctions is supplemental.
+
+    Design intent (per Option A): the curated fixture set is the source of
+    truth for known commercial vessels (EVER GIVEN, COSCO, Maersk, ...). Only
+    when the query doesn't match anything in the fixture do we consult
+    OpenSanctions, which adds coverage for *sanctioned* vessels that aren't
+    in our demo set (AKIN HALAY-style entries).
+
+    Even on the OS leg, results are filtered two ways:
+      - must have IMO or MMSI (drop caption-only stubs)
+      - must have a name-token overlap with the query (drop the HATTI-style
+        false matches where OS' fuzzy ranker returns an unrelated vessel
+        because it scored on notes/owner/designation text)
     """
     if not name:
         return []
+
+    # Option A: fixture wins outright when it has a match for this name.
+    fixture_results = _fixture_search_by_name(name)
+    if fixture_results:
+        return fixture_results
+
     try:
         raw_results = await vessel_find_opensanctions(name)
     except Exception as exc:
         logger.warning("vessel_find OpenSanctions error: %s", exc)
         raw_results = []
+
     normalized = [_normalize_vessel(r) for r in raw_results if r]
-    useful = [n for n in normalized if n and (n.get("imo") or n.get("mmsi"))]
-    if useful:
-        return useful
-    # Either OS returned nothing, or only returned stub entries. Fall through
-    # to the curated fixture so the demo paths populate particulars.
-    return _fixture_search_by_name(name)
+    useful = [
+        n
+        for n in normalized
+        if n and (n.get("imo") or n.get("mmsi")) and _vessel_name_matches(name, n)
+    ]
+    return useful
 
 
 async def vessel_by_mmsi(mmsi: str) -> dict[str, Any] | None:
