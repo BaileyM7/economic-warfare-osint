@@ -338,13 +338,34 @@ class OpenSanctionsClient:
     # --- Helpers ---
 
     def _parse_search_results(self, data: dict[str, Any]) -> list[SanctionEntry]:
-        """Parse the OpenSanctions search response into SanctionEntry list."""
+        """Parse the OpenSanctions search response into SanctionEntry list.
+
+        OpenSanctions' ``/search/default`` endpoint doesn't return a per-hit
+        ``score`` field, so we derive one from the entity's ``topics``
+        property: a hit with the ``sanction`` topic is treated as a
+        high-confidence sanctions match (0.9); a hit with ``sanction.linked``
+        (sanctioned-by-association) gets a mid score (0.5) that won't pass
+        the standard 0.6 threshold but is preserved for graph enrichment;
+        anything else (PEPs, oligarchs, person-of-interest only) is treated
+        as a low-confidence match (0.3) -- not a sanction.
+        """
         entries: list[SanctionEntry] = []
         for result in data.get("results", []):
             entry = self._parse_entity(result)
-            if entry:
-                entry.score = result.get("score")
-                entries.append(entry)
+            if entry is None:
+                continue
+            api_score = result.get("score")
+            if api_score is not None:
+                entry.score = api_score
+            else:
+                topics = (result.get("properties") or {}).get("topics") or []
+                if "sanction" in topics:
+                    entry.score = 0.9
+                elif "sanction.linked" in topics:
+                    entry.score = 0.5
+                else:
+                    entry.score = 0.3
+            entries.append(entry)
         return entries
 
     def _parse_entity(self, data: dict[str, Any]) -> SanctionEntry | None:
@@ -375,11 +396,19 @@ class OpenSanctionsClient:
         }
         entity_type = type_map.get(schema, "unknown")
 
-        # Programs / sanctions lists
-        programs = props.get("program", [])
-        data.get("datasets", [])
-        if not programs:
-            programs = props.get("topics", [])
+        # Programs / sanctions lists. OpenSanctions uses several fields, in
+        # rough order of usefulness for compliance display:
+        #   properties.programId  -- machine-readable list codes (EU-UKR, GB-RUS, ...)
+        #   data.datasets         -- human-readable source dataset names
+        #   properties.program    -- some entities use this legacy field
+        #   properties.topics     -- categorical role flags as a last resort
+        programs = (
+            props.get("programId")
+            or data.get("datasets")
+            or props.get("program")
+            or props.get("topics")
+            or []
+        )
 
         # Addresses
         addr_parts = props.get("address", [])
