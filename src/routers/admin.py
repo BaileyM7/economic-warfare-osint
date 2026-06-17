@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import secrets
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.auth import require_admin
+from src.common.config import config
 from src.db import get_db, log_activity, query_usage_summary
+
+# Note: src.notifications.* imports are deferred to the function bodies that
+# need them. twilio/sendgrid/anthropic SDKs are heavy at import time and the
+# rest of this router doesn't touch them — mirrors the existing lazy-import
+# pattern elsewhere in the project.
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -70,6 +80,98 @@ def _row_to_enrollment(row) -> EnrollmentResponse:
         created_at=row["created_at"],
         unsubscribed_at=row["unsubscribed_at"],
     )
+
+
+def _load_user_or_404(username: str) -> dict:
+    """Look up a user from the users table; raise 404 if absent."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT username, email, phone_number, sms_enabled, email_enabled, timezone "
+            "FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise HTTPException(404, f"No enrollment for username={username!r}")
+    return dict(row)
+
+
+def _build_sample_week_data(username: str):
+    """Synthetic WeekData with hand-crafted sample cards (mirrors scripts/stub_e2e_demo.py).
+
+    Used by the test-email endpoint so the admin gets a real-looking preview
+    of the digest format without depending on the user's actual watchlist.
+    """
+    # Deferred imports: keep this module's top-level imports light
+    from src.notifications.email_digest import TickerDelta, WeekData
+    from src.notifications.scenarios import select_scenario_for_week
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    now_iso = now.isoformat()
+    year, week, _ = now.isocalendar()
+    week_iso = f"{year}-W{week:02d}"
+    week_start = now - timedelta(days=now.weekday())
+    week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+
+    top_cards = [
+        {
+            "id": "test-cosco",
+            "severity": "critical",
+            "entity": "COSCO Shipping",
+            "category": "sanctions",
+            "source": "OFAC",
+            "fetched_at": now_iso,
+            "synthesis": "[SAMPLE] New OFAC SDN designation citing IRGC ties and dual-use cargo manifests",
+            "short_url": "ew.app/r/sample-1",
+        },
+        {
+            "id": "test-sinopec",
+            "severity": "high",
+            "entity": "Sinopec",
+            "category": "markets",
+            "source": "yfinance",
+            "ticker": "SNP",
+            "fetched_at": now_iso,
+            "synthesis": "[SAMPLE] Down 7.2% on China demand fears; refinery margin compression confirmed",
+            "short_url": "ew.app/r/sample-2",
+        },
+        {
+            "id": "test-russia-oil",
+            "severity": "high",
+            "entity": "Russian oil price cap evasion",
+            "category": "sanctions",
+            "source": "OpenSanctions",
+            "fetched_at": now_iso,
+            "synthesis": "[SAMPLE] Three shell entities flagged moving Urals volume above $60 cap via Dubai",
+            "short_url": "ew.app/r/sample-3",
+        },
+    ]
+
+    market_deltas = [
+        TickerDelta(symbol="SNP", entity_name="Sinopec", start=65.40, end=60.71, pct_change=-7.2),
+        TickerDelta(symbol="PTR", entity_name="PetroChina", start=42.10, end=42.34, pct_change=0.6),
+    ]
+
+    sanctions = [c for c in top_cards if c.get("category") == "sanctions"]
+    scenario = select_scenario_for_week(week_iso)
+
+    return WeekData(
+        username=username,
+        week_iso=week_iso,
+        week_start=week_start,
+        week_end=week_end,
+        top_cards=top_cards,
+        market_deltas=market_deltas,
+        sanctions=sanctions,
+        scenario=scenario,
+    )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 @router.get("/enrollments", response_model=list[EnrollmentResponse])
@@ -143,3 +245,87 @@ def unenroll_user(username: str, admin: str = Depends(require_admin)) -> dict:
         related_id=username,
     )
     return {"username": username, "deleted": True}
+
+
+# --- Test send endpoints --------------------------------------------------
+#
+# Admin-triggered "send a test message right now" buttons. Same code path as
+# real sends, with two differences:
+#   1. The payload is synthetic (a fixed test card / hardcoded WeekData).
+#   2. Daily SMS cap is bypassed (admins testing repeatedly shouldn't hit it).
+# Allowlist + kill-switch + log writes all behave normally.
+
+
+@router.post("/enrollments/{username}/test-sms")
+def test_sms(username: str, admin: str = Depends(require_admin)) -> dict:
+    user = _load_user_or_404(username)
+    if not user.get("phone_number") or not user.get("sms_enabled"):
+        raise HTTPException(400, f"User {username} has no phone or sms_enabled=0")
+
+    # Deferred imports (twilio SDK is heavy)
+    from src.notifications import caps as caps_mod
+    from src.notifications import sms as sms_mod
+    from src.notifications.sms import send_sms_alert
+
+    test_card = {
+        "id": f"test-sms-{secrets.token_hex(4)}",
+        "severity": "HIGH",
+        "entity": "TEST",
+        "synthesis": f"Admin test send by {admin} at {_now_iso()}",
+        "short_url": f"{config.app_base_url.rstrip('/')}/admin",
+    }
+
+    # Bypass daily cap for the duration of this call only.
+    # sms.py did `from src.notifications.caps import can_send_sms` at module
+    # load time, so the live reference is `sms_mod.can_send_sms` -- patching
+    # caps_mod alone would NOT change what send_sms_alert sees. We patch BOTH
+    # locations to be safe (caps_mod for any future direct callers, sms_mod
+    # for the actual lookup inside send_sms_alert).
+    with (
+        patch.object(caps_mod, "can_send_sms", lambda _username: True),
+        patch.object(sms_mod, "can_send_sms", lambda _username: True),
+    ):
+        result = send_sms_alert(user, test_card)
+
+    log_activity(
+        event_type="notifications_test_sms",
+        message=f"{admin} sent test SMS to {username} -> status={result.status}",
+        source=admin,
+        related_id=username,
+    )
+
+    return {
+        "status": result.status,
+        "provider_message_id": result.provider_message_id,
+        "error": result.error,
+    }
+
+
+@router.post("/enrollments/{username}/test-email")
+def test_email(username: str, admin: str = Depends(require_admin)) -> dict:
+    user = _load_user_or_404(username)
+    if not user.get("email") or not user.get("email_enabled"):
+        raise HTTPException(400, f"User {username} has no email or email_enabled=0")
+
+    # Deferred imports (sendgrid + anthropic SDKs are heavy)
+    from src.notifications.email_digest import send_weekly_digest
+    from src.notifications.synthesis import generate_opening_synthesis
+
+    week_data = _build_sample_week_data(username)
+    # No LLM call -- pass None and use the deterministic fallback template
+    week_data.opening_synthesis = generate_opening_synthesis(week_data, anthropic_client=None)
+
+    result = send_weekly_digest(user, week_data)
+
+    log_activity(
+        event_type="notifications_test_email",
+        message=f"{admin} sent test email to {username} -> status={result.status}",
+        source=admin,
+        related_id=username,
+    )
+
+    return {
+        "status": result.status,
+        "provider_message_id": result.provider_message_id,
+        "error": result.error,
+    }

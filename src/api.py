@@ -1482,6 +1482,14 @@ def _build_sector_sources(
             "description": f"Sanctions screening across {sector} key players ({sanctioned_count} hits)",
         },
         {
+            "name": "Trade.gov Consolidated Screening List",
+            "url": "https://www.trade.gov/consolidated-screening-list",
+            "description": (
+                f"Federated screening across BIS Entity List, DDTC Debarred, "
+                f"Treasury SDN/Non-SDN, EU/UK lists for {sector} key players"
+            ),
+        },
+        {
             "name": "OpenSanctions",
             "url": "https://www.opensanctions.org/",
             "description": f"Consolidated sanctions and PEP screening for {sector} entities",
@@ -2256,14 +2264,22 @@ async def sector_analysis(req: SectorAnalysisRequest):
             detail += f" Supported sectors include: {known}."
             raise HTTPException(status_code=422, detail=detail)
 
-        # Check OFAC status for top companies in parallel
-        ofac_client = OFACClient()
-        sanction_tasks = [ofac_client.search(co["name"]) for co in companies]
+        # Check sanctions status for top companies in parallel. SanctionsClient
+        # fans out to Trade.gov CSL + OFAC SDN per query -- the CSL leg
+        # aggregates BIS Entity List, which is how export-controlled companies
+        # like SMIC actually surface. OFAC-only was producing false negatives
+        # for export-restricted firms.
+        sanctions_client = SanctionsClient()
+        sanction_tasks = [sanctions_client.search(co["name"]) for co in companies]
         sanction_results = await asyncio.gather(*sanction_tasks, return_exceptions=True)
 
         company_profiles = []
         for co, result in zip(companies, sanction_results):
-            hits = result if not isinstance(result, Exception) else []
+            hits = (
+                result.matches
+                if not isinstance(result, Exception) and hasattr(result, "matches")
+                else []
+            )
             high_conf = (
                 [
                     e
@@ -2363,7 +2379,7 @@ async def sector_analysis(req: SectorAnalysisRequest):
                     edges[f"{cid}→{sid}"] = {
                         "from": cid,
                         "to": sid,
-                        "label": "OFAC listed",
+                        "label": "Sanctions listed",
                         "arrows": "to",
                         "dashes": True,
                     }
