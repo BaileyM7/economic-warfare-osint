@@ -1118,13 +1118,22 @@ async def person_profile(req: PersonProfileRequest):
         raise HTTPException(status_code=400, detail="Name cannot be empty")
 
     try:
-        # Run all lookups concurrently
+        # Run all lookups concurrently. The sanctions screen now spans CSL
+        # (OFAC + BIS + EU + UN aggregated), OFAC SDN directly, AND
+        # OpenSanctions (which covers UK SDN + EU + many national lists that
+        # CSL doesn't have). The previous CSL + OFAC-only path missed
+        # subjects who are only on UK/EU lists -- e.g. Roman Abramovich,
+        # heavily sanctioned by UK + EU but not on OFAC SDN.
         sanctions_client = SanctionsClient()
         ofac_client = sanctions_client.ofac
+        opensanctions_client = sanctions_client.opensanctions
 
         sec_client = SECEdgarClient()
         csl_task = asyncio.create_task(search_csl(name))
         ofac_task = asyncio.create_task(ofac_client.search(name, entity_type="person"))
+        opensanctions_task = asyncio.create_task(
+            opensanctions_client.search_entities(name, entity_type="person")
+        )
         officers_task = asyncio.create_task(oc_search_officers(name))
         icij_task = asyncio.create_task(icij_search(name, entity_type="officer"))
         gdelt_task = asyncio.create_task(gdelt_doc_search(name, days=30))
@@ -1134,6 +1143,7 @@ async def person_profile(req: PersonProfileRequest):
         (
             csl_hits_raw,
             ofac_hits,
+            opensanctions_hits,
             officer_records,
             icij_hits,
             gdelt_events,
@@ -1142,6 +1152,7 @@ async def person_profile(req: PersonProfileRequest):
         ) = await asyncio.gather(
             csl_task,
             ofac_task,
+            opensanctions_task,
             officers_task,
             icij_task,
             gdelt_task,
@@ -1155,13 +1166,17 @@ async def person_profile(req: PersonProfileRequest):
 
         csl_hits_raw = _safe(csl_hits_raw, [])
         ofac_hits = _safe(ofac_hits, [])
+        opensanctions_hits = _safe(opensanctions_hits, [])
         officer_records = _safe(officer_records, [])
         icij_hits = _safe(icij_hits, [])
         gdelt_events = _safe(gdelt_events, {})
         pep_hits = _safe(pep_hits, [])
         insider_filings = _safe(insider_filings, [])
 
+        # CSL + OpenSanctions are merged into the "sanctions_hits" bucket --
+        # both use scoring tuned for fuzzy international-list matching.
         sanctions_hits = sanctions_client._csl_to_entries(csl_hits_raw or [])
+        sanctions_hits.extend(opensanctions_hits or [])
 
         # Build sanctions summary
         is_sanctioned = bool(
