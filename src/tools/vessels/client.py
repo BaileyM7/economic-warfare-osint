@@ -27,8 +27,11 @@ from src.tools.sanctions.client import (
 
 logger = logging.getLogger(__name__)
 
-# Project-root-relative path to the demo fixture set.
-_FIXTURE_PATH = Path(__file__).resolve().parents[3] / "data" / "fixtures" / "vessels.json"
+# Co-located with the consumer so the file ships with the deploy. The previous
+# location at <repo>/data/fixtures/vessels.json was being eaten by Render's
+# runtime data/ directory (only data/cache/ + data/emissary.db are present
+# at runtime), so the fixture fallback never had a file to read.
+_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "vessels.json"
 
 _SOURCE_OPENSANCTIONS = "OpenSanctions Vessels"
 _SOURCE_FIXTURE = "fixture"
@@ -179,7 +182,13 @@ def _fixture_lookup(field: str, value: str) -> dict[str, Any] | None:
 
 
 async def vessel_find(name: str) -> list[dict[str, Any]]:
-    """Search for vessels by name across OpenSanctions, falling back to fixtures."""
+    """Search for vessels by name across OpenSanctions, falling back to fixtures.
+
+    OpenSanctions sometimes returns metadata stubs (caption only, no IMO/MMSI)
+    for vessels of media interest like EVER GIVEN. A stub used to short-circuit
+    the fixture fallback and leave the UI with all-blank particulars; we now
+    treat stub-only OS results as a miss and consult the fixture instead.
+    """
     if not name:
         return []
     try:
@@ -188,9 +197,11 @@ async def vessel_find(name: str) -> list[dict[str, Any]]:
         logger.warning("vessel_find OpenSanctions error: %s", exc)
         raw_results = []
     normalized = [_normalize_vessel(r) for r in raw_results if r]
-    normalized = [n for n in normalized if n]
-    if normalized:
-        return normalized
+    useful = [n for n in normalized if n and (n.get("imo") or n.get("mmsi"))]
+    if useful:
+        return useful
+    # Either OS returned nothing, or only returned stub entries. Fall through
+    # to the curated fixture so the demo paths populate particulars.
     return _fixture_search_by_name(name)
 
 

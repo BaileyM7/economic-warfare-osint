@@ -241,3 +241,202 @@ def test_unenroll_writes_audit_log(app_client, admin_headers):
     assert row is not None
     assert row["source"] == "tester"
     assert row["related_id"] == "alice"
+
+
+# --- Test-send endpoints --------------------------------------------------
+
+
+def _enroll_alice_for_sms(app_client, admin_headers):
+    """Helper: enroll alice with phone + sms_enabled=1 + email + email_enabled=1."""
+    app_client.post(
+        "/api/admin/enrollments",
+        json={
+            "username": "alice",
+            "email": "alice@example.com",
+            "phone_number": "+15005550006",
+            "sms_enabled": True,
+            "email_enabled": True,
+            "timezone": "America/New_York",
+        },
+        headers=admin_headers,
+    )
+
+
+# Auth + 404 + 400 cases
+
+
+def test_test_sms_requires_admin(app_client, auth_headers):
+    resp = app_client.post("/api/admin/enrollments/alice/test-sms", headers=auth_headers)
+    assert resp.status_code == 403
+
+
+def test_test_sms_401_when_no_auth(app_client):
+    resp = app_client.post("/api/admin/enrollments/alice/test-sms")
+    assert resp.status_code == 401
+
+
+def test_test_sms_404_when_user_missing(app_client, admin_headers):
+    resp = app_client.post("/api/admin/enrollments/nobody/test-sms", headers=admin_headers)
+    assert resp.status_code == 404
+
+
+def test_test_sms_400_when_phone_missing(app_client, admin_headers):
+    # Enroll alice with email only, no phone
+    app_client.post(
+        "/api/admin/enrollments",
+        json={"username": "alice", "email": "a@x.com", "email_enabled": True},
+        headers=admin_headers,
+    )
+    resp = app_client.post("/api/admin/enrollments/alice/test-sms", headers=admin_headers)
+    assert resp.status_code == 400
+
+
+def test_test_email_requires_admin(app_client, auth_headers):
+    resp = app_client.post("/api/admin/enrollments/alice/test-email", headers=auth_headers)
+    assert resp.status_code == 403
+
+
+def test_test_email_404_when_user_missing(app_client, admin_headers):
+    resp = app_client.post("/api/admin/enrollments/nobody/test-email", headers=admin_headers)
+    assert resp.status_code == 404
+
+
+def test_test_email_400_when_email_missing(app_client, admin_headers):
+    app_client.post(
+        "/api/admin/enrollments",
+        json={"username": "alice", "phone_number": "+15005550006", "sms_enabled": True},
+        headers=admin_headers,
+    )
+    resp = app_client.post("/api/admin/enrollments/alice/test-email", headers=admin_headers)
+    assert resp.status_code == 400
+
+
+# Happy paths with mocked providers
+
+
+def test_test_sms_happy_path(app_client, admin_headers, monkeypatch):
+    _enroll_alice_for_sms(app_client, admin_headers)
+
+    # Mock the Twilio client at the call-site (sms_mod.get_twilio_client)
+    from unittest.mock import MagicMock
+
+    from src.common.config import config as _config
+    from src.notifications import clients as clients_mod
+    from src.notifications import sms as sms_mod
+
+    fake_msg = MagicMock()
+    fake_msg.sid = "SMtestbutton123"
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_msg
+
+    # Also need NOTIFICATIONS_ALLOWLIST to include alice
+    monkeypatch.setattr(_config, "notifications_allowlist", "alice", raising=True)
+    clients_mod.get_twilio_client.cache_clear()
+    monkeypatch.setattr(sms_mod, "get_twilio_client", lambda: fake_client)
+
+    resp = app_client.post("/api/admin/enrollments/alice/test-sms", headers=admin_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "sent"
+    assert body["provider_message_id"] == "SMtestbutton123"
+
+    # Twilio was called with the test body
+    fake_client.messages.create.assert_called_once()
+    call_kwargs = fake_client.messages.create.call_args.kwargs
+    assert "[HIGH] TEST:" in call_kwargs["body"]
+
+    # log_activity row was written
+    from src.db import get_db
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT event_type, source, related_id FROM activity_log "
+            "WHERE event_type = 'notifications_test_sms' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["source"] == "tester"  # admin per the fixture
+    assert row["related_id"] == "alice"
+
+
+def test_test_sms_bypasses_daily_cap(app_client, admin_headers, monkeypatch):
+    """Even if user is at the cap, test sends should go through."""
+    _enroll_alice_for_sms(app_client, admin_headers)
+
+    from unittest.mock import MagicMock
+
+    from src.common.config import config as _config
+    from src.notifications import clients as clients_mod
+    from src.notifications import sms as sms_mod
+    from src.notifications.caps import record_notification
+
+    monkeypatch.setattr(_config, "notifications_allowlist", "alice", raising=True)
+    monkeypatch.setattr(_config, "sms_daily_cap_per_user", 1, raising=True)
+
+    fake_msg = MagicMock()
+    fake_msg.sid = "SMtest"
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_msg
+    clients_mod.get_twilio_client.cache_clear()
+    monkeypatch.setattr(sms_mod, "get_twilio_client", lambda: fake_client)
+
+    # Seed alice at the cap: 1 prior sent row in last 24h
+    record_notification(
+        "alice", "sms", card_id="prior", provider_message_id="SMprior", status="sent"
+    )
+
+    # Real sends would now hit skipped_cap. Test send should bypass.
+    resp = app_client.post("/api/admin/enrollments/alice/test-sms", headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "sent"
+
+
+def test_test_email_happy_path(app_client, admin_headers, monkeypatch):
+    _enroll_alice_for_sms(app_client, admin_headers)
+
+    from unittest.mock import MagicMock
+
+    from src.common.config import config as _config
+    from src.notifications import clients as clients_mod
+    from src.notifications import email_digest as digest_mod
+
+    monkeypatch.setattr(_config, "notifications_allowlist", "alice", raising=True)
+
+    fake_resp = MagicMock()
+    fake_resp.headers = {"X-Message-Id": "sg-test-msg-id"}
+    fake_client = MagicMock()
+    fake_client.send.return_value = fake_resp
+    clients_mod.get_sendgrid_client.cache_clear()
+    monkeypatch.setattr(digest_mod, "get_sendgrid_client", lambda: fake_client)
+
+    resp = app_client.post("/api/admin/enrollments/alice/test-email", headers=admin_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "sent"
+    assert body["provider_message_id"] == "sg-test-msg-id"
+
+    fake_client.send.assert_called_once()
+    # Confirm fallback synthesis used (no LLM): the opening should be the
+    # FALLBACK_TEMPLATE formatted, mentioning "watchlist saw N updates"
+    mail = fake_client.send.call_args.args[0]
+    mail_dict = mail.get()
+    plain = next((c["value"] for c in mail_dict["content"] if c["type"] == "text/plain"), "")
+    assert "watchlist" in plain.lower()
+    assert "[SAMPLE]" in plain  # the test card synthesis text marker
+
+    # log_activity row was written
+    from src.db import get_db
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT event_type, source, related_id FROM activity_log "
+            "WHERE event_type = 'notifications_test_email' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["source"] == "tester"
+    assert row["related_id"] == "alice"
