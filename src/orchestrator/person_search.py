@@ -640,7 +640,10 @@ def _factor_sanctions(
     else:
         severity = "none"
         score = 0
-        summary = "No sanctions matches found across OFAC SDN or OpenSanctions."
+        summary = (
+            "No sanctions matches found across OFAC SDN, Trade.gov CSL "
+            "(BIS Entity List + EU/UN consolidated), or OpenSanctions."
+        )
 
     evidence: list[dict[str, Any]] = []
     for h in (ofac_hits or [])[:5]:

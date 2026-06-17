@@ -177,12 +177,9 @@ class OpenSanctionsClient:
     ) -> list[SanctionEntry]:
         """Search OpenSanctions for entities matching *query*.
 
-        This is used only by get_proximity() to seed the graph walk.
+        Works on OpenSanctions' public tier without an API key (rate-limited);
+        uses the configured key for higher limits when present.
         """
-        if not config.opensanctions_api_key:
-            logger.debug("OpenSanctions API key not configured; skipping search")
-            return []
-
         cache_params = {"q": query, "limit": limit, "entity_type": entity_type}
         cached = get_cached(_CACHE_NS_OPENSANCTIONS, action="search", **cache_params)
         if cached is not None and len(cached) > 0:
@@ -202,9 +199,10 @@ class OpenSanctionsClient:
                 params["schema"] = schema
 
         try:
-            headers = {"Authorization": f"ApiKey {config.opensanctions_api_key}"}
             data = await fetch_json(
-                f"{OPENSANCTIONS_BASE}/search/default", params=params, headers=headers
+                f"{OPENSANCTIONS_BASE}/search/default",
+                params=params,
+                headers=_opensanctions_auth_headers(),
             )
         except Exception as exc:
             logger.warning(
