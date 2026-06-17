@@ -101,6 +101,35 @@ async def test_vessel_find_falls_back_to_fixture(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_vessel_find_treats_opensanctions_stub_as_miss(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """OpenSanctions sometimes returns a caption-only stub for vessels of
+    media interest (EVER GIVEN, NORD STREAM, etc.). Without this guard the
+    stub short-circuits the fixture fallback and the UI shows all-blank
+    particulars."""
+
+    stub = {
+        "id": "stub-1",
+        "caption": "EVER GIVEN",
+        "schema": "Vessel",
+        "datasets": ["news_mentions"],
+        "properties": {"name": ["EVER GIVEN"]},  # no imoNumber, no mmsi
+    }
+
+    async def _stub_only_search(name: str, limit: int = 5):
+        return [stub]
+
+    monkeypatch.setattr(vc, "vessel_find_opensanctions", _stub_only_search)
+    results = await vc.vessel_find("EVER GIVEN")
+    # Should fall through to fixture (which has IMO + MMSI for EVER GIVEN).
+    assert len(results) > 0
+    assert all(r["source"] == "fixture" for r in results)
+    assert results[0]["imo"] == "9811000"
+    assert results[0]["mmsi"] == "353136000"
+
+
+@pytest.mark.asyncio
 async def test_vessel_find_empty_when_nothing_anywhere(monkeypatch: pytest.MonkeyPatch):
     async def _empty_search(name: str, limit: int = 5):
         return []
