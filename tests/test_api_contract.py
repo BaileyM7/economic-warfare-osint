@@ -96,15 +96,16 @@ def _contract_routes(app, diag=None) -> set[str]:
     out: set[str] = set()
 
     def subroutes(r):
+        # Direct routes (Starlette Mount / APIRouter), then known wrapper sources:
+        # `original_router` is exposed by the _IncludedRouter wrapper some FastAPI
+        # builds use; `router`/`app` cover mounts and sub-apps.
         rs = getattr(r, "routes", None)
         if rs:
             return rs
-        router = getattr(r, "router", None)
-        if router is not None and getattr(router, "routes", None):
-            return router.routes
-        sub = getattr(r, "app", None)
-        if sub is not None and getattr(sub, "routes", None):
-            return sub.routes
+        for attr in ("original_router", "router", "app"):
+            owner = getattr(r, attr, None)
+            if owner is not None and getattr(owner, "routes", None):
+                return owner.routes
         if diag is not None:
             diag.append((type(r).__name__, [a for a in dir(r) if not a.startswith("_")][:25]))
         return []
