@@ -154,6 +154,16 @@ export default function SwarmPanel({ events, loading }: Props) {
   const startRef = useRef<number | null>(null)
   // Which agent's findings are expanded inline (click a finished pill to inspect).
   const [expanded, setExpanded] = useState<string | null>(null)
+  // Which Live-Intelligence feed rows are expanded (collapsed by default; a Set
+  // lets several rows stay open independently).
+  const [feedOpen, setFeedOpen] = useState<Set<string>>(new Set())
+  const toggleFeed = (key: string) =>
+    setFeedOpen((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   useEffect(() => {
     if (!loading) {
       startRef.current = null
@@ -346,9 +356,21 @@ export default function SwarmPanel({ events, loading }: Props) {
               const meta = DOMAIN[f.domain] ?? DOMAIN.unknown
               // Failed sources render muted (calm "no data"), not alarming red.
               const tone = f.status === 'error' ? 'rgba(255,255,255,0.4)' : meta.color
+              const open = feedOpen.has(f.key)
+              // Compact summary so a collapsed row is still informative.
+              const summary = f.error ? f.error : `${f.items.length} finding${f.items.length === 1 ? '' : 's'}`
               return (
                 <div key={f.key} className="animate-slide-in-right">
-                  <div className="flex items-center gap-2 mb-0.5">
+                  <div
+                    onClick={() => toggleFeed(f.key)}
+                    className="flex items-center gap-2 cursor-pointer hover:brightness-125 transition-all select-none"
+                  >
+                    <span
+                      className="material-symbols-outlined text-sm shrink-0 text-outline transition-transform"
+                      style={{ transform: open ? 'rotate(90deg)' : 'none' }}
+                    >
+                      chevron_right
+                    </span>
                     <span className="w-1.5 h-1.5 shrink-0" style={{ backgroundColor: tone }} />
                     <span className="font-mono text-[10px] text-on-surface whitespace-nowrap">{f.name}</span>
                     <span
@@ -357,24 +379,30 @@ export default function SwarmPanel({ events, loading }: Props) {
                     >
                       {meta.label}
                     </span>
+                    {!open && (
+                      <span className="font-mono text-[9px] text-outline whitespace-nowrap">· {summary}</span>
+                    )}
                     {f.sources && f.sources.length > 0 && (
                       <span className="font-mono text-[9px] text-outline ml-auto whitespace-nowrap truncate">
                         {f.sources.join(' · ')}
                       </span>
                     )}
                   </div>
-                  {f.error ? (
-                    <div className="text-[11px] text-outline italic pl-3.5 leading-snug">— {f.error}</div>
-                  ) : (
-                    <ul className="pl-3.5 space-y-0.5">
-                      {f.items.map((it, i) => (
-                        <li key={i} className="text-[11px] text-on-surface-variant leading-snug flex gap-1.5">
-                          <span className="text-outline shrink-0">›</span>
-                          <span>{it}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                  {open &&
+                    (f.error ? (
+                      <div className="text-[11px] text-outline italic pl-7 leading-snug animate-expand-down">
+                        — {f.error}
+                      </div>
+                    ) : (
+                      <ul className="pl-7 space-y-0.5 mt-0.5 animate-expand-down">
+                        {f.items.map((it, i) => (
+                          <li key={i} className="text-[11px] text-on-surface-variant leading-snug flex gap-1.5">
+                            <span className="text-outline shrink-0">›</span>
+                            <span>{it}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ))}
                 </div>
               )
             })}

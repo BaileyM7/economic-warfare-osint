@@ -40,6 +40,10 @@ function assessmentGraphToVis(data: ImpactAssessmentResult): { nodes: GraphNode[
 
 interface Props {
   data: ImpactAssessmentResult
+  /** When provided (orchestrator mode), renders "Create COA from Analysis" in the toolbar row. */
+  onCreateCOA?: () => void
+  creatingCOA?: boolean
+  coaButtonLabel?: string
 }
 
 const CONFIDENCE_COLORS: Record<string, string> = {
@@ -57,7 +61,12 @@ function ConfidenceBadge({ level }: { level: string }) {
   )
 }
 
-export default function OrchestratorView({ data }: Props) {
+export default function OrchestratorView({
+  data,
+  onCreateCOA,
+  creatingCOA,
+  coaButtonLabel,
+}: Props) {
   const scenarioLabel = data.scenario_type.replace(/_/g, ' ')
   const visGraph = assessmentGraphToVis(data)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -85,8 +94,22 @@ export default function OrchestratorView({ data }: Props) {
 
   return (
     <div ref={rootRef}>
-      {/* Export toolbar (excluded from the PDF capture) */}
+      {/* Action toolbar — Create COA + Copy + PDF on one row (excluded from PDF capture) */}
       <div data-html2canvas-ignore className="flex items-center justify-end gap-2 mb-3">
+        {onCreateCOA && (
+          <button
+            onClick={onCreateCOA}
+            disabled={creatingCOA}
+            className="bg-primary-container text-on-primary-container px-4 py-1.5 rounded-lg flex items-center gap-2 text-sm font-bold hover:brightness-110 transition-all disabled:opacity-50"
+          >
+            <span
+              className={`material-symbols-outlined text-base ${creatingCOA ? 'animate-spin' : ''}`}
+            >
+              {creatingCOA ? 'progress_activity' : 'add_task'}
+            </span>
+            {coaButtonLabel ?? 'Create COA from Analysis'}
+          </button>
+        )}
         <button
           onClick={handleCopy}
           className="flex items-center gap-1.5 text-xs text-on-surface-variant bg-surface-container hover:bg-surface-container-high border border-outline-variant/30 rounded-lg px-3 py-1.5 transition-all"

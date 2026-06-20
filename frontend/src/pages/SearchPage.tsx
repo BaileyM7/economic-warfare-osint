@@ -231,7 +231,8 @@ export default function SearchPage() {
       {/* Create COA from analysis — shown for non-company, non-person views.
           Company embeds it inside ImpactInfoCards; Person embeds it inline with
           the Risk Factors header (see PersonView). */}
-      {hasResults && s.mode !== 'company' && s.mode !== 'person' && (
+      {/* Orchestrator mode renders this inside OrchestratorView's toolbar (one row with Copy/PDF). */}
+      {hasResults && s.mode !== 'company' && s.mode !== 'person' && s.mode !== 'orchestrator' && (
         <div className="flex justify-end mb-4">
           <button
             onClick={handleCreateCOA}
@@ -402,7 +403,12 @@ export default function SearchPage() {
 
       {/* Full orchestrator view */}
       {s.mode === 'orchestrator' && s.orchestratorData && (
-        <OrchestratorView data={s.orchestratorData} />
+        <OrchestratorView
+          data={s.orchestratorData}
+          onCreateCOA={handleCreateCOA}
+          creatingCOA={creatingCOA}
+          coaButtonLabel={coaButtonLabel}
+        />
       )}
 
       {/* Entity graph */}

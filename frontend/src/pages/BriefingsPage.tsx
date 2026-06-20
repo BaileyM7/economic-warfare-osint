@@ -658,8 +658,8 @@ export default function BriefingsPage() {
         <SelfServeBriefs />
       </div>
 
-      {/* Analytics Grid */}
-      <div className="col-span-12 grid grid-cols-4 gap-4 mt-4">
+      {/* Analytics Grid — 2x2 in the empty columns beside Self-Serve Briefs */}
+      <div className="col-span-12 lg:col-span-7 grid grid-cols-2 gap-4 content-start">
         {[
           {
             label: 'Pending Approvals',
