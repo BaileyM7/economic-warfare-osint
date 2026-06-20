@@ -22,7 +22,9 @@ from src.orchestrator.main import (
 
 def test_partial_field_decodes_incomplete_streaming_json():
     # Mid-stream: executive_summary open, not yet closed → return what's there so far.
-    buf = '{"scenario_type": "sanction_impact", "executive_summary": "Sanctioning Fujian Jinhua would'
+    buf = (
+        '{"scenario_type": "sanction_impact", "executive_summary": "Sanctioning Fujian Jinhua would'
+    )
     assert _partial_field(buf, "executive_summary") == "Sanctioning Fujian Jinhua would"
     # Completed field with an escaped quote → decoded and stopped at the real close.
     done = '{"executive_summary": "A \\"hard\\" hit.", "findings": []}'
@@ -32,7 +34,9 @@ def test_partial_field_decodes_incomplete_streaming_json():
 
 
 def test_dependency_resolution_substitutes_prior_identifiers():
-    prior = {"step_1": {"results": {"sayari_resolve": {"data": {"entities": [{"entity_id": "ABC123"}]}}}}}
+    prior = {
+        "step_1": {"results": {"sayari_resolve": {"data": {"entities": [{"entity_id": "ABC123"}]}}}}
+    }
     ids = _collect_identifiers(prior)
     assert ids.get("entity_id") == "ABC123"
     resolved = _resolve_params({"sayari_id": "{{fujian_jinhua_sayari_id}}", "limit": 50}, ids)
@@ -46,10 +50,12 @@ def test_dependency_resolution_substitutes_prior_identifiers():
 def test_extract_findings_surfaces_rows_sources_and_errors():
     # List-of-rows under a known key → labelled items + qualifier + sources/conf.
     res = {
-        "data": {"articles": [
-            {"title": "US tightens chip controls", "source": "reuters.com"},
-            {"title": "Allies weigh response"},
-        ]},
+        "data": {
+            "articles": [
+                {"title": "US tightens chip controls", "source": "reuters.com"},
+                {"title": "Allies weigh response"},
+            ]
+        },
         "confidence": "MEDIUM",
         "sources": [{"name": "GDELT 2.0 Doc API"}],
     }

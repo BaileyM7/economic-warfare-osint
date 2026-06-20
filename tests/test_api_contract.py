@@ -28,7 +28,8 @@ EXPECTED_ROUTES = {
     "GET /api/analyze/{analysis_id}",
     "GET /api/auth/me",
     "GET /api/briefing",
-    "GET /api/briefing/{briefing_id}",    "GET /api/coa",
+    "GET /api/briefing/{briefing_id}",
+    "GET /api/coa",
     "GET /api/coa/{coa_id}",
     "GET /api/health",
     "GET /api/monitoring/activity",
@@ -49,10 +50,12 @@ EXPECTED_ROUTES = {
     "POST /api/analyze/sync",
     "POST /api/auth/login",
     "POST /api/briefing",
-    "POST /api/briefing/generate",    "POST /api/coa",
+    "POST /api/briefing/generate",
+    "POST /api/coa",
     "POST /api/coa/generate",
     "POST /api/entity-graph",
-    "POST /api/entity-risk-report",    "POST /api/followup",
+    "POST /api/entity-risk-report",
+    "POST /api/followup",
     "POST /api/notifications/send-weekly-digest",
     "POST /api/notifications/twilio/sms-webhook",
     "GET /api/notifications/diagnostics",
@@ -137,4 +140,6 @@ _PROTECTED = [
 def test_protected_endpoint_rejects_unauthenticated(app_client, method, path):
     client_method = getattr(app_client, method)
     resp = client_method(path) if method == "get" else client_method(path, json={})
-    assert resp.status_code == 401, f"{method.upper()} {path} returned {resp.status_code}, expected 401"
+    assert resp.status_code == 401, (
+        f"{method.upper()} {path} returned {resp.status_code}, expected 401"
+    )

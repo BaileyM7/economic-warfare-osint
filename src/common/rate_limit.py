@@ -42,9 +42,7 @@ def _storage_uri() -> str:
     try:
         import redis as _redis
 
-        client = _redis.Redis.from_url(
-            redis_url, socket_connect_timeout=1, socket_timeout=1
-        )
+        client = _redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
         try:
             client.ping()
         finally:

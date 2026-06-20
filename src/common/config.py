@@ -124,9 +124,7 @@ class Config:
     emissary_demo_password: str = field(
         default_factory=lambda: os.getenv("EMISSARY_DEMO_PASSWORD", "demo")
     )
-    emissary_admin_users: str = field(
-        default_factory=lambda: os.getenv("EMISSARY_ADMIN_USERS", "")
-    )
+    emissary_admin_users: str = field(default_factory=lambda: os.getenv("EMISSARY_ADMIN_USERS", ""))
     emissary_mock_data: bool = field(
         default_factory=lambda: os.getenv("EMISSARY_MOCK_DATA", "").lower() in ("1", "true", "yes")
     )
@@ -134,8 +132,9 @@ class Config:
         default_factory=lambda: os.getenv("WARGAME_ENABLED", "").lower() in ("1", "true", "yes")
     )
     wargame_debug_errors: bool = field(
-        default_factory=lambda: os.getenv("WARGAME_DEBUG_ERRORS", "").lower()
-        in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.getenv("WARGAME_DEBUG_ERRORS", "").lower() in ("1", "true", "yes")
+        )
     )
 
     @property

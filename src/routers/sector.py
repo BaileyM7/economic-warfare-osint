@@ -22,7 +22,9 @@ from pydantic import BaseModel
 
 from src.common.config import config
 from src.common.graph_helpers import node as _node
-from src.common.screening_helpers import ofac_hit_matches_company_label as _ofac_hit_matches_company_label
+from src.common.screening_helpers import (
+    ofac_hit_matches_company_label as _ofac_hit_matches_company_label,
+)
 from src.llm import generate_narrative as _generate_narrative
 from src.llm import generate_recommendations as _generate_recommendations
 from src.llm import get_anthropic_client as _get_anthropic_client

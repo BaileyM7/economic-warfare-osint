@@ -177,9 +177,7 @@ class Orchestrator:
 
             # Execute ready steps in parallel
             tasks = [
-                self._execute_step(
-                    step, results, on_event=on_event, step_num=step.get("step", 0)
-                )
+                self._execute_step(step, results, on_event=on_event, step_num=step.get("step", 0))
                 for step in ready
             ]
             step_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -664,9 +662,21 @@ def _summarize_tool_result(result: Any) -> str:
 
 # Keys under a tool's `data` that commonly hold the list of findings to surface.
 _FINDING_LIST_KEYS = (
-    "articles", "results", "hits", "entities", "owners", "designations",
-    "matches", "items", "companies", "records", "events", "holders",
-    "partners", "key_players", "nodes",
+    "articles",
+    "results",
+    "hits",
+    "entities",
+    "owners",
+    "designations",
+    "matches",
+    "items",
+    "companies",
+    "records",
+    "events",
+    "holders",
+    "partners",
+    "key_players",
+    "nodes",
 )
 
 
@@ -678,7 +688,16 @@ def _label_item(entry: Any) -> str:
         for primary in ("title", "name", "label", "entity", "company", "headline", "description"):
             val = entry.get(primary)
             if isinstance(val, str) and val.strip():
-                for qual in ("source", "program", "list", "country", "date", "ticker", "lei", "status"):
+                for qual in (
+                    "source",
+                    "program",
+                    "list",
+                    "country",
+                    "date",
+                    "ticker",
+                    "lei",
+                    "status",
+                ):
                     qv = entry.get(qual)
                     if isinstance(qv, str) and qv.strip():
                         return f"{val.strip()[:110]} — {qv.strip()[:40]}"
@@ -708,7 +727,9 @@ def _partial_field(buffer: str, field: str) -> str | None:
             if i + 1 >= n:
                 break  # incomplete escape at the buffer edge — stop here
             nxt = buffer[i + 1]
-            out.append({"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}.get(nxt, nxt))
+            out.append(
+                {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}.get(nxt, nxt)
+            )
             i += 2
             continue
         if c == '"':
@@ -843,7 +864,11 @@ def _extract_findings(result: Any) -> dict[str, Any]:
                         break
         if not items:  # scalar dict — surface a few key:value pairs
             for key, value in data.items():
-                if isinstance(value, (str, int, float)) and str(value).strip() and not isinstance(value, bool):
+                if (
+                    isinstance(value, (str, int, float))
+                    and str(value).strip()
+                    and not isinstance(value, bool)
+                ):
                     items.append(f"{key}: {str(value)[:80]}")
                 if len(items) >= 5:
                     break
