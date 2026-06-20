@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api", tags=["orchestrator"])
 # calls → no 3–5 min wait, no rate-limit risk) while still animating the swarm.
 # On by default for the demo; set EMISSARY_PREWARM_CACHE=0 to always run live.
 _PREWARM = os.getenv("EMISSARY_PREWARM_CACHE", "1").lower() not in ("0", "false", "no")
-_PREWARM_NS = "analysis_prewarm"
+_PREWARM_NS = "analysis_prewarm_v2"  # v2: invalidate pre-fix entries (opaque-source filter)
 _PREWARM_TTL = 86400  # 24h
 
 
