@@ -20,6 +20,28 @@ from src.orchestrator.main import (
 )
 
 
+def test_opaque_id_sources_are_filtered():
+    import re
+
+    from src.orchestrator.main import _looks_like_opaque_id, _merge_sources
+
+    # Opaque machine IDs → dropped
+    assert _looks_like_opaque_id("a8c6ee1cd4dfc952105ee8c0e4836f08")  # 32-char hex hash
+    # Real source names → kept
+    assert not _looks_like_opaque_id("OFAC SDN")
+    assert not _looks_like_opaque_id("OpenCorporates")
+    assert not _looks_like_opaque_id("GDELT 2.0 Doc API")
+    # End-to-end: tool + LLM sources with hashes mixed in → only real names survive.
+    tr = {
+        "step_1": {"sources": [{"name": "a8c6ee1cd4dfc952105ee8c0e4836f08"}, {"name": "OFAC SDN"}]}
+    }
+    names = {
+        s.name for s in _merge_sources(tr, ["24ca9e1480ab586a153d3ae12a7b83a0", "OpenSanctions"])
+    }
+    assert "OFAC SDN" in names and "OpenSanctions" in names
+    assert not any(re.fullmatch(r"[0-9a-fA-F]{16,}", n) for n in names)
+
+
 def test_partial_field_decodes_incomplete_streaming_json():
     # Mid-stream: executive_summary open, not yet closed → return what's there so far.
     buf = (
