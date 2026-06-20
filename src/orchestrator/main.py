@@ -506,6 +506,24 @@ def _walk_tool_sources(node: Any) -> list[dict[str, Any]]:
     return found
 
 
+def _looks_like_opaque_id(name: str) -> bool:
+    """True for machine IDs (hashes, Sayari entity_ids) that aren't human source names.
+
+    Real source names are short (FRED, GLEIF) or contain spaces (OFAC SDN,
+    Trade.gov CSL); opaque keys are long, space-less, hex- or digit-heavy tokens
+    that should never be shown to an analyst as a "source".
+    """
+    import re
+
+    n = name.strip()
+    if " " in n or len(n) < 16:
+        return False
+    if re.fullmatch(r"[0-9a-fA-F]{16,}", n):  # hex record hash / md5-ish
+        return True
+    # long single token with several digits and no spaces → opaque key
+    return sum(c.isdigit() for c in n) >= 4 and re.fullmatch(r"[A-Za-z0-9_\-]+", n) is not None
+
+
 def _merge_sources(
     tool_results: dict[str, Any], llm_source_names: list[str]
 ) -> list[SourceReference]:
@@ -519,7 +537,7 @@ def _merge_sources(
 
     for raw in _walk_tool_sources(tool_results):
         name = str(raw.get("name") or "").strip()
-        if not name:
+        if not name or _looks_like_opaque_id(name):
             continue
         url = raw.get("url") or None
         record_url = raw.get("record_url") or None
@@ -549,6 +567,8 @@ def _merge_sources(
         # Suppress LLM rollup labels that look like "Vessel Intel: X assessment"
         # — they collide with the per-API entries and add no provenance value.
         if ":" in clean and any(w in clean.lower() for w in ("assessment", "analysis", "intel")):
+            continue
+        if _looks_like_opaque_id(clean):  # drop LLM-echoed entity_ids / hashes
             continue
         key = (clean.lower(), "")
         # Don't override a tool-derived entry with the same name
@@ -882,7 +902,7 @@ def _extract_findings(result: Any) -> dict[str, Any]:
     sources = [
         s.get("name")
         for s in (result.get("sources") or [])
-        if isinstance(s, dict) and s.get("name")
+        if isinstance(s, dict) and s.get("name") and not _looks_like_opaque_id(s["name"])
     ]
     if sources:
         out["sources"] = sources[:3]
