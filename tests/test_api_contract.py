@@ -85,7 +85,7 @@ EXPECTED_ROUTES = {
 }
 
 
-def _contract_routes(app) -> set[str]:
+def _contract_routes(app, diag=None) -> set[str]:
     """Flatten the app's route surface, descending into included-router wrappers.
 
     Newer FastAPI keeps ``include_router()`` routes nested inside a path-less
@@ -95,12 +95,26 @@ def _contract_routes(app) -> set[str]:
     """
     out: set[str] = set()
 
+    def subroutes(r):
+        rs = getattr(r, "routes", None)
+        if rs:
+            return rs
+        router = getattr(r, "router", None)
+        if router is not None and getattr(router, "routes", None):
+            return router.routes
+        sub = getattr(r, "app", None)
+        if sub is not None and getattr(sub, "routes", None):
+            return sub.routes
+        if diag is not None:
+            diag.append((type(r).__name__, [a for a in dir(r) if not a.startswith("_")][:25]))
+        return []
+
     def walk(routes) -> None:
         for r in routes:
             path = getattr(r, "path", None)
             if not isinstance(path, str):
                 # Path-less wrapper (an included router) — descend into it.
-                walk(getattr(r, "routes", []) or [])
+                walk(subroutes(r))
                 continue
             if path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
                 continue
@@ -117,12 +131,14 @@ def _contract_routes(app) -> set[str]:
 
 
 def test_route_surface_matches_snapshot(app_module):
-    actual = _contract_routes(app_module.app)
+    diag: list = []
+    actual = _contract_routes(app_module.app, diag)
     missing = EXPECTED_ROUTES - actual
     added = actual - EXPECTED_ROUTES
     assert not missing and not added, (
         f"\nDropped/renamed routes: {sorted(missing)}"
         f"\nNew/renamed routes:     {sorted(added)}"
+        f"\nDIAG unwalkable wrappers: {diag[:3]}"
         "\nIf this change is intentional, update EXPECTED_ROUTES."
     )
 
