@@ -78,7 +78,8 @@ for the relevant codes above. Do NOT rely solely on entity graph traversal — r
 trade lookups in parallel as a primary supply chain signal.
 
 ## Geopolitical Context
-- search_events(query, days) — recent GDELT events
+- search_events(query, days) — recent GDELT events (deduplicated incidents)
+- search_recent_news(query, days) — recent news HEADLINES (title + link + source) for an entity/topic
 - get_conflict_data(country, days) — ACLED conflict events
 - get_risk_profile(country) — combined risk assessment
 - get_bilateral_tensions(country1, country2, days) — events between countries

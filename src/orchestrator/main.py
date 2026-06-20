@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from typing import Any
 
 import anthropic
@@ -46,33 +47,66 @@ class Orchestrator:
         self.model = config.model
         self.tool_registry = ToolRegistry()
 
-    async def analyze(self, query: str, progress_callback=None) -> ImpactAssessment:
-        """Run the full analysis pipeline for an analyst's question."""
+    async def analyze(
+        self, query: str, progress_callback=None, event_callback=None
+    ) -> ImpactAssessment:
+        """Run the full analysis pipeline for an analyst's question.
+
+        ``progress_callback(msg: str)`` gets human-readable log lines (legacy).
+        ``event_callback(event: dict)`` gets STRUCTURED events so a UI can render
+        the agent swarm live. Event shapes:
+          {"type":"phase","name":"decompose|execute|synthesize|complete","status":...}
+          {"type":"plan","steps":[{"step","description","tools":[name,...]}]}
+          {"type":"tool","step","name","domain","task","status":"running"} then
+          {"type":"tool","step","name","domain","status":"done|error","summary","ms"}
+        Both callbacks are optional and independent.
+        """
 
         def _emit(msg: str) -> None:
             print(msg)
             if progress_callback:
                 progress_callback(msg)
 
+        def _event(ev: dict[str, Any]) -> None:
+            if event_callback:
+                event_callback(ev)
+
         _emit(f"Query received: {query[:120]}")
 
         # Step 1: Decompose the question into a research plan
         _emit("[1/4] Decomposing question into research plan...")
+        _event({"type": "phase", "name": "decompose", "status": "start"})
         plan = await self._decompose(query)
         _emit(f"[1/4] Research plan: {len(plan)} step(s) identified")
+        _event(
+            {
+                "type": "plan",
+                "steps": [
+                    {
+                        "step": s.get("step", i),
+                        "description": s.get("description", ""),
+                        "tools": _step_tool_names(s),
+                    }
+                    for i, s in enumerate(plan)
+                ],
+            }
+        )
 
-        # Step 2: Execute the research plan
+        # Step 2: Execute the research plan (the parallel agent swarm)
         _emit("[2/4] Executing research plan...")
-        tool_results = await self._execute_plan(plan, _emit)
+        _event({"type": "phase", "name": "execute", "status": "start"})
+        tool_results = await self._execute_plan(plan, _emit, _event)
         _emit(f"[2/4] Collected results from {len(tool_results)} research step(s)")
 
         # Step 3: Synthesize results
         _emit("[3/4] Synthesizing findings with Claude...")
-        assessment = await self._synthesize(query, tool_results)
+        _event({"type": "phase", "name": "synthesize", "status": "start"})
+        assessment = await self._synthesize(query, tool_results, on_event=_event)
         assessment.tool_results = tool_results
 
         # Step 4: Done
         _emit("[4/4] Analysis complete.")
+        _event({"type": "phase", "name": "complete", "status": "done"})
 
         return assessment
 
@@ -98,12 +132,23 @@ class Orchestrator:
         except json.JSONDecodeError:
             # Fallback: create a basic plan
             plan = self._fallback_plan(query)
+        # The LLM sometimes wraps the steps in an object ({"steps":[...]} /
+        # {"plan":[...]}) instead of returning a bare list. Coerce to a list of
+        # step dicts so the plan event + _execute_plan never iterate dict keys
+        # (which raised "'str' object has no attribute 'get'" and failed the run).
+        plan = _coerce_plan_list(plan)
+        if not plan:
+            plan = self._fallback_plan(query)
         return plan
 
-    async def _execute_plan(self, plan: list[dict[str, Any]], emit=None) -> dict[str, Any]:
+    async def _execute_plan(
+        self, plan: list[dict[str, Any]], emit=None, on_event=None
+    ) -> dict[str, Any]:
         """Execute the research plan, running independent steps in parallel."""
         results: dict[str, Any] = {}
         completed_steps: set[int] = set()
+        # Preload so tool_domain() resolves on the first "running" event.
+        await self.tool_registry._ensure_loaded()
 
         def _log(msg: str) -> None:
             print(msg)
@@ -131,7 +176,12 @@ class Orchestrator:
                 _log(f"  Running: {desc}")
 
             # Execute ready steps in parallel
-            tasks = [self._execute_step(step, results) for step in ready]
+            tasks = [
+                self._execute_step(
+                    step, results, on_event=on_event, step_num=step.get("step", 0)
+                )
+                for step in ready
+            ]
             step_results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for step, result in zip(ready, step_results):
@@ -150,11 +200,22 @@ class Orchestrator:
         return results
 
     async def _execute_step(
-        self, step: dict[str, Any], prior_results: dict[str, Any]
+        self,
+        step: dict[str, Any],
+        prior_results: dict[str, Any],
+        on_event=None,
+        step_num: int = 0,
     ) -> dict[str, Any]:
-        """Execute a single research step by calling the specified tools."""
+        """Execute a single research step by calling the specified tools.
+
+        Emits a structured {type:"tool", status:"running"|"done"|"error"} event per
+        tool call (when on_event is set) so a UI can render each data-source agent
+        lighting up live with a result chip + duration.
+        """
         step_results: dict[str, Any] = {}
         tools = step.get("tools", [])
+        task = step.get("description", "")
+        prior_ids = _collect_identifiers(prior_results)
 
         for tool_call in tools:
             if isinstance(tool_call, str):
@@ -164,19 +225,98 @@ class Orchestrator:
                 # LLM may use "tool"/"params" or "name"/"parameters" interchangeably
                 tool_name = tool_call.get("tool") or tool_call.get("name") or ""
                 params = tool_call.get("params") or tool_call.get("parameters") or {}
+            # Fill "{{...}}" references with identifiers produced by earlier steps.
+            params = _resolve_params(params, prior_ids)
 
+            domain = self.tool_registry.tool_domain(tool_name) if tool_name else "unknown"
+            if on_event and tool_name:
+                on_event(
+                    {
+                        "type": "tool",
+                        "step": step_num,
+                        "name": tool_name,
+                        "domain": domain,
+                        "task": task,
+                        "status": "running",
+                    }
+                )
+            started = time.perf_counter()
             try:
-                result = await self.tool_registry.call_tool(tool_name, params)
+                if _has_unresolved(params):
+                    # A required upstream value never materialized — skip the doomed
+                    # call instead of sending a literal "{{...}}" that 404s.
+                    result = {"error": "Skipped — required input not produced by earlier steps"}
+                else:
+                    result = await self.tool_registry.call_tool(tool_name, params)
                 step_results[tool_name] = result
+                status = "error" if isinstance(result, dict) and result.get("error") else "done"
             except Exception as e:
-                step_results[tool_name] = {"error": str(e)}
+                result = {"error": str(e)}
+                step_results[tool_name] = result
+                status = "error"
+            if on_event and tool_name:
+                on_event(
+                    {
+                        "type": "tool",
+                        "step": step_num,
+                        "name": tool_name,
+                        "domain": domain,
+                        "status": status,
+                        "summary": _summarize_tool_result(result),
+                        # Real findings for the live "intelligence feed" — top rows
+                        # + sources, so the UI can stream what each agent found as
+                        # it lands (not just a count chip).
+                        "detail": _extract_findings(result),
+                        "ms": int((time.perf_counter() - started) * 1000),
+                    }
+                )
 
         return {
             "description": step.get("description", ""),
             "results": step_results,
         }
 
-    async def _synthesize(self, query: str, tool_results: dict[str, Any]) -> ImpactAssessment:
+    async def _stream_synthesis(self, system: str, user_content: str, on_event=None) -> str:
+        """Run the synthesis call, streaming the executive_summary out live via on_event.
+
+        Emits {"type":"synthesis","text": <partial exec summary>} as Claude writes,
+        so the "Synthesizing…" wait fills with the answer appearing in real time.
+        Falls back to a plain call if streaming is unavailable.
+        """
+        msgs = [{"role": "user", "content": user_content}]
+        if on_event is None:
+            resp = await self.client.messages.create(
+                model=self.model, max_tokens=16000, system=system, messages=msgs
+            )
+            return resp.content[0].text
+        try:
+            buffer = ""
+            last_len = 0
+            async with self.client.messages.stream(
+                model=self.model, max_tokens=16000, system=system, messages=msgs
+            ) as stream:
+                async for chunk in stream.text_stream:
+                    buffer += chunk
+                    partial = _partial_field(buffer, "executive_summary")
+                    if partial is not None and len(partial) - last_len >= 40:
+                        last_len = len(partial)
+                        on_event({"type": "synthesis", "text": partial})
+                final = await stream.get_final_message()
+            full = final.content[0].text
+            done = _partial_field(full, "executive_summary")
+            if done:
+                on_event({"type": "synthesis", "text": done})
+            return full
+        except Exception as exc:
+            print(f"  [synthesize] streaming unavailable ({exc}); using non-streaming call")
+            resp = await self.client.messages.create(
+                model=self.model, max_tokens=16000, system=system, messages=msgs
+            )
+            return resp.content[0].text
+
+    async def _synthesize(
+        self, query: str, tool_results: dict[str, Any], on_event=None
+    ) -> ImpactAssessment:
         """Use Claude to synthesize tool results into a final assessment."""
         # Determine scenario type from results
         scenario_type = "sanction_impact"  # default
@@ -212,23 +352,12 @@ class Orchestrator:
             print(f"  [synthesize] Tool results truncated: {chars_dropped:,} chars dropped")
 
         synthesis_system = SYSTEM_PROMPT + SYNTHESIS_SYSTEM_SUPPLEMENT
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=16000,
-            system=synthesis_system,
-            messages=[
-                {
-                    "role": "user",
-                    "content": SYNTHESIS_PROMPT.format(
-                        query=query,
-                        scenario_type=scenario_type,
-                        tool_results=results_text,
-                    ),
-                }
-            ],
+        user_content = SYNTHESIS_PROMPT.format(
+            query=query,
+            scenario_type=scenario_type,
+            tool_results=results_text,
         )
-
-        text = response.content[0].text
+        text = await self._stream_synthesis(synthesis_system, user_content, on_event)
         json_str = _extract_json(text)
 
         try:
@@ -475,6 +604,264 @@ def _compact_tool_results(
         return results
     else:
         return results
+
+
+def _coerce_plan_list(plan: Any) -> list[dict[str, Any]]:
+    """Normalize a decomposed plan into a list of step dicts.
+
+    The decomposition LLM is asked for a bare JSON list of steps, but it
+    intermittently wraps them in an object ({"steps":[...]}, {"plan":[...]}) or
+    returns a single step dict. Anything that isn't a list of dicts previously
+    caused the run to crash when iterated. Always return a clean list of dicts
+    (possibly empty, so the caller can fall back to a basic plan).
+    """
+    if isinstance(plan, list):
+        return [s for s in plan if isinstance(s, dict)]
+    if isinstance(plan, dict):
+        for key in ("steps", "plan", "research_plan", "tasks", "actions"):
+            value = plan.get(key)
+            if isinstance(value, list):
+                return [s for s in value if isinstance(s, dict)]
+        # A lone step object (has step-shaped keys) → wrap it.
+        if any(k in plan for k in ("tools", "description", "step")):
+            return [plan]
+        # Last resort: first list-of-dicts value anywhere in the object.
+        for value in plan.values():
+            if isinstance(value, list) and any(isinstance(s, dict) for s in value):
+                return [s for s in value if isinstance(s, dict)]
+    return []
+
+
+def _step_tool_names(step: dict[str, Any]) -> list[str]:
+    """Tool names a plan step will call (for the 'plan' event)."""
+    names: list[str] = []
+    for tc in step.get("tools", []) or []:
+        if isinstance(tc, str):
+            name, _ = _parse_string_tool_call(tc)
+        else:
+            name = tc.get("tool") or tc.get("name") or ""
+        if name:
+            names.append(name)
+    return names
+
+
+def _summarize_tool_result(result: Any) -> str:
+    """Short chip for a tool result, e.g. '3 results, high' or 'error'."""
+    if not isinstance(result, dict):
+        return "ok"
+    if result.get("error"):
+        return "error"
+    data = result.get("data", result)
+    n = len(data) if isinstance(data, (list, dict)) else (1 if data else 0)
+    parts: list[str] = []
+    if n:
+        parts.append(f"{n} result{'s' if n != 1 else ''}")
+    conf = result.get("confidence")
+    if conf:
+        parts.append(str(conf).lower())
+    return ", ".join(parts) or "ok"
+
+
+# Keys under a tool's `data` that commonly hold the list of findings to surface.
+_FINDING_LIST_KEYS = (
+    "articles", "results", "hits", "entities", "owners", "designations",
+    "matches", "items", "companies", "records", "events", "holders",
+    "partners", "key_players", "nodes",
+)
+
+
+def _label_item(entry: Any) -> str:
+    """One short human label for a single finding (row) in a tool result."""
+    if isinstance(entry, str):
+        return entry.strip()[:140]
+    if isinstance(entry, dict):
+        for primary in ("title", "name", "label", "entity", "company", "headline", "description"):
+            val = entry.get(primary)
+            if isinstance(val, str) and val.strip():
+                for qual in ("source", "program", "list", "country", "date", "ticker", "lei", "status"):
+                    qv = entry.get(qual)
+                    if isinstance(qv, str) and qv.strip():
+                        return f"{val.strip()[:110]} — {qv.strip()[:40]}"
+                return val.strip()[:140]
+        for val in entry.values():  # fallback: first scalar
+            if isinstance(val, (str, int, float)) and str(val).strip():
+                return str(val)[:140]
+    return ""
+
+
+def _partial_field(buffer: str, field: str) -> str | None:
+    """Best-effort decode of a (possibly incomplete) JSON string field from a stream buffer.
+
+    Used to surface the executive_summary as it streams, before the full JSON closes.
+    Stops cleanly at an incomplete trailing escape so partial output never shows junk.
+    """
+    import re
+
+    m = re.search(r'"' + re.escape(field) + r'"\s*:\s*"', buffer)
+    if not m:
+        return None
+    out: list[str] = []
+    i, n = m.end(), len(buffer)
+    while i < n:
+        c = buffer[i]
+        if c == "\\":
+            if i + 1 >= n:
+                break  # incomplete escape at the buffer edge — stop here
+            nxt = buffer[i + 1]
+            out.append({"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}.get(nxt, nxt))
+            i += 2
+            continue
+        if c == '"':
+            break  # closing quote — field complete
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _friendly_error(raw: str) -> str:
+    """Map a raw tool/HTTP error to a short, user-safe message.
+
+    Never leak URLs, stack text, MDN links, or unresolved template placeholders
+    (e.g. "{{entity_id}}") to end users — collapse to a calm, human reason.
+    """
+    low = (raw or "").lower()
+    if "404" in low or "not found" in low:
+        return "No matching records"
+    if "429" in low or "too many requests" in low or "rate limit" in low:
+        return "Source busy — skipped"
+    if "timeout" in low or "timed out" in low:
+        return "Source timed out"
+    if "401" in low or "403" in low or "unauthorized" in low or "forbidden" in low:
+        return "Source unavailable"
+    if any(code in low for code in ("500", "502", "503", "504")) or "server error" in low:
+        return "Source temporarily unavailable"
+    return "No data returned"
+
+
+_PLACEHOLDER_RE = __import__("re").compile(r"\{\{.*?\}\}")
+# Identifier fields worth carrying from one step's output into a later step's params.
+_ID_KEYS = ("entity_id", "sayari_id", "id", "lei", "ticker", "symbol", "imo", "mmsi")
+
+
+def _collect_identifiers(prior_results: Any) -> dict[str, str]:
+    """Gather usable identifiers (entity_id, lei, ticker, ...) from prior step outputs.
+
+    Lets a later step that referenced a value it couldn't know upfront (e.g. a
+    Sayari entity_id from a resolve step) actually receive it, instead of sending
+    a literal "{{...}}" placeholder that 404s.
+    """
+    ids: dict[str, str] = {}
+
+    def scan(obj: Any, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                kl = key.lower()
+                if kl in _ID_KEYS and isinstance(val, (str, int)) and str(val).strip():
+                    ids.setdefault(kl, str(val))
+                else:
+                    scan(val, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj[:10]:
+                scan(item, depth + 1)
+
+    scan(prior_results)
+    return ids
+
+
+def _resolve_placeholder(param_name: str, raw: str, ids: dict[str, str]) -> str | None:
+    """Pick the best prior identifier for a "{{...}}" param value (heuristic by hint)."""
+    text = f"{param_name} {raw}".lower()
+    if "sayari" in text:
+        order = ("sayari_id", "entity_id", "id")
+    elif "lei" in text:
+        order = ("lei",)
+    elif "ticker" in text or "symbol" in text:
+        order = ("ticker", "symbol")
+    elif "imo" in text:
+        order = ("imo",)
+    elif "mmsi" in text:
+        order = ("mmsi",)
+    else:
+        order = ("entity_id", "sayari_id", "id")
+    for key in order:
+        if ids.get(key):
+            return ids[key]
+    return None
+
+
+def _resolve_params(params: dict[str, Any], ids: dict[str, str]) -> dict[str, Any]:
+    """Substitute "{{...}}" placeholder values in tool params from prior identifiers."""
+    if not isinstance(params, dict):
+        return params
+    out: dict[str, Any] = {}
+    for key, val in params.items():
+        if isinstance(val, str) and _PLACEHOLDER_RE.search(val):
+            sub = _resolve_placeholder(key, val, ids)
+            out[key] = sub if sub is not None else val
+        else:
+            out[key] = val
+    return out
+
+
+def _has_unresolved(params: dict[str, Any]) -> bool:
+    """True if any param still holds a literal "{{...}}" reference after resolution."""
+    if not isinstance(params, dict):
+        return False
+    return any(isinstance(v, str) and _PLACEHOLDER_RE.search(v) for v in params.values())
+
+
+def _extract_findings(result: Any) -> dict[str, Any]:
+    """Compact, demo-friendly findings for the live feed: a few top rows + sources.
+
+    Uniform shape across heterogeneous tools so a UI can stream each agent's
+    actual output (sanctions hits, headlines, owners, ...) the moment it lands.
+    Returns {"items": [str, ...], "confidence"?, "sources"?, "error"?}.
+    """
+    if not isinstance(result, dict):
+        return {"items": []}
+    if result.get("error"):
+        return {"items": [], "error": _friendly_error(str(result.get("error")))}
+
+    data = result.get("data", result)
+    items: list[str] = []
+    if isinstance(data, dict):
+        for key in _FINDING_LIST_KEYS:
+            value = data.get(key)
+            if isinstance(value, list) and value:
+                items = [_label_item(e) for e in value[:5]]
+                break
+        if not items:
+            # Generic fallback: the first list of dicts/strings anywhere in data,
+            # so tool-specific key names (sanctions matches, etc.) still surface.
+            for value in data.values():
+                if isinstance(value, list) and value and isinstance(value[0], (dict, str)):
+                    candidate = [_label_item(e) for e in value[:5]]
+                    if any(candidate):
+                        items = candidate
+                        break
+        if not items:  # scalar dict — surface a few key:value pairs
+            for key, value in data.items():
+                if isinstance(value, (str, int, float)) and str(value).strip() and not isinstance(value, bool):
+                    items.append(f"{key}: {str(value)[:80]}")
+                if len(items) >= 5:
+                    break
+    elif isinstance(data, list):
+        items = [_label_item(e) for e in data[:5]]
+
+    out: dict[str, Any] = {"items": [i for i in items if i][:5]}
+    conf = result.get("confidence")
+    if conf:
+        out["confidence"] = str(conf).lower()
+    sources = [
+        s.get("name")
+        for s in (result.get("sources") or [])
+        if isinstance(s, dict) and s.get("name")
+    ]
+    if sources:
+        out["sources"] = sources[:3]
+    return out
 
 
 def _parse_string_tool_call(call_str: str) -> tuple[str, dict[str, Any]]:

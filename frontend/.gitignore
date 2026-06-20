@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.DS_Store
+
+# Vite local env files — may contain backend URLs or per-dev secrets
+.env*.local

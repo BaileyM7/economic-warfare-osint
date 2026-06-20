@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +31,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from src.auth import require_auth
+from src.common.config import config
 from src.db import log_activity
 from src.risk_feed.enrich import enrich_payload
 from src.routers._shared import notify_monitoring
@@ -198,7 +198,7 @@ async def refresh_risk_feed(
 ):
     """Rebuild *this user's* feed from configured sources. Synchronous so the
     caller sees the new items immediately."""
-    mode = (os.getenv("RISK_FEED_MODE") or "auto").strip().lower()
+    mode = (config.risk_feed_mode or "auto").strip().lower()
     items: list[dict[str, Any]] = []
     errors: list[str] = []
     source_used = mode

@@ -3,19 +3,33 @@ services:
   # Single web service runs Emissary + mounts the swarm backend as a
   # FastAPI subapp at /api/wargame (gated by WARGAME_ENABLED=1).
   - type: web
-    name: emissary
+    name: economic-warfare-osint
     runtime: python
-    region: oregon
+    region: virginia
     plan: starter  # bumped from free: sustained WebSocket + more RAM for LangGraph
     branch: emissary-v1
     buildCommand: ./build.sh
     startCommand: uvicorn src.api:app --host 0.0.0.0 --port $PORT
+    # Persistent disk for the SQLite app DB (data/emissary.db) + disk cache.
+    # Without this the filesystem is ephemeral and analyst data is lost on deploy.
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
       - key: NODE_VERSION
         value: "20.11.0"
+      - key: APP_ENV
+        value: production
+      # Prod must NOT reseed: seed_mock_data() is seed-only-if-empty, but keep
+      # this 0 so production never loads demo COAs/briefings over real data.
       - key: EMISSARY_MOCK_DATA
+        value: "0"
+      # Pre-warm cache: replay a repeated question fast (demo-friendly), keyed by
+      # query for 24h. Set "0" for production analysts who always need fresh runs.
+      - key: EMISSARY_PREWARM_CACHE
         value: "1"
       - key: ANTHROPIC_API_KEY
         sync: false  # set manually in Render dashboard
@@ -70,7 +84,7 @@ services:
     runtime: image
     image:
       url: docker.io/curlimages/curl:8.10.1
-    region: oregon
+    region: virginia
     schedule: "0 12 * * 1"  # Mondays at 12:00 UTC
     startCommand: >-
       curl --fail --silent --show-error
@@ -81,18 +95,18 @@ services:
       - key: NOTIFICATIONS_CRON_TOKEN
         fromService:
           type: web
-          name: emissary
+          name: economic-warfare-osint
           envVarKey: NOTIFICATIONS_CRON_TOKEN
       - key: APP_BASE_URL
         fromService:
           type: web
-          name: emissary
+          name: economic-warfare-osint
           envVarKey: APP_BASE_URL
 
   # ─── Swarm Redis (world-state pub/sub during live sims) ──────────
   - type: keyvalue
     name: swarm-redis
-    region: oregon
+    region: virginia
     plan: starter  # $10/mo — Render Key Value has no free tier
     ipAllowList: []  # only reachable from services inside this project
 
@@ -101,6 +115,9 @@ services:
 #   psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
 databases:
   - name: swarm-db
-    region: oregon
+    region: virginia
     plan: basic-256mb  # cheapest tier that allows CREATE EXTENSION vector
     postgresMajorVersion: "16"
+    # Internal-only. The live DB was found open to 0.0.0.0/0 in the Phase-2
+    # audit — tighten it in the Render dashboard to match this.
+    ipAllowList: []

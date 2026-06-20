@@ -21,8 +21,18 @@ from pathlib import Path
 import pytest
 
 # --- Environment isolation (must run BEFORE any src.* import) ---
+# Hermetic tests: neutralize python-dotenv so src/common/config.py's
+# load_dotenv() never pulls a developer's local .env into the process. Without
+# this, prod-shaped values (REDIS_URL, NOTIFICATIONS_ENABLED, WARGAME_ENABLED,
+# EMISSARY_ADMIN_USERS, ...) leak into the config singleton at import time and
+# cause environment-dependent failures that don't happen on CI (which has no
+# .env): rate-limiter 500s, kill-switch tests inverted, admin-gate flips, etc.
+import dotenv as _dotenv  # noqa: E402
+
+_dotenv.load_dotenv = lambda *args, **kwargs: False
+
 # Force in-memory rate-limit storage so tests don't need Redis.
-os.environ.pop("REDIS_URL", None)
+os.environ["REDIS_URL"] = ""
 # Clear Anthropic key so tests never hit the real API. Routes that need a
 # client get a fast 503; tests that need real LLM responses use VCR cassettes.
 os.environ["ANTHROPIC_API_KEY"] = ""

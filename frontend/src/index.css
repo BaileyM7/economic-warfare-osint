@@ -1,0 +1,327 @@
+@import "tailwindcss";
+
+@theme {
+  /* =======================================================================
+     Agile Defense brand tokens (mapped onto the existing MD3 token names so
+     every bg, text and border utility re-renders in brand colors with no
+     per-component edits). Brand rules: deep-navy canvas, navy cards on every
+     surface, a single bounded red accent, sharp corners, no shadows, hairline
+     dividers. See "Agile Defense Design System/tokens/colors.css".
+     ======================================================================= */
+
+  /* ----- Navy surface ramp (MD3 elevation -> navy-on-navy contrast) ----- */
+  --color-background: #061033;             /* page canvas (navy-deepest) */
+  --color-surface: #061033;
+  --color-surface-dim: #061033;
+  --color-surface-container-lowest: #061033;
+  --color-surface-container-low: #0b2451;  /* card bg (navy-deep) */
+  --color-surface-container: #0b2451;      /* card bg / hover target */
+  --color-surface-container-high: #1f3864; /* raised / featured (navy-mid) */
+  --color-surface-container-highest: #1f3864;
+  --color-surface-bright: #1f3864;
+  --color-surface-variant: #1f3864;
+
+  /* ----- Text ----- */
+  --color-on-surface: #ffffff;
+  --color-on-background: #ffffff;
+  --color-on-surface-variant: rgba(255, 255, 255, 0.7); /* muted */
+  --color-inverse-surface: #ffffff;
+  --color-inverse-on-surface: #0b2451;
+
+  /* ----- Hairline dividers + muted text -----
+     outline-variant is the brand hairline (rgba 0.1). outline is used across
+     the app overwhelmingly as muted/secondary TEXT (text-outline, ~240 sites),
+     so it is tuned for legibility on the navy canvas rather than as a divider. */
+  --color-outline: rgba(255, 255, 255, 0.55);         /* muted text / strong line */
+  --color-outline-variant: rgba(255, 255, 255, 0.1);  /* subtle hairline divider */
+
+  /* ----- PRIMARY -> brand blue (bounded secondary, NOT red) -----
+     Lightened from the brand mid-blue #4386c3 to #5b9bd4 so `text-primary`
+     clears WCAG AA (4.5:1) as normal text on the navy card surfaces (5.1:1),
+     and `on-primary` is navy so blue buttons (navy-on-blue, 6.3:1) also pass
+     AA — white-on-#4386c3 was only 3.9:1. The raw mid-blue is still used as a
+     graphical hue in the charts/graphs (3:1 bar applies there). */
+  --color-primary: #5b9bd4;
+  --color-primary-container: #1f3864;
+  --color-on-primary: #061033;
+  --color-on-primary-container: #a9d8fb;
+  --color-surface-tint: #5b9bd4;
+  --color-inverse-primary: #5b9bd4;
+  --color-primary-fixed: #a9d8fb;
+  --color-primary-fixed-dim: #5b9bd4;
+  --color-on-primary-fixed: #061033;
+  --color-on-primary-fixed-variant: #1f3864;
+
+  /* ----- NEW: the single red accent (apply by hand to CTAs/active/stats) - */
+  --color-accent: #d23c3a;
+  --color-accent-hover: #c24841;
+  --color-accent-bright: #ff5a58;
+
+  /* ----- Stat accents (brand-bounded: stat cards only) ----- */
+  --color-secondary: #a9d8fb;              /* brand has no green */
+  --color-secondary-container: #1f3864;
+  --color-on-secondary: #061033;
+  --color-on-secondary-container: #a9d8fb;
+  --color-secondary-fixed: #a9d8fb;
+  --color-secondary-fixed-dim: #4386c3;
+  --color-on-secondary-fixed: #061033;
+  --color-on-secondary-fixed-variant: #1f3864;
+  --color-tertiary: #efb16a;               /* brand orange */
+  --color-tertiary-container: #1f3864;
+  --color-on-tertiary: #061033;
+  --color-on-tertiary-container: #efb16a;
+  --color-tertiary-fixed: #efb16a;
+  --color-tertiary-fixed-dim: #efb16a;
+  --color-on-tertiary-fixed: #261a00;
+  --color-on-tertiary-fixed-variant: #5b4300;
+
+  /* ----- Error: distinct bright red so high-severity still reads red ----- */
+  --color-error: #ff5a58;
+  --color-error-container: #5a1412;
+  --color-on-error: #ffffff;
+  --color-on-error-container: #ffd6d5;
+
+  /* ----- Sharp corners everywhere — neutralize every rounded-* utility ---- */
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+
+  /* ----- No elevation — neutralize every shadow-* utility ----- */
+  --shadow-2xs: none;
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-xl: none;
+  --shadow-2xl: none;
+  --inset-shadow-2xs: none;
+  --inset-shadow-xs: none;
+  --inset-shadow-sm: none;
+
+  /* ----- Font families (brand: Helvetica Neue primary, Inter interface) --- */
+  --font-headline: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-body: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-label: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'Fira Code', monospace;
+}
+
+/* Safety layer for cases the @theme override can't reach: the pill radius
+   utility and the custom scrollbar both set radius directly. Brand = sharp. */
+@layer utilities {
+  .rounded-full { border-radius: 0 !important; }
+}
+
+/* Glass panel utility — brand forbids backdrop-blur elevation; flat navy. */
+.glass-panel {
+  background: var(--color-surface-container-low);
+  backdrop-filter: none;
+}
+
+/* Material Symbols */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  vertical-align: middle;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #061033; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 0; }
+
+/* Chart canvas sizing */
+.impact-chart-container canvas {
+  width: 100% !important;
+  height: 450px !important;
+}
+
+/* Risk panel slide-in animation */
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+/* Tactical grid background */
+.tactical-grid {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+  background-size: 40px 40px;
+  background-position: center;
+}
+
+/* ==========================================================================
+   Wargame tab (swarm port) — see src/wargame/
+   ========================================================================== */
+
+@theme {
+  /* Swarm domain palette — brand-adjacent hues, 4-way distinguishable.
+     Kinetic carries the brand red; cyber/info the brand blues; economic
+     the brand orange. Used by EventPill, Timeline, arc colors, etc. */
+  --color-cyber: #4386c3;
+  --color-kinetic: #d23c3a;
+  --color-economic: #efb16a;
+  --color-info: #a9d8fb;
+}
+
+/* Swarm animations (scoped not strictly necessary — keyframes are globally
+   unique names — but we keep them together for discoverability). */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes film-grain {
+  0%, 100% { background-position: 0 0; }
+  10% { background-position: -5% -10%; }
+  20% { background-position: -15% 5%; }
+  30% { background-position: 7% -25%; }
+  40% { background-position: 20% 25%; }
+  50% { background-position: -25% 10%; }
+  60% { background-position: 15% 5%; }
+  70% { background-position: 0% 15%; }
+  80% { background-position: 25% 35%; }
+  90% { background-position: -10% 10%; }
+}
+@keyframes slide-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes slide-out-right { from { transform: translateX(0); } to { transform: translateX(100%); } }
+@keyframes slide-in-left { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes expand-down { from { max-height: 0; opacity: 0; } to { max-height: 500px; opacity: 1; } }
+
+.animate-pulse-glow { animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+/* Active "churning" agent: pulsing glow ring tinted to the agent's domain (--churn). */
+@keyframes agent-churn {
+  0%, 100% { box-shadow: 0 0 0 0 var(--churn, rgba(255, 255, 255, 0)); }
+  50% { box-shadow: 0 0 9px 1px var(--churn, rgba(255, 255, 255, 0.5)); }
+}
+.animate-agent-churn { animation: agent-churn 1.2s ease-in-out infinite; }
+.animate-film-grain { animation: film-grain 8s steps(1) infinite; }
+.animate-slide-in-right { animation: slide-in-right 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+.animate-slide-out-right { animation: slide-out-right 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+.animate-slide-in-left { animation: slide-in-left 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+.animate-fade-in { animation: fade-in 200ms ease; }
+.animate-expand-down { animation: expand-down 200ms ease; }
+
+/* Film-grain overlay background image (inline SVG). */
+.bg-film-grain {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Wargame page wrapper: dark-mode tokens for the Deck.gl shell.
+   Don't set `position` here — WargamePage.tsx uses Tailwind's `fixed`
+   utility and any position rule here would override it. */
+.wargame-page {
+  isolation: isolate;
+  color: var(--color-on-surface);
+  background: var(--color-surface-dim);
+}
+
+/* Briefing inline citation markers — clickable [N] anchors that jump to the
+   matching entry in the ## Sources section. The target span (set on the first
+   occurrence of [N] at line start) gets a brief highlight when navigated to,
+   so the analyst sees which source they landed on. */
+.briefing-cite {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 0.75em;
+  vertical-align: super;
+  line-height: 1;
+  color: #4386c3;
+  text-decoration: none;
+  padding: 0 0.15em;
+  border-radius: 0;
+  transition: background-color 150ms;
+}
+.briefing-cite:hover {
+  background: rgba(67, 134, 195, 0.16);
+  text-decoration: underline;
+}
+.briefing-source-target {
+  scroll-margin-top: 80px;
+  font-weight: 700;
+  color: #ffffff;
+}
+.briefing-source-target:target {
+  background: rgba(210, 60, 58, 0.25);
+  transition: background-color 1200ms;
+}
+
+/* ==========================================================================
+   Print stylesheet — used by the Briefings "HARD COPY" button (window.print())
+   and by users who pick "Save as PDF" in the print dialog. The browser's
+   native pagination handles line breaks, so this avoids the mid-line cuts
+   that the html2canvas raster pipeline produces.
+   ========================================================================== */
+@media print {
+  /* Page geometry. A4 with reasonable margins for an intel briefing. */
+  @page {
+    size: A4;
+    margin: 18mm 16mm;
+  }
+
+  /* Strip the dark app shell — print on white. */
+  html, body {
+    background: #fff !important;
+    color: #1c1f29 !important;
+  }
+
+  /* Hide everything by default, then re-show only the briefing card subtree.
+     This is the standard print-isolation pattern: walk the ancestor chain
+     of the target and unhide each ancestor + all descendants of the target. */
+  body * { visibility: hidden; }
+  .briefing-print-wrapper,
+  .briefing-print-wrapper *,
+  .briefing-print-target,
+  .briefing-print-target * { visibility: visible; }
+
+  /* Pull the card out of the dashboard grid so it occupies the full page. */
+  .briefing-print-wrapper {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+  }
+  .briefing-print-target {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  /* Hide interactive controls — buttons, action bar, edit toggle. */
+  .no-print { display: none !important; }
+
+  /* Page-break hygiene: keep headings glued to their following content,
+     keep list items / table rows / preformatted blocks intact. The browser
+     will still break BETWEEN lines of a long paragraph, never mid-line. */
+  .briefing-print-target h1,
+  .briefing-print-target h2,
+  .briefing-print-target h3,
+  .briefing-print-target h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  .briefing-print-target li,
+  .briefing-print-target tr,
+  .briefing-print-target pre,
+  .briefing-print-target blockquote {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* TODO(user): paragraph break behavior — pick a strategy.
+     Two reasonable options:
+
+     (A) Allow paragraphs to flow across pages (default, more compact):
+         leave this block empty. Long paragraphs will break BETWEEN
+         lines (never mid-line) and continue on the next page.
+
+     (B) Keep every paragraph whole (cleaner per-page, may leave gaps):
+         .briefing-print-target p { break-inside: avoid; page-break-inside: avoid; }
+
+     Add the rule below if you want (B). Trade-off: a paragraph taller than
+     the remaining page space gets pushed to the next page, leaving white
+     space at the bottom of the previous one. */
+}

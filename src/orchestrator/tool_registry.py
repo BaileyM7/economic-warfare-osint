@@ -140,6 +140,13 @@ class ToolRegistry:
         except ImportError as e:
             print(f"  Warning: sayari tools not available: {e}")
 
+        try:
+            from src.tools.news.server import search_recent_news
+
+            self._tools["search_recent_news"] = search_recent_news
+        except ImportError as e:
+            print(f"  Warning: news tools not available: {e}")
+
         self._loaded = True
         print(f"  Loaded {len(self._tools)} tools")
 
@@ -194,3 +201,16 @@ class ToolRegistry:
     def list_tools(self) -> list[str]:
         """Return names of all registered tools."""
         return list(self._tools.keys())
+
+    def tool_domain(self, name: str) -> str:
+        """Best-effort data domain for a tool name (the src/tools/<domain>/ folder).
+
+        Derived from the tool function's module so a UI can group/colour the
+        agent swarm by domain (sanctions, market, geopolitical, ...). Returns
+        "unknown" if the tool isn't loaded/registered.
+        """
+        fn = self._tools.get(name)
+        parts = (getattr(fn, "__module__", "") or "").split(".")
+        if len(parts) >= 3 and parts[0] == "src" and parts[1] == "tools":
+            return parts[2]
+        return "unknown"

@@ -10,6 +10,7 @@ swarm-redis keyvalue store (see render.yaml fromService block).
 
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import Request
@@ -18,17 +19,44 @@ from slowapi.util import get_remote_address
 
 from src.auth import verify_token
 
+logger = logging.getLogger(__name__)
+
 
 def _storage_uri() -> str:
     """Return the slowapi storage URI.
 
-    Redis is preferred when REDIS_URL is set; otherwise we fall back to
-    in-memory storage (counters reset on process restart).
+    Redis is preferred when REDIS_URL is set and reachable; otherwise we fall
+    back to in-memory storage (counters reset on process restart).
+
+    We probe reachability at startup because slowapi's middleware path does NOT
+    honour ``swallow_errors`` — if it's handed an unreachable backend it raises
+    a ConnectionError that its own handler mishandles, 500-ing EVERY request
+    (a full outage). Falling back to in-memory keeps the app available. The
+    common trigger is a developer running locally with a prod REDIS_URL in .env,
+    or Redis being misconfigured/unreachable at deploy time.
     """
     redis_url = os.getenv("REDIS_URL", "").strip()
-    if redis_url:
+    if not redis_url:
+        return "memory://"
+
+    try:
+        import redis as _redis
+
+        client = _redis.Redis.from_url(
+            redis_url, socket_connect_timeout=1, socket_timeout=1
+        )
+        try:
+            client.ping()
+        finally:
+            client.close()
         return redis_url
-    return "memory://"
+    except Exception as exc:
+        logger.warning(
+            "REDIS_URL is set but unreachable (%s); falling back to in-memory "
+            "rate limiting so the app stays up.",
+            exc,
+        )
+        return "memory://"
 
 
 def get_rate_limit_key(request: Request) -> str:
@@ -86,4 +114,10 @@ limiter = Limiter(
     default_limits=DEFAULT_LIMITS,
     strategy="moving-window",
     headers_enabled=True,  # adds X-RateLimit-* response headers
+    # Fail OPEN if the storage backend is unreachable. Without this, a Redis
+    # blip makes slowapi raise a ConnectionError that its own exception handler
+    # mishandles (it assumes RateLimitExceeded and reads `.detail`), turning a
+    # transient datastore hiccup into a 500 on EVERY request — a full outage.
+    # Availability > throttling when the limiter itself is down.
+    swallow_errors=True,
 )

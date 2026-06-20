@@ -189,11 +189,26 @@ def init_db() -> None:
         conn.close()
 
 
-def seed_mock_data() -> None:
-    """Populate the database with realistic demo data. Clears existing data first."""
+def seed_mock_data(force: bool = False) -> None:
+    """Populate the database with realistic demo data — non-destructively.
+
+    Idempotent and safe by default: if the ``coas`` table already has rows
+    (analyst-created data, or a previous seed), this is a **no-op**. That stops
+    a redeploy from wiping real COAs/briefings — the prior behaviour
+    ``DELETE`` d these tables on every boot, so anything an analyst created in
+    production vanished on the next deploy (masked by the reseed).
+
+    Set ``force=True`` to wipe and re-seed from scratch — a local/staging
+    convenience only. Never call with ``force=True`` against production data.
+    """
     conn = get_db()
     try:
-        # Clear all tables
+        if not force:
+            row = conn.execute("SELECT COUNT(*) FROM coas").fetchone()
+            if row and row[0] > 0:
+                return  # already has data — don't clobber it
+
+        # Clear (only reached on a fresh DB, or when force=True).
         for table in ("briefings", "activity_log", "coas"):
             conn.execute(f"DELETE FROM {table}")
         conn.commit()
