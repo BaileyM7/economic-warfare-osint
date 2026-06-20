@@ -43,16 +43,6 @@ class Config:
     sayari_client_id: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_ID", ""))
     sayari_client_secret: str = field(default_factory=lambda: os.getenv("SAYARI_CLIENT_SECRET", ""))
 
-    # BuildWorkforce AI sector intelligence
-    buildworkforce_api_key: str = field(
-        default_factory=lambda: os.getenv("BUILDWORKFORCE_API_KEY", "")
-    )
-    buildworkforce_team_id: str = field(
-        default_factory=lambda: os.getenv(
-            "BUILDWORKFORCE_TEAM_ID", "56487d92-a610-4875-8263-07a4d4afb6eb"
-        )
-    )
-
     # Finnhub — primary equity quote/profile source on cloud deployments where
     # Yahoo Finance's anti-bot WAF blocks yfinance with 401 "Invalid Crumb".
     finnhub_api_key: str = field(default_factory=lambda: os.getenv("FINNHUB_API_KEY", ""))
@@ -116,11 +106,67 @@ class Config:
         default_factory=lambda: os.getenv("APP_BASE_URL", "https://emissary.onrender.com")
     )
 
+    # --- Environment + app-level settings (previously scattered os.getenv) ---
+    # APP_ENV drives prod-only validation below. Local/staging = "development";
+    # the Render service should set APP_ENV=production.
+    app_env: str = field(default_factory=lambda: os.getenv("APP_ENV", "development"))
+    cors_origins: str = field(
+        default_factory=lambda: os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173",
+        )
+    )
+    redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", ""))
+    risk_feed_mode: str = field(default_factory=lambda: os.getenv("RISK_FEED_MODE", "auto"))
+    emissary_demo_username: str = field(
+        default_factory=lambda: os.getenv("EMISSARY_DEMO_USERNAME", "analyst")
+    )
+    emissary_demo_password: str = field(
+        default_factory=lambda: os.getenv("EMISSARY_DEMO_PASSWORD", "demo")
+    )
+    emissary_admin_users: str = field(default_factory=lambda: os.getenv("EMISSARY_ADMIN_USERS", ""))
+    emissary_mock_data: bool = field(
+        default_factory=lambda: os.getenv("EMISSARY_MOCK_DATA", "").lower() in ("1", "true", "yes")
+    )
+    wargame_enabled: bool = field(
+        default_factory=lambda: os.getenv("WARGAME_ENABLED", "").lower() in ("1", "true", "yes")
+    )
+    wargame_debug_errors: bool = field(
+        default_factory=lambda: (
+            os.getenv("WARGAME_DEBUG_ERRORS", "").lower() in ("1", "true", "yes")
+        )
+    )
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
+
     def validate(self) -> list[str]:
-        """Return list of missing required config values."""
-        issues = []
+        """Return a list of configuration problems.
+
+        Always-on: ANTHROPIC_API_KEY is required. In production (APP_ENV=production)
+        we additionally fail loudly on the misconfigurations most likely to ship
+        silently: a default auth secret, a missing CORS origin, and notifications
+        enabled without provider credentials.
+        """
+        issues: list[str] = []
         if not self.anthropic_api_key:
             issues.append("ANTHROPIC_API_KEY is required")
+
+        if self.is_production:
+            # EMISSARY_AUTH_SECRET is owned by src/auth.py; read the same env var
+            # here purely for the prod gate (a default secret = forgeable tokens).
+            if os.getenv("EMISSARY_AUTH_SECRET", "dev-secret-change-me") == "dev-secret-change-me":
+                issues.append("EMISSARY_AUTH_SECRET must be overridden in production")
+            if not self.cors_origins.strip():
+                issues.append("CORS_ORIGINS must be set in production")
+            if self.notifications_enabled:
+                if not (
+                    self.twilio_account_sid and self.twilio_auth_token and self.twilio_from_phone
+                ):
+                    issues.append("NOTIFICATIONS_ENABLED but Twilio credentials are incomplete")
+                if not self.sendgrid_api_key:
+                    issues.append("NOTIFICATIONS_ENABLED but SENDGRID_API_KEY is missing")
         return issues
 
 

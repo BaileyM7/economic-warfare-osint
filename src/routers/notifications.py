@@ -23,6 +23,7 @@ from twilio.request_validator import RequestValidator
 
 from src.common.config import config
 from src.db import get_db
+from src.notifications.clients import get_sendgrid_client
 from src.notifications.email_digest import build_week_data, send_weekly_digest
 from src.notifications.synthesis import generate_opening_synthesis
 
@@ -107,6 +108,34 @@ async def send_weekly_digest_endpoint(background_tasks: BackgroundTasks):
         background_tasks.add_task(_send_one_digest, user, anthropic_client)
 
     return {"enqueued": len(users)}
+
+
+@router.get("/diagnostics", dependencies=[Depends(_require_cron_token)])
+async def notifications_diagnostics():
+    """Surface notification-config state so silent misconfig is VISIBLE.
+
+    Returns booleans only (never secret values) explaining whether a scheduled
+    brief would actually send: notifications enabled, SendGrid key/stub mode, the
+    verified-sender address, allowlist mode, cron token, and eligible-user count.
+    """
+    allowlist_raw = (config.notifications_allowlist or "").strip()
+    return {
+        "notifications_enabled": config.notifications_enabled,
+        "sendgrid": {
+            "api_key_set": bool(config.sendgrid_api_key),
+            "stub_mode": config.sendgrid_stub_mode,
+            "from_email": config.newsletter_from_email,  # must be a VERIFIED SendGrid sender
+            "client_available": get_sendgrid_client() is not None,
+        },
+        "allowlist_mode": "all_enrolled" if not allowlist_raw else "restricted",
+        "cron_token_set": bool(config.notifications_cron_token),
+        "eligible_users": len(_eligible_users()),
+        "would_send": (
+            config.notifications_enabled
+            and get_sendgrid_client() is not None
+            and len(_eligible_users()) > 0
+        ),
+    }
 
 
 # --- Twilio inbound webhook (STOP / HELP / START) -------------------------

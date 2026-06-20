@@ -44,8 +44,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -68,9 +66,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # frontend/ is a git submodule — must be initialized for npm ci to find package-lock.json
-          submodules: recursive
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -89,12 +84,10 @@ jobs:
     name: Render build.sh end-to-end
     runs-on: ubuntu-latest
     # Most expensive job (~3-5 min). Mirrors the Render runtime exactly so
-    # we catch deploy-time failures (submodule init, requirements.txt drift,
-    # frontend build) BEFORE they hit prod.
+    # we catch deploy-time failures (requirements.txt drift, frontend build)
+    # BEFORE they hit prod.
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up Python (matches render.yaml)
         uses: actions/setup-python@v5

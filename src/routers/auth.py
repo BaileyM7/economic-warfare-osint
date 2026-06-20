@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from src.analytics import log_login_attempt
 from src.auth import check_admin_credentials, create_token, is_admin, require_auth
+from src.common.config import config
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -33,9 +32,7 @@ def _client_ip(request: Request) -> str | None:
 
 
 def _check_demo_credentials(username: str, password: str) -> bool:
-    demo_user = os.environ.get("EMISSARY_DEMO_USERNAME", "analyst")
-    demo_pass = os.environ.get("EMISSARY_DEMO_PASSWORD", "demo")
-    return username == demo_user and password == demo_pass
+    return username == config.emissary_demo_username and password == config.emissary_demo_password
 
 
 @router.post("/login", response_model=LoginResponse)

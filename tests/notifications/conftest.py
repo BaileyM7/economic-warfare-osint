@@ -62,8 +62,13 @@ def allowlisted_user(monkeypatch, fresh_db):
 
 
 @pytest.fixture
-def non_allowlisted_user(fresh_db):
-    """A user that exists but is NOT in the allowlist."""
+def non_allowlisted_user(monkeypatch, fresh_db):
+    """A user that exists but is NOT in the (non-empty) allowlist.
+
+    A NON-EMPTY allowlist that excludes 'bob' is what triggers the allowlist
+    gate. (An empty allowlist now means 'allow everyone enrolled' — see
+    is_user_allowlisted; that bugfix is why this fixture sets one explicitly.)
+    """
     user = {
         "username": "bob",
         "phone_number": "+15005550006",
@@ -80,6 +85,9 @@ def non_allowlisted_user(fresh_db):
         conn.commit()
     finally:
         conn.close()
+    from src.common.config import config as _config
+
+    monkeypatch.setattr(_config, "notifications_allowlist", "alice", raising=True)
     return user
 
 

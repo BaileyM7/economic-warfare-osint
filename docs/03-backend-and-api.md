@@ -1,0 +1,172 @@
+# 03 — Backend & API
+
+How the FastAPI process is wired, and the **complete endpoint catalog** (verified against the
+route decorators, June 2026).
+
+## App construction (`src/api.py`)
+
+[src/api.py](../src/api.py) (~334 lines after the Phase-2 decomposition) is now **pure app
+composition** — the analysis/search endpoints moved out into dedicated routers in `src/routers/`
+(see the table below). At import time it:
+
+1. Creates `app = FastAPI(...)`.
+2. Adds **CORS** (`CORS_ORIGINS`, default `localhost:5173/3000`).
+3. Adds **rate limiting** (`src/common/rate_limit.py`, slowapi; Redis-backed if `REDIS_URL`, else in-memory).
+4. Adds **`UsageTrackingMiddleware`** ([src/analytics.py](../src/analytics.py)) → logs every request to `usage_events`.
+5. **Includes the routers** (see auth column below).
+6. Optionally **mounts the wargame subapp** at `/api/wargame` if `WARGAME_ENABLED` is truthy,
+   and (if `WARGAME_DEBUG_ERRORS`) adds `/api/wargame-debug/lifespan`.
+7. **Mounts static files**: `/assets` → `frontend/dist/assets`, plus a catch-all
+   `GET /{filename:path}` SPA fallback that serves `frontend/dist/index.html`.
+8. On startup: `init_db()`, optional `seed_mock_data()` (if `EMISSARY_MOCK_DATA`), enters the
+   wargame subapp lifespan, and opens a browser unless `RENDER` is set.
+
+### Routers and how they're mounted
+
+| Router | File | Prefix | Auth applied at include |
+|--------|------|--------|-------------------------|
+| auth | [routers/auth.py](../src/routers/auth.py) | `/api/auth` | none (login is public) |
+| admin | [routers/admin.py](../src/routers/admin.py) | `/api/admin` | **`require_admin`** |
+| coa | [routers/coa.py](../src/routers/coa.py) | `/api` | `require_auth` |
+| monitoring | [routers/monitoring.py](../src/routers/monitoring.py) | `/api` | `require_auth` |
+| briefings | [routers/briefings.py](../src/routers/briefings.py) | `/api` | `require_auth` |
+| risk_feed | [routers/risk_feed.py](../src/routers/risk_feed.py) | `/api/risk-feed` | `require_auth` |
+| watchlist | [routers/watchlist.py](../src/routers/watchlist.py) | `/api/watchlist` | `require_auth` |
+| notifications | [routers/notifications.py](../src/routers/notifications.py) | `/api/notifications` | none (cron token / webhook) |
+| orchestrator | [routers/orchestrator.py](../src/routers/orchestrator.py) | `/api` | `require_auth` |
+| entity | [routers/entity.py](../src/routers/entity.py) | `/api` | `require_auth` |
+| person | [routers/person.py](../src/routers/person.py) | `/api` | `require_auth` |
+| sector | [routers/sector.py](../src/routers/sector.py) | `/api` | `require_auth` |
+| risk | [routers/risk.py](../src/routers/risk.py) | `/api` | `require_auth` |
+| vessel | [routers/vessel.py](../src/routers/vessel.py) | `/api` | `require_auth` |
+| screening | [routers/screening.py](../src/routers/screening.py) | `/api` | `require_auth` |
+| sayari | [routers/sayari.py](../src/routers/sayari.py) | `/api` | `require_auth` |
+| sanctions_impact | [routers/sanctions_impact.py](../src/routers/sanctions_impact.py) | `/api` | `require_auth` |
+| followup | [routers/followup.py](../src/routers/followup.py) | `/api` | `require_auth` |
+
+The analysis/search endpoints that previously lived directly on `app` in `api.py` now live in
+the bottom group of routers above (same paths, same `require_auth` applied at include time).
+
+## Auth (`src/auth.py`, `src/routers/auth.py`)
+
+- **Scheme:** HMAC-signed bearer tokens. `EMISSARY_AUTH_SECRET` signs them (default
+  `dev-secret-change-me` — must be overridden in prod).
+- **Dependencies:** `require_auth` (any logged-in user) and `require_admin` (username in
+  `EMISSARY_ADMIN_USERS`).
+- **Login:** `POST /api/auth/login` checks against `EMISSARY_DEMO_USERNAME` / `EMISSARY_DEMO_PASSWORD`
+  (defaults `analyst` / `demo`) and registered users in the `users` table; returns a token.
+- **Frontend:** stores the token in `localStorage` (`emissary_token`); a 401 clears it and redirects to `/login`.
+
+## Endpoint catalog
+
+### Public / infrastructure (no auth)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/` | Serve the SPA `index.html` (503 if frontend not built) |
+| GET | `/api/health` | Health + config validation |
+| GET | `/{filename:path}` | Static file or SPA fallback |
+| WS | `/ws/monitoring?token=…` | Live activity feed (token checked in handler) |
+| GET | `/api/wargame-debug/lifespan` | Wargame lifespan error (only if `WARGAME_DEBUG_ERRORS`) |
+
+### Analysis engine (auth)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/tools` | List available tools (from `ToolRegistry`) |
+| POST | `/api/analyze` | Start async analysis → `{analysis_id}` |
+| GET | `/api/analyze/{analysis_id}` | Poll status / progress / result |
+| POST | `/api/analyze/sync` | Run analysis synchronously (blocks) |
+| POST | `/api/followup` | Follow-up Q grounded in current analysis (the old duplicate `/api/follow-up` was removed in Phase 2) |
+
+### Entity / search (auth) — in the analysis/search routers (`src/routers/`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/sanctions-impact` | Deterministic stock-impact projection (13 historical comparables) |
+| POST | `/api/entity-graph` | Build vis.js entity graph for a query |
+| POST | `/api/resolve-entity` | Classify text → entity type + confidence |
+| POST | `/api/person-profile` | Person dossier: affiliations, offshore, risk factors |
+| POST | `/api/person/search` | Person candidate search |
+| POST | `/api/person/network` | Person relationship network |
+| POST | `/api/sector-analysis` | Sector exposure + geopolitical tensions |
+| POST | `/api/vessel-track` | Vessel particulars, route, port calls (AIS + OpenSanctions + fixtures) |
+| POST | `/api/entity-risk-report` | Full risk report for an entity |
+| POST | `/api/sanctions/screen-batch` | Batch sanctions screening of names |
+| POST | `/api/sayari/resolve` | Sayari entity resolution (premium) |
+| POST | `/api/sayari/related` | Sayari relationship traversal |
+| POST | `/api/sayari/ubo` | Sayari ultimate beneficial owners |
+
+### Dashboard — COA, briefings, monitoring (auth)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET/POST | `/api/coa` | List / create COAs |
+| GET/PUT/DELETE | `/api/coa/{coa_id}` | Read / update / delete a COA |
+| POST | `/api/coa/generate` | AI-generate COA options (rate-limited `3/min; 30/day`) |
+| GET/POST | `/api/briefing` | List / create briefings |
+| GET/PUT/DELETE | `/api/briefing/{briefing_id}` | Read / update / delete a briefing |
+| POST | `/api/briefing/generate` | AI-generate a briefing from a COA/analysis (rate-limited) |
+| GET | `/api/monitoring/kpis` | Dashboard KPIs |
+| GET | `/api/monitoring/activity` | Activity-log entries |
+| GET | `/api/monitoring/map-data` | Map markers |
+| GET | `/api/monitoring/macro` | Macro indicators (USD/CNY, Brent, VIX, DXY) |
+
+### Dashboard — risk feed + watchlist (auth)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/risk-feed` | Per-user risk feed |
+| POST | `/api/risk-feed/refresh` | Force refresh |
+| GET | `/api/risk-feed/{item_id}` | Single feed item |
+| POST | `/api/risk-feed/{item_id}/prepare-coa` | Enrich a feed item into a COA payload |
+| GET/POST | `/api/watchlist` | List / add watchlist items |
+| PATCH/DELETE | `/api/watchlist/{item_id}` | Update / remove |
+| POST | `/api/watchlist/resolve` | Resolve a name → entity kind + category (rate-limited `30/min`) |
+| GET | `/api/watchlist/suggestions` | Suggested watchlist entities |
+
+### Admin (require_admin)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/usage` | Usage analytics (`?days=`) |
+| GET/POST | `/api/admin/enrollments` | List / enroll notification recipients |
+| DELETE | `/api/admin/enrollments/{username}` | Unenroll |
+| POST | `/api/admin/enrollments/{username}/test-sms` | Send a test SMS |
+| POST | `/api/admin/enrollments/{username}/test-email` | Send a test email |
+
+### Notifications (cron token / webhook, not bearer auth)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/notifications/send-weekly-digest` | Build + send the weekly digest (requires `X-Cron-Token`) |
+| POST | `/api/notifications/twilio/sms-webhook` | Inbound Twilio webhook (STOP/HELP, replies) |
+
+### Wargame subapp (mounted at `/api/wargame`, gated by `WARGAME_ENABLED`)
+The subapp's routers use their own internal `/api/...` prefixes, so the **full** paths
+double up. Documented in detail in [07-submodules/swarm-wargame.md](07-submodules/swarm-wargame.md):
+
+| Method | Full path | Purpose |
+|--------|-----------|---------|
+| GET | `/api/wargame/healthz`, `/api/wargame/readyz` | Liveness / readiness |
+| GET | `/api/wargame/api/countries`, `/{iso3}` | Country list / detail |
+| GET/POST | `/api/wargame/api/scenarios` (+ `/{id}`, `/extract-events`) | Scenario CRUD + LLM extraction |
+| POST/GET | `/api/wargame/api/simulations` (+ `/{id}`, `/{id}/abort`) | Start / read / abort a sim |
+| GET | `/api/wargame/api/events`, `/api/sim-events` | Data-lake + sim-event queries |
+| WS | `/api/wargame/ws/simulations/{sim_id}` | Live simulation event stream |
+
+## State, persistence, and background work
+
+- **SQLite** ([src/db.py](../src/db.py)) — `data/emissary.db`. Tables: `coas`, `briefings`,
+  `exercises`, `injects`, `activity_log`, `usage_events`, `watchlist_items`, `users`,
+  `notification_log`. Raw SQL via `get_db()`; `init_db()` is idempotent; `seed_mock_data()`
+  loads demo data when `EMISSARY_MOCK_DATA` is set — **seed-only-if-empty** (takes a `force=`
+  param) so deploys no longer wipe analyst-created data.
+- **In-memory stores** — `_analyses` (analysis status/results) now lives in
+  [src/common/analyses.py](../src/common/analyses.py); the `_ws_manager` WebSocket connection
+  list stays in `api.py`. Both are **process-local**: lost on restart, not shared across
+  workers. See [08](08-fragility-map.md).
+- **Background tasks** — `/api/analyze` and the briefing/COA generators use `asyncio.create_task`
+  for fire-and-forget work; clients poll for completion.
+- **Rate limiting** — `src/common/rate_limit.py`. Default key is `user:<name>` (falls back to
+  `ip:<addr>`); per-endpoint overrides on the LLM generators and `watchlist/resolve`.
+
+## Wargame lifespan integration
+
+When mounted, the subapp's lifespan (Alembic migrate → validate Postgres/Redis → build
+`SimRunner`) is entered manually from the parent startup so a single Uvicorn process boots both
+apps. If it fails, the parent still serves Emissary; the wargame routes error. Detail in
+[07-submodules/swarm-wargame.md](07-submodules/swarm-wargame.md).

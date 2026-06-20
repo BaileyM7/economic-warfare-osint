@@ -66,7 +66,19 @@ def get_sendgrid_client():
 
 
 def is_user_allowlisted(username: str) -> bool:
-    """True iff `username` is in NOTIFICATIONS_ALLOWLIST (comma-separated env)."""
-    raw = config.notifications_allowlist or ""
+    """True iff `username` may receive notifications under NOTIFICATIONS_ALLOWLIST.
+
+    Per the documented contract (.env.example: "empty = no allowlist enforced"),
+    an EMPTY allowlist allows everyone enrolled; a NON-EMPTY one gates to exactly
+    those comma-separated usernames.
+
+    Bugfix (Phase 3): this previously returned False for EVERYONE when the
+    allowlist was empty — which silently skipped every scheduled brief
+    (status="skipped_allowlist"), the real reason "scheduled messages weren't
+    sending". Empty now correctly means no restriction.
+    """
+    raw = (config.notifications_allowlist or "").strip()
+    if not raw:
+        return True  # empty = no restriction (matches the documented contract)
     allowed = {u.strip() for u in raw.split(",") if u.strip()}
     return username in allowed

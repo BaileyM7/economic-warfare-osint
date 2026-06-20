@@ -1,5 +1,14 @@
 # Wargame Deployment Guide
 
+> **Note (Phase 2):** The `swarm/` git submodule has been **removed** from this repo.
+> The embedded `src/wargame_*` copy is what actually runs in production (mounted at
+> `/api/wargame` when `WARGAME_ENABLED=1`) — see
+> [07-submodules/swarm-wargame.md](07-submodules/swarm-wargame.md). This document is
+> **retained only for standalone / reference deployment of the upstream
+> [swarm](https://github.com/BaileyM7/swarm) repo** as a separate microservice; it no
+> longer reflects how the wargame ships inside Emissary. Steps below that mention the
+> `swarm/` submodule or `.gitmodules` are historical.
+
 The Emissary `/wargame` tab is a **ported frontend only** — it talks to a
 separately-deployed instance of the [swarm](https://github.com/BaileyM7/swarm)
 backend. This doc explains how to stand up swarm as a microservice and
@@ -80,8 +89,10 @@ reference, so the frontend bundle knows where to call.
 
 ### Prerequisites
 
-- Swarm is pushed to a Git remote (this repo uses [BaileyM7/swarm](https://github.com/BaileyM7/swarm))
-  and is added as a submodule at `swarm/` — see `.gitmodules`.
+- Swarm is pushed to a Git remote (this repo uses [BaileyM7/swarm](https://github.com/BaileyM7/swarm)).
+  *(Historical: this used to be vendored as a `swarm/` submodule via `.gitmodules`; that submodule
+  has since been removed from this repo. For a standalone deploy you point Render at the upstream
+  `swarm` repo directly.)*
 - You have `render blueprint` access on the account that owns the
   existing `emissary` service.
 
@@ -89,11 +100,11 @@ reference, so the frontend bundle knows where to call.
 
 ```bash
 # From inside c:/Work/economic_warfare on the wargame-v1 branch:
+# NOTE: the `swarm/` submodule no longer exists in this repo (removed in Phase 2).
+# For a standalone deploy, build swarm-api from the upstream swarm repo directly
+# rather than from a submodule path.
 
-# 1. Ensure the swarm submodule is present (already added in wargame-v1)
-git submodule update --init --recursive
-
-# 2. Confirm render.yaml describes all four resources
+# 1. Confirm render.yaml describes all four resources
 grep '^\s*- name:\|^\s*- type:' render.yaml
 
 # 3. Push wargame-v1 to trigger Render's Blueprint sync, OR in the
@@ -103,7 +114,8 @@ git push origin wargame-v1
 
 Render will:
 1. Provision `swarm-db` (Postgres 16) and `swarm-redis`.
-2. Build `swarm-api` from the `swarm/` submodule using `swarm/docker/backend.Dockerfile`.
+2. Build `swarm-api` from the upstream swarm repo using its `docker/backend.Dockerfile`.
+   *(This used to build from the in-repo `swarm/` submodule path; that submodule has been removed.)*
 3. Rebuild `emissary` with the new `VITE_SWARM_API_URL` and
    `VITE_SWARM_WS_URL` env vars baked into the frontend bundle.
 
@@ -145,12 +157,13 @@ Expect 4 passes. Any FAIL maps to a fix in the [Common failures](#common-failure
 
 ### Updating swarm later
 
-Swarm is a submodule, so a new version means a new commit pointer:
+In this standalone setup, swarm is an **independent upstream repo** (no longer a submodule of
+this repo), so a new version is just a push to that repo:
 
 ```bash
-cd swarm && git pull origin main && cd ..
-git add swarm && git commit -m "chore: bump swarm to <short-sha>"
-git push origin wargame-v1
+# In a checkout of the upstream swarm repo:
+git pull origin main
+git push   # to whatever remote Render's swarm-api service builds from
 ```
 
 Render's Blueprint sync rebuilds `swarm-api` automatically. Emissary
@@ -271,8 +284,7 @@ Caddy handles Let's Encrypt + WebSocket auto-upgrade automatically.
 ## Option D — Render, manual dashboard setup
 
 Use this only if you can't use the [Blueprint](#option-a--render-blueprint-recommended-if-emissary-is-on-render)
-for some reason (e.g. you don't want the swarm submodule in this repo).
-Create three resources in the Render dashboard by hand:
+for some reason. Create three resources in the Render dashboard by hand:
 
 1. **swarm-api**: Web Service, Docker runtime, pointing at
    `docker/backend.Dockerfile` in your [swarm fork](https://github.com/BaileyM7/swarm).

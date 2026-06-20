@@ -1,0 +1,3 @@
+I think a key mistep of this repo is the submodules, i think we should refactor to have the fruntend just be a part of this repo, so we could just clone it over.
+
+add all the env vars into env
