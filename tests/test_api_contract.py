@@ -86,34 +86,43 @@ EXPECTED_ROUTES = {
 
 
 def _contract_routes(app) -> set[str]:
+    """Flatten the app's route surface, descending into included-router wrappers.
+
+    Newer FastAPI keeps ``include_router()`` routes nested inside a path-less
+    internal wrapper (with its own ``.routes``) rather than flattening them into
+    ``app.routes``; older FastAPI flattened them inline. Recursing handles both,
+    so this snapshot is stable across FastAPI versions (the CI vs. local gap).
+    """
     out: set[str] = set()
-    for r in app.routes:
-        path = getattr(r, "path", "")
-        if path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect", "/assets"):
-            continue
-        if path.startswith("/api/wargame"):
-            continue
-        methods = sorted(m for m in (getattr(r, "methods", None) or []) if m != "HEAD")
-        if methods:
-            out.update(f"{m} {path}" for m in methods)
-        else:
-            out.add(f"WS_OR_MOUNT {path}")
+
+    def walk(routes) -> None:
+        for r in routes:
+            path = getattr(r, "path", None)
+            if not isinstance(path, str):
+                # Path-less wrapper (an included router) — descend into it.
+                walk(getattr(r, "routes", []) or [])
+                continue
+            if path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+                continue
+            if path.startswith("/assets") or path.startswith("/api/wargame"):
+                continue
+            methods = sorted(m for m in (getattr(r, "methods", None) or []) if m != "HEAD")
+            if methods:
+                out.update(f"{m} {path}" for m in methods)
+            else:
+                out.add(f"WS_OR_MOUNT {path}")
+
+    walk(app.routes)
     return out
 
 
 def test_route_surface_matches_snapshot(app_module):
-    app = app_module.app
-    actual = _contract_routes(app)
+    actual = _contract_routes(app_module.app)
     missing = EXPECTED_ROUTES - actual
     added = actual - EXPECTED_ROUTES
-    _diag = [
-        (type(r).__name__, getattr(r, "path", None), sorted(getattr(r, "methods", None) or []))
-        for r in app.routes
-    ]
     assert not missing and not added, (
         f"\nDropped/renamed routes: {sorted(missing)}"
         f"\nNew/renamed routes:     {sorted(added)}"
-        f"\nDIAG app={app!r} nroutes={len(app.routes)} raw={_diag}"
         "\nIf this change is intentional, update EXPECTED_ROUTES."
     )
 
