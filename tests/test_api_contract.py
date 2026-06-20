@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from src.api import app
+# NOTE: import the app via the `app_module` fixture (not a module-level
+# `from src.api import app`). conftest patches env BEFORE that lazy import so the
+# route surface is built identically to every other app-using test; a top-level
+# import here is collection-time and produced a different app on CI.
 
 # Snapshot of the app's route surface. Excludes: FastAPI built-ins (/docs,
 # /redoc, /openapi.json), the conditional /api/wargame* subapp, the conditional
@@ -82,7 +85,7 @@ EXPECTED_ROUTES = {
 }
 
 
-def _contract_routes() -> set[str]:
+def _contract_routes(app) -> set[str]:
     out: set[str] = set()
     for r in app.routes:
         path = getattr(r, "path", "")
@@ -98,8 +101,8 @@ def _contract_routes() -> set[str]:
     return out
 
 
-def test_route_surface_matches_snapshot():
-    actual = _contract_routes()
+def test_route_surface_matches_snapshot(app_module):
+    actual = _contract_routes(app_module.app)
     missing = EXPECTED_ROUTES - actual
     added = actual - EXPECTED_ROUTES
     assert not missing and not added, (
