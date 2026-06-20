@@ -102,12 +102,18 @@ def _contract_routes(app) -> set[str]:
 
 
 def test_route_surface_matches_snapshot(app_module):
-    actual = _contract_routes(app_module.app)
+    app = app_module.app
+    actual = _contract_routes(app)
     missing = EXPECTED_ROUTES - actual
     added = actual - EXPECTED_ROUTES
+    _diag = [
+        (type(r).__name__, getattr(r, "path", None), sorted(getattr(r, "methods", None) or []))
+        for r in app.routes
+    ]
     assert not missing and not added, (
         f"\nDropped/renamed routes: {sorted(missing)}"
         f"\nNew/renamed routes:     {sorted(added)}"
+        f"\nDIAG app={app!r} nroutes={len(app.routes)} raw={_diag}"
         "\nIf this change is intentional, update EXPECTED_ROUTES."
     )
 
