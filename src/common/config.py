@@ -62,6 +62,23 @@ class Config:
     model: str = field(
         default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
     )
+    # Decomposition (research-plan) model. Defaults to Haiku — planning is a
+    # structured task it handles well at ~4x the speed of Sonnet, cutting the
+    # decompose phase from ~45s to ~12s. Synthesis stays on `model` (Sonnet).
+    decompose_model: str = field(
+        default_factory=lambda: os.getenv("CLAUDE_DECOMPOSE_MODEL", "claude-haiku-4-5-20251001")
+    )
+
+    # Orchestrator fan-out controls. A single shared semaphore caps total
+    # concurrent tool calls across all parallel steps (also bounds the memory
+    # spike that OOM'd the 512MB box). `max_tools` caps total agents per plan so
+    # a verbose decomposition can't blow up execute time / truncate synthesis.
+    orchestrator_max_concurrency: int = field(
+        default_factory=lambda: int(os.getenv("ORCH_MAX_CONCURRENCY", "8"))
+    )
+    orchestrator_max_tools: int = field(
+        default_factory=lambda: int(os.getenv("ORCH_MAX_TOOLS", "24"))
+    )
 
     # --- Notifications (Twilio SMS + SendGrid email) ---
     notifications_enabled: bool = field(

@@ -10,6 +10,7 @@ import type {
   VesselTrackResponse,
   OrchestratorStatusResponse,
   StartAnalysisResponse,
+  SuggestResponse,
   SayariResolveResponse,
   SayariTraversalResponse,
   SayariUBOResponse,
@@ -182,6 +183,19 @@ export async function startOrchestratorAnalysis(query: string): Promise<StartAna
     body: JSON.stringify({ query }),
   });
   return parseJson<StartAnalysisResponse>(res);
+}
+
+// Ask the backend whether a near-but-not-exact question has a fast-replay match.
+// Returns {suggestion: null} for unrelated or exact queries — the caller only
+// surfaces a non-null suggestion as a confirm prompt, never auto-runs it.
+export async function suggestAnalysis(query: string): Promise<SuggestResponse> {
+  const url = `${API_BASE}/api/analyze/suggest`;
+  const res = await authedFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  return parseJson<SuggestResponse>(res);
 }
 
 export async function pollAnalysisStatus(analysisId: string): Promise<OrchestratorStatusResponse> {

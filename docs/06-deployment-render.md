@@ -91,7 +91,10 @@ Detail: [07-submodules/frontend.md](07-submodules/frontend.md).
 ### Engine model + cache
 | Var | Set via | Consumed by | Default |
 |-----|---------|-------------|---------|
-| `CLAUDE_MODEL` | dashboard? | engine (`config.py`) | `claude-sonnet-4-20250514` |
+| `CLAUDE_MODEL` | dashboard? | engine (`config.py`) — synthesis | `claude-sonnet-4-20250514` |
+| `CLAUDE_DECOMPOSE_MODEL` | dashboard? | engine (`config.py`) — research-plan decomposition | `claude-haiku-4-5-20251001` |
+| `ORCH_MAX_CONCURRENCY` | dashboard? | `config.py` → orchestrator semaphore (total concurrent tool calls) | `8` |
+| `ORCH_MAX_TOOLS` | dashboard? | `config.py` → `_cap_plan` (total agents per plan) | `24` |
 | `CACHE_DIR` | dashboard? | `config.py` | `data/cache` |
 | `CACHE_TTL_SECONDS` | dashboard? | `config.py` | `3600` |
 

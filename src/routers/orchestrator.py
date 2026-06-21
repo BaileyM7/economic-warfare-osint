@@ -37,9 +37,104 @@ _PREWARM = os.getenv("EMISSARY_PREWARM_CACHE", "1").lower() not in ("0", "false"
 _PREWARM_NS = "analysis_prewarm_v2"  # v2: invalidate pre-fix entries (opaque-source filter)
 _PREWARM_TTL = 86400  # 24h
 
+# Registry of queries we have a fast (cached) replay for. Used ONLY to power the
+# safe "Did you mean…?" suggestion — we never auto-answer a near-miss, we only
+# suggest the exact warmed query for the user to confirm. Stored as original-cased
+# strings so the suggestion reads naturally.
+_REGISTRY_KEY = "warmed_query_registry"
+_REGISTRY_MAX = 200
+# Similarity at/above which we surface a suggestion. High enough that only a
+# genuine rewording of a warmed question matches — it's a suggestion, not a replay.
+_SUGGEST_THRESHOLD = 0.6
+# The canonical demo questions (see docs/demo-runbook.md). Seeded as a constant
+# floor so suggestions work on a fresh box before the registry is populated.
+_DEMO_QUERIES = [
+    "What happens to global semiconductor supply if we sanction Fujian Jinhua?",
+    "Who ultimately owns Nuctech, and what are its sanctions exposures?",
+    "How exposed is the drone supply chain to a DJI export ban?",
+    "Map Rosatom’s subsidiaries and their Western trade links.",
+]
+# Low-signal tokens dropped before comparing queries so structural filler
+# ("what happens if we …") doesn't inflate the overlap score.
+_STOPWORDS = frozenset(
+    "a an the of to in on for and or if we our is are be do does what who how "
+    "their its it this that with from into about as at by".split()
+)
+
 
 def _normalize_query(query: str) -> str:
     return " ".join(query.lower().split())
+
+
+def _tokenize(query: str) -> set[str]:
+    """Content tokens of a query: lowercased alphanumerics, stopwords removed."""
+    import re
+
+    toks = re.findall(r"[a-z0-9]+", query.lower())
+    return {t for t in toks if t not in _STOPWORDS and len(t) > 1}
+
+
+def _query_similarity(a: str, b: str) -> float:
+    """Jaccard overlap of two queries' content tokens (0.0–1.0).
+
+    Pure and dependency-free, isolated so it can later be swapped for an
+    embedding-based score without touching callers.
+    """
+    ta, tb = _tokenize(a), _tokenize(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+def _warmed_queries() -> list[str]:
+    """Known fast-replay queries: the demo floor plus anything we've cached."""
+    seen: dict[str, str] = {}
+    for q in _DEMO_QUERIES:
+        seen.setdefault(_normalize_query(q), q)
+    if _PREWARM:
+        registry = get_cached(_PREWARM_NS, registry=_REGISTRY_KEY)
+        if isinstance(registry, list):
+            for q in registry:
+                if isinstance(q, str) and q.strip():
+                    seen.setdefault(_normalize_query(q), q)
+    return list(seen.values())
+
+
+def _register_warmed_query(query: str) -> None:
+    """Record a query as fast-replayable (for the 'Did you mean' candidate set)."""
+    if not _PREWARM:
+        return
+    qn = _normalize_query(query)
+    registry = get_cached(_PREWARM_NS, registry=_REGISTRY_KEY)
+    out: list[str] = list(registry) if isinstance(registry, list) else []
+    if any(_normalize_query(q) == qn for q in out if isinstance(q, str)):
+        return
+    out.append(query)
+    out = out[-_REGISTRY_MAX:]
+    set_cached(out, _PREWARM_NS, ttl=_PREWARM_TTL, registry=_REGISTRY_KEY)
+
+
+def _suggest_query(query: str) -> tuple[str | None, float]:
+    """Best warmed query for a near-miss, or (None, 0.0).
+
+    Never returns an exact match (those already instant-replay) — only a *different*
+    warmed query similar enough to be worth confirming. The caller surfaces it as a
+    suggestion; it is never auto-run.
+    """
+    qn = _normalize_query(query)
+    best: str | None = None
+    best_score = 0.0
+    for cand in _warmed_queries():
+        if _normalize_query(cand) == qn:
+            continue  # exact — replay path already handles it
+        score = _query_similarity(query, cand)
+        if score > best_score:
+            best, best_score = cand, score
+    if best is not None and best_score >= _SUGGEST_THRESHOLD:
+        return best, round(best_score, 3)
+    return None, 0.0
 
 
 async def _replay_cached(analysis_id: str, cached: dict[str, Any], on_event, on_progress) -> None:
@@ -65,6 +160,14 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     analysis_id: str
     status: str
+
+
+class SuggestResponse(BaseModel):
+    # The nearest fast-replay query if the input is a close-but-not-exact match,
+    # else null. The UI offers it as a "Did you mean…?" the user must confirm —
+    # we never auto-answer a near-miss with a different question's assessment.
+    suggestion: str | None = None
+    score: float = 0.0
 
 
 class AnalysisStatus(BaseModel):
@@ -130,6 +233,8 @@ async def _run_analysis(analysis_id: str, query: str) -> None:
                     ttl=_PREWARM_TTL,
                     q=qn,
                 )
+                # Track the original query so "Did you mean…?" can suggest it later.
+                _register_warmed_query(query)
         on_progress("Done.")
     except Exception as e:
         entry = _analyses.get(analysis_id)
@@ -137,6 +242,20 @@ async def _run_analysis(analysis_id: str, query: str) -> None:
             entry["status"] = "failed"
             entry["error"] = str(e)
         on_progress(f"Error: {e}")
+
+
+@router.post("/analyze/suggest", response_model=SuggestResponse)
+async def suggest_analysis(req: AnalyzeRequest):
+    """Return the nearest fast-replay query for a near-miss, else null.
+
+    Safe by construction: a suggestion only, never an auto-answer. An exact match
+    returns null (the analyze endpoint already instant-replays it).
+    """
+    query = (req.query or "").strip()
+    if not query:
+        return SuggestResponse(suggestion=None, score=0.0)
+    suggestion, score = _suggest_query(query)
+    return SuggestResponse(suggestion=suggestion, score=score)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)

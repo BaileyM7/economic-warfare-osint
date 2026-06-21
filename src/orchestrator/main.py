@@ -45,6 +45,8 @@ class Orchestrator:
 
         self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
         self.model = config.model
+        # Decompose runs on a faster (Haiku) model; synthesis stays on `model`.
+        self.decompose_model = config.decompose_model
         self.tool_registry = ToolRegistry()
 
     async def analyze(
@@ -113,7 +115,7 @@ class Orchestrator:
     async def _decompose(self, query: str) -> list[dict[str, Any]]:
         """Use Claude to decompose the question into a research plan."""
         response = await self.client.messages.create(
-            model=self.model,
+            model=self.decompose_model,
             max_tokens=3000,
             system=SYSTEM_PROMPT,
             messages=[
@@ -139,6 +141,10 @@ class Orchestrator:
         plan = _coerce_plan_list(plan)
         if not plan:
             plan = self._fallback_plan(query)
+        # Hard backstop on fan-out: trim tools-per-step / total so a verbose plan
+        # can't blow up execute time or truncate synthesis, regardless of what the
+        # model returned. Prompt also nudges toward this, but never trust the model.
+        plan = _cap_plan(plan, config.orchestrator_max_tools)
         return plan
 
     async def _execute_plan(
@@ -149,6 +155,12 @@ class Orchestrator:
         completed_steps: set[int] = set()
         # Preload so tool_domain() resolves on the first "running" event.
         await self.tool_registry._ensure_loaded()
+
+        # One semaphore for the whole run caps TOTAL concurrent tool calls across
+        # every parallel step (tools within a step now run concurrently too). This
+        # is the biggest speed win and also bounds peak memory — each in-flight
+        # agent holds large GDELT/Comtrade/sanctions JSON.
+        sem = asyncio.Semaphore(max(1, config.orchestrator_max_concurrency))
 
         def _log(msg: str) -> None:
             print(msg)
@@ -177,7 +189,9 @@ class Orchestrator:
 
             # Execute ready steps in parallel
             tasks = [
-                self._execute_step(step, results, on_event=on_event, step_num=step.get("step", 0))
+                self._execute_step(
+                    step, results, on_event=on_event, step_num=step.get("step", 0), sem=sem
+                )
                 for step in ready
             ]
             step_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -203,19 +217,23 @@ class Orchestrator:
         prior_results: dict[str, Any],
         on_event=None,
         step_num: int = 0,
+        sem: asyncio.Semaphore | None = None,
     ) -> dict[str, Any]:
         """Execute a single research step by calling the specified tools.
 
+        Tools within a step are independent (dependencies are modeled at the STEP
+        level), so they run CONCURRENTLY, gated by the shared run-wide semaphore.
         Emits a structured {type:"tool", status:"running"|"done"|"error"} event per
         tool call (when on_event is set) so a UI can render each data-source agent
-        lighting up live with a result chip + duration.
+        lighting up live with a result chip + duration. Event ordering across the
+        step's tools is non-deterministic; the UI keys agents by (step, name).
         """
         step_results: dict[str, Any] = {}
         tools = step.get("tools", [])
         task = step.get("description", "")
         prior_ids = _collect_identifiers(prior_results)
 
-        for tool_call in tools:
+        async def _run_one(tool_call: Any) -> None:
             if isinstance(tool_call, str):
                 # Handle Python-style call strings: "get_stock_profile('SMCI')"
                 tool_name, params = _parse_string_tool_call(tool_call)
@@ -245,7 +263,11 @@ class Orchestrator:
                     # call instead of sending a literal "{{...}}" that 404s.
                     result = {"error": "Skipped — required input not produced by earlier steps"}
                 else:
-                    result = await self.tool_registry.call_tool(tool_name, params)
+                    if sem is not None:
+                        async with sem:
+                            result = await self.tool_registry.call_tool(tool_name, params)
+                    else:
+                        result = await self.tool_registry.call_tool(tool_name, params)
                 step_results[tool_name] = result
                 status = "error" if isinstance(result, dict) and result.get("error") else "done"
             except Exception as e:
@@ -268,6 +290,11 @@ class Orchestrator:
                         "ms": int((time.perf_counter() - started) * 1000),
                     }
                 )
+
+        # Run the step's tools concurrently; the semaphore bounds total in-flight
+        # calls across the whole run. return_exceptions keeps one bad tool from
+        # cancelling its siblings (per-tool errors are already caught above).
+        await asyncio.gather(*(_run_one(tc) for tc in tools), return_exceptions=True)
 
         return {
             "description": step.get("description", ""),
@@ -648,6 +675,33 @@ def _coerce_plan_list(plan: Any) -> list[dict[str, Any]]:
             if isinstance(value, list) and any(isinstance(s, dict) for s in value):
                 return [s for s in value if isinstance(s, dict)]
     return []
+
+
+def _cap_plan(
+    plan: list[dict[str, Any]], max_total: int, max_per_step: int = 4
+) -> list[dict[str, Any]]:
+    """Trim a plan's tool fan-out to a hard budget, preserving step structure.
+
+    Caps tools-per-step at ``max_per_step`` and total tools across the plan at
+    ``max_total`` (a verbose decomposition otherwise yields 60+ agents → long
+    execute + truncated synthesis). Steps and their ``depends_on`` are kept so a
+    later step that consumed an earlier one's output still resolves; only the
+    surplus tool calls are dropped. A step trimmed to zero tools is preserved as
+    an empty step (harmless — it just produces no results).
+    """
+    if max_total <= 0:
+        return plan
+    budget = max_total
+    for step in plan:
+        tools = step.get("tools") or []
+        if not isinstance(tools, list):
+            continue
+        keep = tools[: max(0, max_per_step)]
+        if len(keep) > budget:
+            keep = keep[:budget]
+        budget -= len(keep)
+        step["tools"] = keep
+    return plan
 
 
 def _step_tool_names(step: dict[str, Any]) -> list[str]:

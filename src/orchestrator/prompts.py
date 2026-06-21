@@ -145,7 +145,8 @@ IMPORTANT: Always use the {{"name": ..., "parameters": {{...}}}} object format. 
 Group independent steps together so they can be executed in parallel.
 
 Depth requirements for the plan:
-- Use at least 4 steps for any non-trivial question; prefer 5–8 when multiple countries, entities, or channels are implied.
+- Use at least 4 steps for any non-trivial question; aim for **≤ 6 steps**.
+- **No more than 4 tool calls per step.** Pick the highest-signal tools for each step rather than padding with redundant or low-value calls — breadth comes from covering different domains, not from many calls of the same kind.
 - Include **at least one step** aimed at **pressure transmission**: e.g. get_market_exposure, get_institutional_holders, get_bilateral_trade, get_supply_chain_exposure, get_sanctions_proximity, or get_trade_partners — not only narrative search_events.
 - Include **at least one step** aimed at **structure or ownership**: search_entity, get_corporate_tree, get_beneficial_owners, or check_sanctions_status on resolved names.
 - Each step must list concrete tools with filled parameters (real tickers, country names, years, commodity codes where applicable).
