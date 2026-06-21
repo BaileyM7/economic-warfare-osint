@@ -69,10 +69,15 @@ flowchart TB
 1. **`_decompose(query)`** — asks Claude (using `DECOMPOSITION_PROMPT` in
    [src/orchestrator/prompts.py](../src/orchestrator/prompts.py)) to turn the question into a
    research plan: a list of steps, each naming a tool + params, with optional dependencies (a DAG).
-   If Claude's output can't be parsed, **`_fallback_plan(query)`** supplies a deterministic plan.
+   Runs on the faster **`CLAUDE_DECOMPOSE_MODEL`** (Haiku by default; synthesis stays on Sonnet).
+   The plan is then capped by **`_cap_plan`** to `ORCH_MAX_TOOLS` total agents (default 24) so a
+   verbose decomposition can't blow up runtime. If Claude's output can't be parsed,
+   **`_fallback_plan(query)`** supplies a deterministic plan.
 2. **`_execute_plan(plan)`** — runs steps in **topological waves**: independent steps run
-   concurrently via `asyncio.gather`, dependent steps wait. Each step calls
-   **`_execute_step`** → `ToolRegistry.call_tool(name, params)`.
+   concurrently via `asyncio.gather`, dependent steps wait. **Tools within a step also run
+   concurrently**; a single run-wide `asyncio.Semaphore(ORCH_MAX_CONCURRENCY)` (default 8) caps
+   total in-flight tool calls (and peak memory). Each step calls **`_execute_step`** →
+   `ToolRegistry.call_tool(name, params)`.
 3. **`_synthesize(query, tool_results)`** — asks Claude (`SYNTHESIS_PROMPT`) to fuse the raw
    tool results into an `ImpactAssessment`, including a **friendly-fire** section (reverse
    exposure: which US/allied entities are also hit).

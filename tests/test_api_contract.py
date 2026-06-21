@@ -50,6 +50,7 @@ EXPECTED_ROUTES = {
     "POST /api/admin/enrollments/{username}/test-email",
     "POST /api/admin/enrollments/{username}/test-sms",
     "POST /api/analyze",
+    "POST /api/analyze/suggest",
     "POST /api/analyze/sync",
     "POST /api/auth/login",
     "POST /api/briefing",

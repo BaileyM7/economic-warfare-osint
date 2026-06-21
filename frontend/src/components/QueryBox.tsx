@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { HealthResponse } from '../types'
+import { suggestAnalysis } from '../api'
 
 const KNOWN_MAP: Record<string, string> = {
   'alibaba': 'BABA', 'baba': 'BABA',
@@ -61,6 +62,11 @@ export default function QueryBox({ loading, health, onAnalyze, onDeepAnalyze, on
   const [tab, setTab] = useState<Tab>('ask')
   const [entity, setEntity] = useState('')
   const [question, setQuestion] = useState('')
+  // "Did you mean…?" — a near-match warmed query the user can confirm for an
+  // instant replay. We only ever SUGGEST it; the user's own query still runs if
+  // they decline. Null when there's no close match.
+  const [suggestion, setSuggestion] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
 
   const isAsk = tab === 'ask'
   const active = TYPE_OPTIONS.find((o) => o.value === tab)
@@ -70,16 +76,38 @@ export default function QueryBox({ loading, health, onAnalyze, onDeepAnalyze, on
     onAnalyze(tab as EntityType, entity.trim(), question.trim())
   }
 
-  function handleDeep() {
+  function runDeep(text: string) {
+    setSuggestion(null)
+    onDeepAnalyze(text)
+  }
+
+  async function handleDeep() {
     // Deep analysis works on the full free-form question. If empty, fall back to entity.
     const text = question.trim() || entity.trim()
     if (!text) return
-    onDeepAnalyze(text)
+    // On the Ask-Anything tab, first check for a fast-replay near-match. If one
+    // exists, surface a "Did you mean…?" the user confirms — never auto-run it.
+    if (isAsk && !suggestion) {
+      setChecking(true)
+      try {
+        const { suggestion: match } = await suggestAnalysis(text)
+        if (match && match.trim() && match.trim() !== text) {
+          setSuggestion(match)
+          return
+        }
+      } catch {
+        // Suggestion is best-effort; on any error just run the user's query.
+      } finally {
+        setChecking(false)
+      }
+    }
+    runDeep(text)
   }
 
   function handleClear() {
     setEntity('')
     setQuestion('')
+    setSuggestion(null)
     onClear()
   }
 
@@ -142,19 +170,56 @@ export default function QueryBox({ loading, health, onAnalyze, onDeepAnalyze, on
               className="w-full bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-2.5 text-on-surface font-body text-sm placeholder:text-outline focus:ring-0 focus:outline-none resize-none"
               placeholder="e.g. What happens to global semiconductor supply if we sanction Fujian Jinhua?"
               value={question}
-              onChange={(e) => setQuestion(e.target.value)}
+              onChange={(e) => {
+                setQuestion(e.target.value)
+                if (suggestion) setSuggestion(null)
+              }}
               onKeyDown={handleKeyDown}
             />
           </div>
+          {/* "Did you mean…?" — a near-match warmed query that replays instantly.
+              Purely a suggestion: the user can take it or run their own question. */}
+          {suggestion && (
+            <div className="bg-primary-container/40 border border-primary-container rounded-lg px-3 py-2.5 flex items-start gap-2.5">
+              <span className="material-symbols-outlined text-base text-primary mt-0.5">bolt</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-on-surface-variant">
+                  Did you mean{' '}
+                  <button
+                    className="font-semibold text-primary hover:underline text-left"
+                    onClick={() => runDeep(suggestion)}
+                    title="Run this question — returns instantly"
+                  >
+                    “{suggestion}”
+                  </button>
+                  ? <span className="text-outline">— returns instantly.</span>
+                </p>
+                <div className="flex gap-3 mt-1.5">
+                  <button
+                    className="text-[11px] font-bold uppercase tracking-wider text-primary hover:opacity-80"
+                    onClick={() => runDeep(suggestion)}
+                  >
+                    Use it
+                  </button>
+                  <button
+                    className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant hover:opacity-80"
+                    onClick={() => runDeep(question.trim() || entity.trim())}
+                  >
+                    Run mine anyway
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="flex gap-2 pt-1">
             <button
               className="bg-accent text-white px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-accent-hover transition-all disabled:opacity-50"
-              disabled={loading || !question.trim()}
+              disabled={loading || checking || !question.trim()}
               onClick={handleDeep}
               title="Run the multi-agent deep analysis (Ctrl+Enter)"
             >
               <span className="material-symbols-outlined text-sm">hub</span>
-              Run Deep Analysis
+              {checking ? 'Checking…' : 'Run Deep Analysis'}
             </button>
             <button
               className="bg-surface-container border border-outline-variant/30 text-on-surface-variant px-4 py-2 rounded-lg text-sm hover:bg-surface-bright transition-all ml-auto"

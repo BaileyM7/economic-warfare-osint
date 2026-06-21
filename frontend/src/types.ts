@@ -290,6 +290,14 @@ export interface StartAnalysisResponse {
   status: string;
 }
 
+// "Did you mean…?" near-match: the nearest fast-replay query for a close-but-not-
+// exact question, or null. Only ever a suggestion the user confirms — never an
+// auto-answer. Mirrors backend SuggestResponse in src/routers/orchestrator.py.
+export interface SuggestResponse {
+  suggestion: string | null;
+  score: number;
+}
+
 // --- Entity Resolution ---
 
 export interface EntityResolutionResponse {

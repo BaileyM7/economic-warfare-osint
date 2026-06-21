@@ -7,8 +7,11 @@ each tagged with its data domain, a result chip, and a duration.
 
 from __future__ import annotations
 
+import asyncio
+
 from src.orchestrator.main import (
     Orchestrator,
+    _cap_plan,
     _coerce_plan_list,
     _partial_field,
     _collect_identifiers,
@@ -111,6 +114,78 @@ def test_coerce_plan_list_normalizes_llm_shapes():
     # Unusable shapes → empty, so the caller falls back to a basic plan.
     assert _coerce_plan_list("nope") == []
     assert _coerce_plan_list({"unrelated": 1}) == []
+
+
+def test_cap_plan_trims_fanout_preserving_structure():
+    plan = [
+        {"step": 1, "description": "a", "tools": [{"name": f"t{i}"} for i in range(10)]},
+        {
+            "step": 2,
+            "description": "b",
+            "depends_on": [1],
+            "tools": [{"name": f"u{i}"} for i in range(10)],
+        },
+        {"step": 3, "description": "c", "tools": [{"name": f"v{i}"} for i in range(10)]},
+    ]
+    capped = _cap_plan(plan, max_total=10, max_per_step=4)
+    # No step exceeds the per-step cap...
+    assert all(len(s["tools"]) <= 4 for s in capped)
+    # ...and the total across the plan is within the global budget.
+    assert sum(len(s["tools"]) for s in capped) <= 10
+    # Step identity + dependencies are preserved (only surplus tools dropped).
+    assert [s["step"] for s in capped] == [1, 2, 3]
+    assert capped[1]["depends_on"] == [1]
+    # A non-positive budget is a no-op (feature disabled).
+    assert _cap_plan(plan, max_total=0) == plan
+
+
+class _SlowRegistry:
+    """Records max concurrent in-flight calls so a test can prove parallelism."""
+
+    def __init__(self) -> None:
+        self.inflight = 0
+        self.max_inflight = 0
+
+    def tool_domain(self, name: str) -> str:
+        return "market"
+
+    async def call_tool(self, name: str, params: dict):
+        self.inflight += 1
+        self.max_inflight = max(self.max_inflight, self.inflight)
+        await asyncio.sleep(0.02)
+        self.inflight -= 1
+        return {"data": [1], "confidence": "HIGH"}
+
+
+async def test_execute_step_runs_tools_concurrently():
+    orch = Orchestrator.__new__(Orchestrator)
+    reg = _SlowRegistry()
+    orch.tool_registry = reg
+    events: list[dict] = []
+    step = {
+        "step": 1,
+        "description": "fan out",
+        "tools": [{"name": f"t{i}"} for i in range(4)],
+    }
+    sem = asyncio.Semaphore(8)
+    await orch._execute_step(step, {}, on_event=events.append, step_num=1, sem=sem)
+
+    # All four tools completed and each emitted a done event.
+    done = [e for e in events if e["status"] == "done"]
+    assert len(done) == 4
+    # They overlapped — serial execution would cap max_inflight at 1.
+    assert reg.max_inflight > 1
+
+
+async def test_execute_step_respects_semaphore_limit():
+    orch = Orchestrator.__new__(Orchestrator)
+    reg = _SlowRegistry()
+    orch.tool_registry = reg
+    step = {"step": 1, "description": "x", "tools": [{"name": f"t{i}"} for i in range(6)]}
+    sem = asyncio.Semaphore(2)
+    await orch._execute_step(step, {}, on_event=lambda e: None, step_num=1, sem=sem)
+    # The shared semaphore caps concurrency at 2 even with 6 tools queued.
+    assert reg.max_inflight <= 2
 
 
 def test_step_tool_names_handles_dict_and_string_calls():
