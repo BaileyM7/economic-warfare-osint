@@ -49,14 +49,6 @@ const TABS: { value: Tab; label: string; icon: string }[] = [
   ...TYPE_OPTIONS.map((o) => ({ value: o.value as Tab, label: o.label, icon: o.icon })),
 ]
 
-// One-click starter prompts for the Ask-Anything box — onboarding + reliable demo paths.
-const EXAMPLE_QUERIES = [
-  'What happens to global semiconductor supply if we sanction Fujian Jinhua?',
-  'Who ultimately owns Nuctech, and what are its sanctions exposures?',
-  'How exposed is the drone supply chain to a DJI export ban?',
-  'Map Rosatom’s subsidiaries and their Western trade links.',
-]
-
 interface Props {
   loading: boolean
   health: HealthResponse | null
@@ -153,20 +145,6 @@ export default function QueryBox({ loading, health, onAnalyze, onDeepAnalyze, on
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={handleKeyDown}
             />
-          </div>
-          <div className="flex flex-wrap gap-1.5 items-center">
-            <span className="text-[10px] font-headline uppercase tracking-wider text-outline mr-0.5">Try</span>
-            {EXAMPLE_QUERIES.map((q) => (
-              <button
-                key={q}
-                type="button"
-                onClick={() => setQuestion(q)}
-                title={q}
-                className="text-[11px] text-on-surface-variant bg-surface-container hover:bg-surface-container-high border border-outline-variant/30 rounded-full px-2.5 py-1 transition-all"
-              >
-                {q.length > 48 ? q.slice(0, 46) + '…' : q}
-              </button>
-            ))}
           </div>
           <div className="flex gap-2 pt-1">
             <button
