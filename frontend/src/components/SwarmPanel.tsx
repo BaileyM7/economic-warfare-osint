@@ -113,15 +113,32 @@ export default function SwarmPanel({ events, loading }: Props) {
       agents: [...agents.values()].filter((a) => a.step === step),
     }))
 
-    // Phase stepper state.
-    const stageStatus: Record<string, 'idle' | 'active' | 'done'> = {}
-    for (const stage of STAGES) {
-      const started = events.some((e) => e.type === 'phase' && e.name === stage && e.status === 'start')
-      const finished = events.some((e) => e.type === 'phase' && e.name === stage && e.status === 'done')
-      stageStatus[stage] = finished ? 'done' : started ? 'active' : 'idle'
-    }
+    // Phase stepper state — exactly ONE stage is "active" at a time: the
+    // furthest-along phase that has started. Earlier phases show "done", later
+    // ones "idle". Derived purely from the ORDER of phase `start` events (the
+    // backend emits start-per-phase + a single final `complete`, no per-phase
+    // `done`), so this also works on cached/warmed replays without re-warming.
     const complete = events.some((e) => e.type === 'phase' && e.name === 'complete')
-    if (complete) for (const stage of STAGES) stageStatus[stage] = 'done'
+    let currentIdx = -1
+    STAGES.forEach((stage, i) => {
+      if (events.some((e) => e.type === 'phase' && e.name === stage && e.status === 'start')) {
+        currentIdx = i
+      }
+    })
+    const stageStatus: Record<string, 'idle' | 'active' | 'done'> = {}
+    STAGES.forEach((stage, i) => {
+      // Respect an explicit per-phase `done` if the backend ever emits one.
+      const explicitlyDone = events.some(
+        (e) => e.type === 'phase' && e.name === stage && e.status === 'done',
+      )
+      if (complete || explicitlyDone || i < currentIdx) {
+        stageStatus[stage] = 'done'
+      } else if (i === currentIdx) {
+        stageStatus[stage] = 'active'
+      } else {
+        stageStatus[stage] = 'idle'
+      }
+    })
 
     const all = [...agents.values()]
     const doneCount = all.filter((a) => a.status === 'done' || a.status === 'error').length
@@ -231,18 +248,35 @@ export default function SwarmPanel({ events, loading }: Props) {
           <div className="flex items-center gap-2">
             {STAGES.map((stage, i) => {
               const st = stageStatus[stage]
+              // Glyph makes the single current step unmistakable: ✓ finished,
+              // ● (pulsing) running now, ○ not started. Only the one active
+              // stage pulses — finished stages read as done, not "still going".
+              const glyph = st === 'done' ? '✓' : st === 'active' ? '●' : '○'
               return (
                 <div key={stage} className="flex items-center gap-2">
-                  <span
-                    className={`font-mono text-[10px] uppercase tracking-wider ${
-                      st === 'done'
-                        ? 'text-on-surface'
-                        : st === 'active'
-                          ? 'text-accent-bright animate-pulse-glow'
-                          : 'text-outline'
-                    }`}
-                  >
-                    {stage}
+                  <span className="flex items-center gap-1">
+                    <span
+                      className={`text-[10px] leading-none ${
+                        st === 'done'
+                          ? 'text-secondary'
+                          : st === 'active'
+                            ? 'text-accent-bright animate-pulse-glow'
+                            : 'text-outline-variant'
+                      }`}
+                    >
+                      {glyph}
+                    </span>
+                    <span
+                      className={`font-mono text-[10px] uppercase tracking-wider ${
+                        st === 'done'
+                          ? 'text-on-surface-variant'
+                          : st === 'active'
+                            ? 'text-accent-bright font-bold animate-pulse-glow'
+                            : 'text-outline'
+                      }`}
+                    >
+                      {stage}
+                    </span>
                   </span>
                   {i < STAGES.length - 1 && <span className="text-outline-variant text-[10px]">›</span>}
                 </div>
