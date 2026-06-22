@@ -1,9 +1,11 @@
 """Watchlist entity resolution — Sayari integration (Mike feedback #2).
 
 Adding an entity to the Risk Feed should resolve it via Sayari (strong on
-non-US / offshore / shell entities), not just the fuzzy sanctions search. These
-tests pin that a confident Sayari hit drives the suggestion, and that the flow
-degrades gracefully when Sayari is unavailable.
+non-US / offshore / shell entities), not just the fuzzy sanctions search. The
+gate trusts Sayari's OWN `match_strength` verdict (so a confident non-Latin
+canonical name still wins) and never replaces the user's recognizable typed
+name with a non-Latin legal name. These tests pin that behavior and the
+graceful-degradation path.
 """
 
 from __future__ import annotations
@@ -11,22 +13,34 @@ from __future__ import annotations
 import src.routers.watchlist as wl
 
 
-class _FakeSayariEntity:
-    label = "Nuctech Company Limited"
-    entity_id = "abc123def456"
-    type = "company"
-    country = "CHN"
-    sanctioned = True
-    pep = False
+def _entity(**kw):
+    """Build a stand-in Sayari entity with sensible defaults."""
+    defaults = dict(
+        label="",
+        entity_id="id-x",
+        type="company",
+        country="CHN",
+        sanctioned=False,
+        pep=False,
+        match_strength=None,
+    )
+    defaults.update(kw)
+    return type("FakeSayariEntity", (), defaults)()
 
 
-class _FakeSayariResult:
-    entities = [_FakeSayariEntity()]
+def _patch_sayari(monkeypatch, entity):
+    class _FakeSayariClient:
+        async def resolve(self, name, limit=3, entity_type=None):
+            return type("R", (), {"entities": [entity] if entity else []})()
+
+    monkeypatch.setattr(
+        "src.tools.sayari.rest_client.get_sayari_client", lambda: _FakeSayariClient()
+    )
 
 
 def _stub_non_sayari_resolvers(monkeypatch):
-    """Make OFAC/CSL/GDELT return nothing (no network in tests) so the Sayari
-    path is exercised in isolation."""
+    """OFAC/CSL/GDELT return nothing (no network in tests) so the Sayari path is
+    exercised in isolation."""
 
     class _FakeOFAC:
         async def search(self, name):
@@ -40,81 +54,89 @@ def _stub_non_sayari_resolvers(monkeypatch):
     monkeypatch.setattr(wl, "gdelt_doc_search", _empty)
 
 
-def test_resolve_uses_sayari_canonical_name(app_client, auth_headers, monkeypatch):
-    class _FakeSayariClient:
-        async def resolve(self, name, limit=3, entity_type=None):
-            return _FakeSayariResult()
+def _resolve(app_client, auth_headers, name):
+    r = app_client.post("/api/watchlist/resolve", json={"name": name}, headers=auth_headers)
+    assert r.status_code == 200
+    return r.json()
 
-    monkeypatch.setattr(
-        "src.tools.sayari.rest_client.get_sayari_client", lambda: _FakeSayariClient()
+
+def test_resolve_uses_sayari_canonical_name_on_latin_match(app_client, auth_headers, monkeypatch):
+    # Latin canonical name containing the user's tokens → use it (high).
+    _patch_sayari(
+        monkeypatch,
+        _entity(
+            label="Nuctech Company Limited",
+            entity_id="abc",
+            sanctioned=True,
+            match_strength="strong",
+        ),
     )
     _stub_non_sayari_resolvers(monkeypatch)
-
-    r = app_client.post("/api/watchlist/resolve", json={"name": "Nuctech"}, headers=auth_headers)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["resolved"] is True
-    # Sayari's canonical label replaces the user's typed name...
+    body = _resolve(app_client, auth_headers, "Nuctech")
+    assert body["resolved"] is True and body["confidence"] == "high"
     assert body["suggestion"]["label"] == "Nuctech Company Limited"
-    # ...and a sanctioned company lands in the company_sanctions lane.
     assert body["suggestion"]["category"] == "company_sanctions"
-    assert body["confidence"] == "high"
-    # Sayari evidence is surfaced (with entity_id + risk flags).
-    sayari_ev = next(e for e in body["evidence"] if e["kind"] == "sayari")
-    assert sayari_ev["entity_id"] == "abc123def456"
-    assert sayari_ev["sanctioned"] is True
-    assert sayari_ev["strong_match"] is True
+    ev = next(e for e in body["evidence"] if e["kind"] == "sayari")
+    assert ev["entity_id"] == "abc" and ev["strong_match"] is True
+
+
+def test_resolve_strong_verdict_keeps_typed_name_for_nonlatin(
+    app_client, auth_headers, monkeypatch
+):
+    # Sayari is confident ("strong") but the canonical label is non-Latin → trust
+    # the resolution (high) but KEEP the user's recognizable typed name.
+    _patch_sayari(
+        monkeypatch,
+        _entity(
+            label="同方威视技术股份有限公司",
+            match_strength="strong",
+            sanctioned=False,
+            type="company",
+        ),
+    )
+    _stub_non_sayari_resolvers(monkeypatch)
+    body = _resolve(app_client, auth_headers, "Nuctech")
+    assert body["resolved"] is True and body["confidence"] == "high"
+    assert body["suggestion"]["label"] == "Nuctech"  # NOT the Chinese legal name
+    assert body["suggestion"]["category"] == "markets"  # company, not sanctioned
+    ev = next(e for e in body["evidence"] if e["kind"] == "sayari")
+    assert ev["match_strength"] == "strong"
+
+
+def test_resolve_probable_weak_keeps_name_but_categorizes(app_client, auth_headers, monkeypatch):
+    # A weak/possible Sayari candidate (non-US entity not on any US list) →
+    # resolved MEDIUM, typed name kept, category from Sayari type + sanction flag.
+    _patch_sayari(
+        monkeypatch,
+        _entity(label="某外国公司", match_strength="weak", sanctioned=True, type="company"),
+    )
+    _stub_non_sayari_resolvers(monkeypatch)
+    body = _resolve(app_client, auth_headers, "Sinco Holdings Ltd")
+    assert body["resolved"] is True and body["confidence"] == "medium"
+    assert body["suggestion"]["label"] == "Sinco Holdings Ltd"
+    assert body["suggestion"]["category"] == "company_sanctions"  # Sayari says sanctioned
+
+
+def test_resolve_weak_never_hijacks_label(app_client, auth_headers, monkeypatch):
+    # Even a weak match whose label is unrelated must never become the suggestion
+    # label (guards against a wildly-off top result hijacking the user's intent).
+    _patch_sayari(
+        monkeypatch,
+        _entity(label="Completely Different Corp", match_strength="weak", type="company"),
+    )
+    _stub_non_sayari_resolvers(monkeypatch)
+    body = _resolve(app_client, auth_headers, "Nuctech")
+    assert body["suggestion"]["label"] != "Completely Different Corp"
+    ev = next(e for e in body["evidence"] if e["kind"] == "sayari")
+    assert ev["strong_match"] is False
 
 
 def test_resolve_degrades_gracefully_when_sayari_unavailable(app_client, auth_headers, monkeypatch):
-    """Sayari creds absent / API error must not break resolution — it just
-    falls through to the existing signals (here: nothing → unresolved)."""
-
     def _boom():
         raise RuntimeError("no Sayari credentials")
 
     monkeypatch.setattr("src.tools.sayari.rest_client.get_sayari_client", _boom)
     _stub_non_sayari_resolvers(monkeypatch)
-
-    r = app_client.post(
-        "/api/watchlist/resolve", json={"name": "Obscure Shell Co"}, headers=auth_headers
-    )
-    assert r.status_code == 200
-    body = r.json()
-    # No crash; no Sayari evidence; still returns a trackable suggestion.
+    body = _resolve(app_client, auth_headers, "Obscure Shell Co")
     assert "suggestion" in body
     assert not any(e.get("kind") == "sayari" for e in body.get("evidence", []))
-
-
-def test_resolve_skips_sayari_override_on_weak_match(app_client, auth_headers, monkeypatch):
-    """A Sayari result whose label does NOT contain the user's tokens must not
-    hijack the suggestion (guards against a wildly-off top result)."""
-
-    class _OffEntity:
-        label = "Completely Different Corp"
-        entity_id = "zzz"
-        type = "company"
-        country = "USA"
-        sanctioned = False
-        pep = False
-
-    class _OffResult:
-        entities = [_OffEntity()]
-
-    class _FakeSayariClient:
-        async def resolve(self, name, limit=3, entity_type=None):
-            return _OffResult()
-
-    monkeypatch.setattr(
-        "src.tools.sayari.rest_client.get_sayari_client", lambda: _FakeSayariClient()
-    )
-    _stub_non_sayari_resolvers(monkeypatch)
-
-    r = app_client.post("/api/watchlist/resolve", json={"name": "Nuctech"}, headers=auth_headers)
-    assert r.status_code == 200
-    body = r.json()
-    # Sayari evidence is recorded (strong_match False), but it did NOT override
-    # the suggestion label — the weak match is not treated as canonical.
-    sayari_ev = next((e for e in body["evidence"] if e["kind"] == "sayari"), None)
-    assert sayari_ev is not None and sayari_ev["strong_match"] is False
-    assert body["suggestion"]["label"] != "Completely Different Corp"
