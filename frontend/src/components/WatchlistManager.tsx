@@ -497,12 +497,10 @@ function evidenceLabel(ev: { kind: string; [k: string]: unknown }): string {
       const type = (ev.type as string | undefined) ?? '';
       const matchedName = (ev.name as string | undefined) ?? '';
       const strong = ev.strong_match === true;
-      const score = typeof ev.score === 'number' ? (ev.score as number) : null;
-      const scoreLabel = score !== null ? ` · score ${score.toFixed(2)}` : '';
-      if (strong) {
-        return `OFAC SDN match (${type}): ${matchedName}${scoreLabel}`;
-      }
-      return `OFAC SDN partial match — "${matchedName}" (${type})${scoreLabel} · likely unrelated, ignored`;
+      // Strong = a real sanctions hit; show the canonical name. A weak/fuzzy hit
+      // was discarded, so render a calm "no direct match" instead of the
+      // confusing partial name + score, which read to users as a false alarm.
+      return strong ? `OFAC SDN match (${type}): ${matchedName}` : 'OFAC SDN — no direct match';
     }
     case 'csl': {
       const source = (ev.source as string | undefined) ?? 'CSL';
@@ -512,9 +510,53 @@ function evidenceLabel(ev: { kind: string; [k: string]: unknown }): string {
       const articles = (ev.articles as { date: string | null }[] | undefined) ?? [];
       return `GDELT: ${articles.length} recent article${articles.length === 1 ? '' : 's'}`;
     }
+    case 'sayari': {
+      // Surface Sayari's resolution detail (type · country · risk flags) instead
+      // of a bare "sayari" — this is the richer entity intelligence the analyst
+      // is meant to see (Mike feedback #2).
+      const type = (ev.type as string | undefined) ?? '';
+      const country = (ev.country as string | undefined) ?? '';
+      const bits = [type, country ? countryName(country) : ''].filter(Boolean);
+      if (ev.sanctioned === true) bits.push('sanctioned');
+      if (ev.pep === true) bits.push('PEP');
+      return `Sayari Graph${bits.length ? ` — ${bits.join(' · ')}` : ' resolved'}`;
+    }
     default:
       return ev.kind;
   }
+}
+
+// Sayari returns ISO alpha-3 country codes; map the common ones to readable
+// names (falls back to the raw code for anything not listed).
+const COUNTRY_NAMES: Record<string, string> = {
+  IND: 'India',
+  CHN: 'China',
+  HKG: 'Hong Kong',
+  ARE: 'UAE',
+  CYM: 'Cayman Islands',
+  VGB: 'British Virgin Islands',
+  RUS: 'Russia',
+  USA: 'United States',
+  GBR: 'United Kingdom',
+  SGP: 'Singapore',
+  IRN: 'Iran',
+  PRK: 'North Korea',
+  TUR: 'Turkey',
+  DEU: 'Germany',
+  FRA: 'France',
+  NLD: 'Netherlands',
+  CHE: 'Switzerland',
+  JPN: 'Japan',
+  KOR: 'South Korea',
+  TWN: 'Taiwan',
+  PAN: 'Panama',
+  SAU: 'Saudi Arabia',
+  MYS: 'Malaysia',
+  VNM: 'Vietnam',
+};
+
+function countryName(code: string): string {
+  return COUNTRY_NAMES[code.toUpperCase()] ?? code;
 }
 
 // ---------------------------------------------------------------------------
