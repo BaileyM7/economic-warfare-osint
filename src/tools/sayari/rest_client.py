@@ -119,6 +119,14 @@ class SayariClient:
         if isinstance(sources, list):
             sources = [s if isinstance(s, str) else s.get("name", str(s)) for s in sources]
 
+        # Resolution responses carry Sayari's own match quality — `match_strength`
+        # is `{"value": "strong"|"weak"|"possible"}` and `score` is numeric. Absent
+        # on traversal/profile payloads (stay None there).
+        ms_raw = raw.get("match_strength")
+        match_strength = ms_raw.get("value") if isinstance(ms_raw, dict) else ms_raw
+        score_raw = raw.get("score")
+        match_score = float(score_raw) if isinstance(score_raw, (int, float)) else None
+
         return SayariEntity(
             entity_id=eid,
             label=label,
@@ -129,6 +137,8 @@ class SayariClient:
             sources=sources,
             pep=bool(raw.get("pep")),
             sanctioned=bool(raw.get("sanctioned") or raw.get("is_sanctioned")),
+            match_strength=match_strength if isinstance(match_strength, str) else None,
+            match_score=match_score,
         )
 
     # ── resolve ───────────────────────────────────────────────────────────

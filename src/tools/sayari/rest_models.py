@@ -17,6 +17,10 @@ class SayariEntity(BaseModel):
     sources: list[str] = Field(default_factory=list)
     pep: bool = False
     sanctioned: bool = False
+    # Resolution-only signals (None for traversal/profile lookups): Sayari's own
+    # match-quality verdict ("strong"|"weak"|"possible") and its numeric score.
+    match_strength: str | None = None
+    match_score: float | None = None
 
 
 class SayariRelationship(BaseModel):
