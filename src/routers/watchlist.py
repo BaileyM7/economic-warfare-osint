@@ -405,8 +405,22 @@ async def resolve_watchlist_entity(
             )
         return out
 
-    ticker_hit, ofac_hit, csl_hit, gdelt_hits = await asyncio.gather(
-        _check_ticker(), _check_ofac(), _check_csl(), _check_gdelt()
+    async def _check_sayari() -> object | None:
+        """Resolve via Sayari — strong exactly where OFAC's fuzzy search is weak
+        (non-US companies, offshore vehicles, shell structures, obscure
+        intermediaries). Returns the top resolved entity or None; degrades
+        gracefully when Sayari creds are absent or the call fails."""
+        try:
+            from src.tools.sayari.rest_client import get_sayari_client
+
+            result = await get_sayari_client().resolve(name, limit=3)
+        except Exception:
+            return None
+        entities = getattr(result, "entities", None) or []
+        return entities[0] if entities else None
+
+    ticker_hit, ofac_hit, csl_hit, gdelt_hits, sayari_hit = await asyncio.gather(
+        _check_ticker(), _check_ofac(), _check_csl(), _check_gdelt(), _check_sayari()
     )
 
     # OFAC's fuzzy threshold (0.3) is too loose to drive UX decisions, and
@@ -446,6 +460,25 @@ async def resolve_watchlist_entity(
         evidence.append({"kind": "csl", "source": csl_hit})
     if gdelt_hits:
         evidence.append({"kind": "gdelt", "articles": gdelt_hits})
+    # Sayari resolution — richer entity intelligence than the sanctions-list
+    # fuzzy search; carries a canonical label, entity type, country, and risk
+    # flags. A label that contains all of the user's significant tokens is a
+    # strong, confident resolution (used to drive the suggestion below).
+    sayari_label = (getattr(sayari_hit, "label", "") or "").strip() if sayari_hit else ""
+    sayari_strong = bool(sayari_label) and _ofac_strong(name, sayari_label)
+    if sayari_hit is not None and sayari_label:
+        evidence.append(
+            {
+                "kind": "sayari",
+                "name": sayari_label,
+                "entity_id": getattr(sayari_hit, "entity_id", None),
+                "type": getattr(sayari_hit, "type", None),
+                "country": getattr(sayari_hit, "country", None),
+                "sanctioned": bool(getattr(sayari_hit, "sanctioned", False)),
+                "pep": bool(getattr(sayari_hit, "pep", False)),
+                "strong_match": sayari_strong,
+            }
+        )
 
     # Tickers are deterministic — yfinance returning a profile with structural
     # fields is a clean override; we use the ticker's long_name as the label.
@@ -481,7 +514,34 @@ async def resolve_watchlist_entity(
             "confidence": "high",
         }
 
-    # Weak OFAC match (or no OFAC hit) — keep the user's typed name as
+    # Strong Sayari resolution → use its canonical name + type. This is the
+    # entity-resolution upgrade: it confidently resolves the non-US / offshore /
+    # shell entities the fuzzy sanctions search misses. Category comes from
+    # Sayari's entity type plus its sanction flag (a sanctioned company/person
+    # lands in the matching *_sanctions lane; otherwise track as a news query).
+    if sayari_strong:
+        s_type = (getattr(sayari_hit, "type", "") or "").lower()
+        s_sanctioned = bool(getattr(sayari_hit, "sanctioned", False))
+        if s_type == "person":
+            category = "people_sanctions" if s_sanctioned else "markets"
+        elif s_sanctioned:
+            category = "company_sanctions"
+        else:
+            category = "markets"
+        suggestion = {
+            "label": sayari_label,
+            "query": sayari_label,
+            "entity_kind": "gdelt_query",
+            "category": category,
+        }
+        return {
+            "resolved": True,
+            "suggestion": suggestion,
+            "evidence": evidence,
+            "confidence": "high",
+        }
+
+    # Weak OFAC match (or no OFAC/Sayari hit) — keep the user's typed name as
     # canonical. Category falls through to GDELT/CSL signals or a markets
     # default.
     if csl_hit:
@@ -517,13 +577,15 @@ async def resolve_watchlist_entity(
     # (maybe coverage will appear later) but flag low confidence.
     return {
         "resolved": False,
+        # Preserve any collected evidence (e.g. a weak/uncertain Sayari candidate)
+        # so the UI can show "closest match we found" rather than nothing.
         "suggestion": {
             "label": name,
             "query": name,
             "entity_kind": "gdelt_query",
             "category": "markets",
         },
-        "evidence": [],
+        "evidence": evidence,
         "hint": (
             "Couldn't confirm this entity from sanctions lists, market data, or recent "
             "news. You can still track it as a news query — the feed will surface "
