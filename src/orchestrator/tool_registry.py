@@ -147,6 +147,23 @@ class ToolRegistry:
         except ImportError as e:
             print(f"  Warning: news tools not available: {e}")
 
+        try:
+            from src.tools.graph.server import (
+                graph_find_paths,
+                graph_list_entities,
+                graph_neighbors,
+                graph_save_entity,
+                graph_save_relationship,
+            )
+
+            self._tools["graph_save_entity"] = graph_save_entity
+            self._tools["graph_save_relationship"] = graph_save_relationship
+            self._tools["graph_list_entities"] = graph_list_entities
+            self._tools["graph_neighbors"] = graph_neighbors
+            self._tools["graph_find_paths"] = graph_find_paths
+        except ImportError as e:
+            print(f"  Warning: graph tools not available: {e}")
+
         self._loaded = True
         print(f"  Loaded {len(self._tools)} tools")
 

@@ -1,42 +1,10 @@
 import { useRef, useState } from 'react'
 import { copyAssessment, downloadAssessmentPdf } from '../lib/exportAssessment'
-import type { GraphEdge, GraphNode, ImpactAssessmentResult } from '../types'
-import GraphViewer from './GraphViewer'
+import type { ImpactAssessmentResult } from '../types'
 import DebugPanel from './DebugPanel'
 import FollowUpBar from './FollowUpBar'
-
-const ENTITY_GROUP_COLOR: Record<string, string> = {
-  company: '#4386c3',
-  person: '#a9d8fb',
-  government: '#d23c3a',
-  vessel: '#0092ff',
-  sanctions_list: '#ff5a58',
-  sector: '#efb16a',
-}
-
-function assessmentGraphToVis(data: ImpactAssessmentResult): { nodes: GraphNode[]; edges: GraphEdge[] } | null {
-  const eg = data.entity_graph
-  if (!eg?.entities?.length) return null
-  const nodes: GraphNode[] = eg.entities.map((e) => {
-    const group = e.entity_type || 'company'
-    const color = ENTITY_GROUP_COLOR[group] ?? 'rgba(255,255,255,0.7)'
-    return {
-      id: e.id,
-      label: e.name.length > 42 ? `${e.name.slice(0, 40)}\u2026` : e.name,
-      title: `${e.name}\n${group}${e.country ? ` \u00B7 ${e.country}` : ''}`,
-      group,
-      color,
-    }
-  })
-  const edges: GraphEdge[] = (eg.relationships ?? []).map((r) => ({
-    from: r.source_id,
-    to: r.target_id,
-    label: r.relationship_type.replace(/_/g, ' '),
-    arrows: 'to',
-    dashes: true,
-  }))
-  return { nodes, edges }
-}
+// The orchestrator entity graph is now rendered by the unified EntityGraphSection
+// panel on SearchPage (#34), so this view no longer draws its own graph.
 
 interface Props {
   data: ImpactAssessmentResult
@@ -68,7 +36,6 @@ export default function OrchestratorView({
   coaButtonLabel,
 }: Props) {
   const scenarioLabel = data.scenario_type.replace(/_/g, ' ')
-  const visGraph = assessmentGraphToVis(data)
   const rootRef = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)
   const [pdfBusy, setPdfBusy] = useState(false)
@@ -210,17 +177,6 @@ export default function OrchestratorView({
           )}
         </div>
       </div>
-
-      {visGraph && visGraph.nodes.length > 0 && (
-        <div className="mt-6">
-          <div className="text-sm text-outline uppercase tracking-wider mb-3 pb-2 border-b border-outline-variant/10">
-            Orchestrator entity graph
-          </div>
-          <div className="bg-surface-container-lowest border border-outline-variant/10 rounded-lg h-[420px] relative mb-3">
-            <GraphViewer nodes={visGraph.nodes} edges={visGraph.edges} />
-          </div>
-        </div>
-      )}
 
       {/* Sources */}
       {data.sources.length > 0 && (

@@ -81,7 +81,7 @@ the bottom group of routers above (same paths, same `require_auth` applied at in
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/api/sanctions-impact` | Deterministic stock-impact projection (13 historical comparables) |
-| POST | `/api/entity-graph` | Build vis.js entity graph for a query |
+| POST | `/api/entity-graph` | Build vis.js entity graph for a query. Nodes carry opt-in viz hints (`value` → size by connectivity, `riskLevel`) and edges a `width` (tie strength); `meta.summary` gives counts by type + sanctioned/high-risk digest (issue #28). All hint fields are additive — older clients ignore them |
 | POST | `/api/resolve-entity` | Classify text → entity type + confidence |
 | POST | `/api/person-profile` | Person dossier: affiliations, offshore, risk factors |
 | POST | `/api/person/search` | Person candidate search |
@@ -93,6 +93,11 @@ the bottom group of routers above (same paths, same `require_auth` applied at in
 | POST | `/api/sayari/resolve` | Sayari entity resolution (premium) |
 | POST | `/api/sayari/related` | Sayari relationship traversal |
 | POST | `/api/sayari/ubo` | Sayari ultimate beneficial owners |
+| POST/GET/DELETE | `/api/knowledge/entities`[`/{entity_id}`] | Persistent graph knowledge store (issue #29) — **team-wide/shared** saved entities of any type; upsert deduped on `entity_id`, `created_by` records provenance |
+| POST/GET/DELETE | `/api/knowledge/edges`[`/{edge_id}`] | Saved relationships (deduped on source+target+type); delete of an entity cascades to its incident edges |
+| GET | `/api/knowledge/graph` | The whole saved store as a vis.js graph (reuses the shared `node()` factory), ready to load into GraphViewer |
+| POST | `/api/discover-actions` | Target generation (issue #31): given an entity + an optional proposed action, suggest additional non-conflicting actions, grounded in the entity's knowledge-graph neighbors. Degrades to graph-context-only when no LLM client is configured |
+| POST | `/api/entity/similar` | Semantic similarity / link prediction (issue #30): "find entities with similar characteristics." Ranks saved entities vs a target (by `entity_id` or ad-hoc `name`) with an explainable basis. Backend is `lexical` (default, offline) or `embedding` (local sentence-transformers, `similarity` extra); embedding falls back to lexical when the dep is absent |
 
 ### Dashboard — COA, briefings, monitoring (auth)
 | Method | Path | Purpose |
@@ -128,6 +133,7 @@ the bottom group of routers above (same paths, same `require_auth` applied at in
 | DELETE | `/api/admin/enrollments/{username}` | Unenroll |
 | POST | `/api/admin/enrollments/{username}/test-sms` | Send a test SMS |
 | POST | `/api/admin/enrollments/{username}/test-email` | Send a test email |
+| POST/DELETE | `/api/priorities`[`/{id}`] | Set / remove a team-wide collection priority (issue #32) at country/sector/company level, with a weight that boosts matching risk-feed items. **Writes are admin-only; `GET /api/priorities` is readable by any analyst** (the priorities are global/shared) |
 
 ### Notifications (cron token / webhook, not bearer auth)
 | Method | Path | Purpose |
@@ -152,7 +158,9 @@ double up. Documented in detail in [07-submodules/swarm-wargame.md](07-submodule
 
 - **SQLite** ([src/db.py](../src/db.py)) — `data/emissary.db`. Tables: `coas`, `briefings`,
   `exercises`, `injects`, `activity_log`, `usage_events`, `watchlist_items`, `users`,
-  `notification_log`. Raw SQL via `get_db()`; `init_db()` is idempotent; `seed_mock_data()`
+  `notification_log`, `saved_entities`, `saved_edges` (the issue-#29 knowledge store),
+  `priorities` (issue-#32 team priorities). Raw SQL via `get_db()`; `init_db()` is
+  idempotent; `seed_mock_data()`
   loads demo data when `EMISSARY_MOCK_DATA` is set — **seed-only-if-empty** (takes a `force=`
   param) so deploys no longer wipe analyst-created data.
 - **In-memory stores** — `_analyses` (analysis status/results) now lives in

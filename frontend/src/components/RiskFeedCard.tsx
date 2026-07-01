@@ -99,6 +99,15 @@ export default function RiskFeedCard({ item, busy, onAction }: Props) {
           </span>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
+          {item.priority_weight != null && (
+            <span
+              className="px-2 py-0.5 rounded-full text-[10px] font-semibold border border-primary/40 bg-primary-container/30 text-primary whitespace-nowrap uppercase tracking-wider flex items-center gap-1"
+              title={`Boosted by a team collection priority (weight ${item.priority_weight})`}
+            >
+              <span className="material-symbols-outlined text-[11px]">push_pin</span>
+              Priority
+            </span>
+          )}
           <ProvenanceBadge itemId={item.id} />
           <span
             className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap uppercase tracking-wider ${chip}`}

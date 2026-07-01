@@ -59,7 +59,7 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
         if nid and name and nid not in nodes:
             nodes[nid] = _node(nid, name, etype, country, sayari_id=sayari_id)
 
-    def add_edge(src: str, tgt: str, label: str, dashes: bool = False) -> None:
+    def add_edge(src: str, tgt: str, label: str, dashes: bool = False, weight: int = 2) -> None:
         if src in nodes and tgt in nodes and src != tgt:
             key = f"{src}→{tgt}→{label}"
             if key not in edges:
@@ -69,6 +69,9 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
                     "label": label.replace("_", " "),
                     "arrows": "to",
                     "dashes": dashes,
+                    # `width` drives edge thickness on the frontend (issue #28):
+                    # strong corporate ties read heavier than weak/dashed links.
+                    "width": weight,
                 }
 
     def slug(s: str) -> str:
@@ -102,7 +105,7 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
         add_node(nid, name, "company", country)
         # Connect to query root if not the same
         if nid != main_id:
-            add_edge(main_id, nid, "subsidiary", dashes=False)
+            add_edge(main_id, nid, "subsidiary", dashes=False, weight=4)
 
     # Fetch parent relationships for each LEI
     parent_tasks = []
@@ -128,9 +131,9 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
             add_node(parent_nid, f"Parent ({parent_lei[:12]}…)", "company")
 
         if parent_nid and child_nid:
-            add_edge(child_nid, parent_nid, rel_type)
+            add_edge(child_nid, parent_nid, rel_type, weight=4)
         elif parent_nid and main_id:
-            add_edge(main_id, parent_nid, rel_type)
+            add_edge(main_id, parent_nid, rel_type, weight=4)
 
     # ── 2. OFAC sanctions network ─────────────────────────────────────────
     try:
@@ -141,7 +144,7 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
         for entry in strong_ofac[:10]:
             eid = f"ofac_{slug(entry.name)}"
             add_node(eid, entry.name, "sanctions_list")
-            add_edge(main_id, eid, "OFAC SDN", dashes=True)
+            add_edge(main_id, eid, "OFAC SDN", dashes=True, weight=1)
 
             # Parse "Linked To:" from remarks to build sanctions network
             if entry.remarks and "Linked To:" in entry.remarks:
@@ -153,19 +156,19 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
                     if linked_name:
                         lid = f"linked_{slug(linked_name)}"
                         add_node(lid, linked_name, "sanctions_list")
-                        add_edge(eid, lid, "linked to")
+                        add_edge(eid, lid, "linked to", weight=1)
     except Exception as exc:
         logger.warning("OFAC graph lookup failed: %s", type(exc).__name__)
 
     # ── 3. Sector comparable peers ────────────────────────────────────────
     sector_id = f"sector_{slug(query)}"
     add_node(sector_id, "Sanctioned Peers", "sector")
-    add_edge(main_id, sector_id, "sector analysis")
+    add_edge(main_id, sector_id, "sector analysis", weight=2)
 
     for comp in SANCTIONS_COMPARABLES[:8]:
         comp_id = f"comp_{slug(comp['name'])}"
         add_node(comp_id, f"{comp['name']} ({comp['ticker']})", "company")
-        add_edge(sector_id, comp_id, "comparable")
+        add_edge(sector_id, comp_id, "comparable", weight=1)
 
     # ── 4. Sayari entity resolution (enrich main node with sayariId) ──────
     if config.sayari_client_id and config.sayari_client_secret:
@@ -212,12 +215,49 @@ async def _build_entity_graph(query: str) -> tuple[list[dict], list[dict]]:
                 nid, is_sanctioned, programs = r
                 if is_sanctioned and nid in nodes:
                     nodes[nid]["color"] = "#F85149"
+                    nodes[nid]["riskLevel"] = "HIGH"
                     old_title = nodes[nid].get("title", "")
                     nodes[nid]["title"] = old_title + "\nSANCTIONED"
                     if programs:
                         nodes[nid]["title"] += f" ({', '.join(programs[:3])})"
 
+    # ── 6. Size nodes by connectivity (graph degree) ──────────────────────
+    # `value` drives node size via vis-network's nodes.scaling. More-connected
+    # entities (and the query root) read as larger / more central. Sanctions-list
+    # nodes already carry their own category meaning, so we leave them at base.
+    degree: dict[str, int] = {nid: 0 for nid in nodes}
+    for e in edges.values():
+        degree[e["from"]] = degree.get(e["from"], 0) + 1
+        degree[e["to"]] = degree.get(e["to"], 0) + 1
+    for nid, nd in nodes.items():
+        base = 4 if nid == main_id else 1  # root entity starts larger
+        nd["value"] = base + degree.get(nid, 0)
+
     return list(nodes.values()), list(edges.values())
+
+
+def _graph_summary(nodes: list[dict], edges: list[dict]) -> dict:
+    """A small at-a-glance digest of the graph for the frontend summary panel.
+
+    Pure function over the already-built node/edge dicts (issue #28): counts by
+    entity type, how many nodes screened as sanctioned, and the names of the
+    high-risk entities so the UI can list them without re-deriving anything.
+    """
+    by_type: dict[str, int] = {}
+    high_risk: list[str] = []
+    sanctioned = 0
+    for nd in nodes:
+        by_type[nd.get("group", "unknown")] = by_type.get(nd.get("group", "unknown"), 0) + 1
+        if nd.get("riskLevel") == "HIGH":
+            high_risk.append(nd.get("title", nd.get("label", "")).split("\n")[0].strip())
+        if nd.get("group") == "sanctions_list" or nd.get("color") == "#F85149":
+            sanctioned += 1
+    return {
+        "by_type": by_type,
+        "sanctioned_count": sanctioned,
+        "high_risk_count": len(high_risk),
+        "high_risk_entities": high_risk[:8],
+    }
 
 
 @router.post("/entity-graph")
@@ -239,6 +279,7 @@ async def entity_graph_endpoint(req: EntityGraphRequest):
                     "query": query,
                     "node_count": len(graph_nodes),
                     "edge_count": len(graph_edges),
+                    "summary": _graph_summary(graph_nodes, graph_edges),
                 },
             }
         )

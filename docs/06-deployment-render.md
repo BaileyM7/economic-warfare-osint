@@ -95,11 +95,29 @@ Detail: [07-submodules/frontend.md](07-submodules/frontend.md).
 | `CLAUDE_DECOMPOSE_MODEL` | dashboard? | engine (`config.py`) — research-plan decomposition | `claude-haiku-4-5-20251001` |
 | `ORCH_MAX_CONCURRENCY` | dashboard? | `config.py` → orchestrator semaphore (total concurrent tool calls) | `8` |
 | `ORCH_MAX_TOOLS` | dashboard? | `config.py` → `_cap_plan` (total agents per plan) | `24` |
+| `LLM_PROVIDER` | no | `config.py` → `llm_provider.py` (issue #33): `anthropic` (default) or `openai` (any OpenAI-compatible endpoint for local/air-gapped deploy) | `anthropic` |
+| `LLM_BASE_URL` | no | `config.py` — base URL for the `openai` provider (e.g. `http://localhost:11434/v1` for Ollama). Required when `LLM_PROVIDER=openai` | `` |
+| `LLM_MODEL` | no | `config.py` — model name for the `openai` provider. Required when `LLM_PROVIDER=openai` | `` |
+| `LLM_API_KEY` | no | `config.py` — key for the `openai` endpoint (many local servers ignore it) | `` |
+| `LLM_DECOMPOSE_MODEL` | no | `config.py` — decompose model for the `openai` provider; defaults to `LLM_MODEL` | `` |
+| `SIMILARITY_BACKEND` | no | `config.py` → `/api/entity/similar` (issue #30): `lexical` (offline default) or `embedding` | `lexical` |
+| `SIMILARITY_MODEL` | no | `config.py` → sentence-transformers model for the `embedding` backend (needs `--extra similarity`) | `sentence-transformers/all-MiniLM-L6-v2` |
 | `CACHE_DIR` | dashboard? | `config.py` | `data/cache` |
 | `CACHE_TTL_SECONDS` | dashboard? | `config.py` | `3600` |
 
 > ⚠️ `CLAUDE_MODEL` (the engine) is **separate** from the wargame's `AGENT_MODEL` /
 > `ARBITER_MODEL`. They configure different subsystems and different model families.
+
+> **Local deployment (issue #33).** With `LLM_PROVIDER=openai` + `LLM_BASE_URL` +
+> `LLM_MODEL` (and `uv sync --extra local`), the engine runs against a local model
+> with no Anthropic key. What's routed through the pluggable provider today: the
+> **orchestrator** (decompose + synthesize — non-streaming under a local model) and
+> the shared generators `generate_narrative` / `generate_recommendations` (analyst
+> narrative, CoA recommendations, and the #31 discovery flow). Still
+> Anthropic-bound (they call the client directly): CoA/briefing/follow-up generation
+> and the notification digest synthesis — routing those through the provider is a
+> tracked follow-up. `config.validate()` fails loudly if `openai` is selected
+> without a base URL + model.
 
 ### Data-source keys (all optional; improve coverage/limits)
 `FRED_API_KEY` (secret in yaml) · `COMTRADE_API_KEY` / `UN_COMTRADE_KEY` · `OPENSANCTIONS_API_KEY`

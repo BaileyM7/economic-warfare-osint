@@ -24,8 +24,27 @@ def truncate(s: str, n: int = 28) -> str:
 
 
 def node(
-    nid: str, name: str, entity_type: str, country: str | None = None, sayari_id: str | None = None
+    nid: str,
+    name: str,
+    entity_type: str,
+    country: str | None = None,
+    sayari_id: str | None = None,
+    value: int | None = None,
+    risk: str | None = None,
 ) -> dict[str, Any]:
+    """Build a vis.js node dict.
+
+    The base shape (id/label/title/group/color, plus optional sayariId) is frozen
+    by tests/test_graph_helpers.py. ``value`` and ``risk`` are **opt-in** viz hints
+    for the graph upgrade (issue #28) and are only emitted when supplied, so the
+    four routers that share this factory and the frontend GraphNode type stay
+    back-compatible:
+
+      * ``value`` — relative importance, drives node *size* via vis-network's
+        ``nodes.scaling`` (e.g. graph degree / centrality).
+      * ``risk`` — "HIGH" | "MEDIUM" | "LOW"; surfaced as ``riskLevel`` so the
+        frontend can ring/tint the node without changing its category ``color``.
+    """
     title = f"{name}\n{entity_type}" + (f" · {country}" if country else "")
     out: dict[str, Any] = {
         "id": nid,
@@ -36,6 +55,10 @@ def node(
     }
     if sayari_id:
         out["sayariId"] = sayari_id
+    if value is not None:
+        out["value"] = value
+    if risk:
+        out["riskLevel"] = risk
     return out
 
 

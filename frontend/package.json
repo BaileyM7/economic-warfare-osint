@@ -41,6 +41,7 @@
     "chartjs-chart-sankey": "^0.14.0",
     "chartjs-plugin-annotation": "^3.1.0",
     "country-flag-icons": "^1.6.16",
+    "cytoscape": "^3.30.2",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "leaflet": "^1.9.4",
@@ -55,12 +56,12 @@
     "swr": "^2.4.1",
     "tailwindcss": "^4.2.2",
     "topojson-client": "^3.1.0",
-    "vis-network": "^9.1.9",
     "world-atlas": "^2.0.2",
     "zustand": "^4.5.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@types/cytoscape": "^3.21.9",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@types/topojson-client": "^3.1.5",

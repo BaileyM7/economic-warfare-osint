@@ -147,6 +147,58 @@ def init_db() -> None:
                 ON notification_log(username, channel, sent_at);
             CREATE INDEX IF NOT EXISTS idx_notif_log_card_dedupe
                 ON notification_log(username, card_id) WHERE card_id IS NOT NULL;
+
+            -- Persistent graph knowledge store (issue #29). Team-wide / shared:
+            -- any authenticated analyst can save entities of any type and the
+            -- relationships between them, and every analyst sees the same graph.
+            -- `entity_id` is the stable node id from the entity graph / Entity
+            -- model (src/common/types.py) and is the natural dedupe key.
+            CREATE TABLE IF NOT EXISTS saved_entities (
+                id TEXT PRIMARY KEY,
+                entity_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                country TEXT,
+                aliases TEXT DEFAULT '[]',       -- JSON array
+                identifiers TEXT DEFAULT '{}',    -- JSON object (e.g. {"lei": "..."})
+                notes TEXT DEFAULT '',
+                created_by TEXT,                  -- username that first saved it (provenance)
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_entities_type ON saved_entities(entity_type);
+
+            CREATE TABLE IF NOT EXISTS saved_edges (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                properties TEXT DEFAULT '{}',     -- JSON object
+                confidence TEXT DEFAULT 'MEDIUM',
+                created_by TEXT,
+                created_at TEXT,
+                UNIQUE (source_id, target_id, relationship_type)
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_edges_source ON saved_edges(source_id);
+            CREATE INDEX IF NOT EXISTS idx_saved_edges_target ON saved_edges(target_id);
+
+            -- Team-wide collection priorities (issue #32). Global/shared (not
+            -- per-user): the team declares what to prioritize at the country,
+            -- sector, or company level, and the weight boosts matching items in
+            -- the risk feed. Admin-managed; deduped on (level, key).
+            CREATE TABLE IF NOT EXISTS priorities (
+                id TEXT PRIMARY KEY,
+                level TEXT NOT NULL,              -- 'country' | 'sector' | 'company'
+                key TEXT NOT NULL,                -- e.g. 'CN', 'semiconductors', 'Huawei'
+                weight REAL NOT NULL DEFAULT 1.0,
+                label TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                created_by TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                UNIQUE (level, key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_priorities_level ON priorities(level);
             """
         )
         conn.commit()
@@ -724,6 +776,49 @@ def row_to_briefing(row: sqlite3.Row) -> dict:
         "reference_id": row["reference_id"],
         "content_markdown": row["content_markdown"],
         "sources": _json_field(row, "sources", []) if "sources" in keys else [],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def row_to_saved_entity(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "entity_id": row["entity_id"],
+        "name": row["name"],
+        "entity_type": row["entity_type"],
+        "country": row["country"],
+        "aliases": _json_field(row, "aliases", []),
+        "identifiers": _json_field(row, "identifiers", {}),
+        "notes": row["notes"] or "",
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def row_to_saved_edge(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "source_id": row["source_id"],
+        "target_id": row["target_id"],
+        "relationship_type": row["relationship_type"],
+        "properties": _json_field(row, "properties", {}),
+        "confidence": row["confidence"] or "MEDIUM",
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+    }
+
+
+def row_to_priority(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "level": row["level"],
+        "key": row["key"],
+        "weight": row["weight"],
+        "label": row["label"] or "",
+        "notes": row["notes"] or "",
+        "created_by": row["created_by"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

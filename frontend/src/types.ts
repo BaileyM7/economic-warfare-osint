@@ -111,6 +111,9 @@ export interface GraphNode {
   group: string;
   color: string;
   sayariId?: string;
+  // Issue #28 — opt-in viz hints (mirror src/common/graph_helpers.py::node):
+  value?: number; // relative importance → node size via vis-network scaling
+  riskLevel?: 'HIGH' | 'MEDIUM' | 'LOW'; // ring/tint without changing category color
 }
 
 export interface GraphEdge {
@@ -119,6 +122,14 @@ export interface GraphEdge {
   label: string;
   arrows: string;
   dashes: boolean;
+  width?: number; // Issue #28 — tie strength → edge thickness
+}
+
+export interface GraphSummary {
+  by_type: Record<string, number>;
+  sanctioned_count: number;
+  high_risk_count: number;
+  high_risk_entities: string[];
 }
 
 export interface EntityGraphResponse {
@@ -128,6 +139,7 @@ export interface EntityGraphResponse {
     query: string;
     node_count: number;
     edge_count: number;
+    summary?: GraphSummary;
   };
 }
 

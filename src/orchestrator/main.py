@@ -12,9 +12,9 @@ import sys
 import time
 from typing import Any
 
-import anthropic
-
 from src.common.config import config
+from src.common.llm_provider import get_text_provider
+from src.fusion.graph_builder import build_graph_from_results
 from src.common.types import (
     AnalystQuery,
     Confidence,
@@ -43,10 +43,21 @@ class Orchestrator:
                 + ". Set missing keys in .env file. See .env.example for reference."
             )
 
-        self.client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
-        self.model = config.model
-        # Decompose runs on a faster (Haiku) model; synthesis stays on `model`.
-        self.decompose_model = config.decompose_model
+        # Pluggable LLM provider (issue #33): anthropic by default, or a local
+        # OpenAI-compatible endpoint. `self.client` is the raw Anthropic client
+        # for the streaming path (None under a local provider, which uses the
+        # provider's non-streaming complete()).
+        self.provider = get_text_provider()
+        if self.provider is None:
+            raise RuntimeError(
+                "No usable LLM provider configured. Set ANTHROPIC_API_KEY "
+                "(LLM_PROVIDER=anthropic) or LLM_BASE_URL + LLM_MODEL "
+                "(LLM_PROVIDER=openai). See .env.example."
+            )
+        self.client = self.provider.raw_client
+        self.model = self.provider.default_model
+        # Decompose runs on a faster model; synthesis stays on `model`.
+        self.decompose_model = self.provider.decompose_model
         self.tool_registry = ToolRegistry()
 
     async def analyze(
@@ -113,20 +124,13 @@ class Orchestrator:
         return assessment
 
     async def _decompose(self, query: str) -> list[dict[str, Any]]:
-        """Use Claude to decompose the question into a research plan."""
-        response = await self.client.messages.create(
-            model=self.decompose_model,
-            max_tokens=3000,
+        """Use the LLM to decompose the question into a research plan."""
+        text = await self.provider.complete(
             system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": DECOMPOSITION_PROMPT.format(query=query),
-                }
-            ],
+            messages=[{"role": "user", "content": DECOMPOSITION_PROMPT.format(query=query)}],
+            max_tokens=3000,
+            model=self.decompose_model,
         )
-
-        text = response.content[0].text
         # Extract JSON from response (may be wrapped in markdown code blocks)
         json_str = _extract_json(text)
         try:
@@ -309,11 +313,13 @@ class Orchestrator:
         Falls back to a plain call if streaming is unavailable.
         """
         msgs = [{"role": "user", "content": user_content}]
-        if on_event is None:
-            resp = await self.client.messages.create(
-                model=self.model, max_tokens=16000, system=system, messages=msgs
+        # Non-streaming path: no live callback, or a non-Anthropic provider (which
+        # has no Anthropic streaming API). The default Anthropic streaming path
+        # below is unchanged.
+        if on_event is None or not self.provider.is_anthropic:
+            return await self.provider.complete(
+                system=system, messages=msgs, max_tokens=16000, model=self.model
             )
-            return resp.content[0].text
         try:
             buffer = ""
             last_len = 0
@@ -392,10 +398,9 @@ class Orchestrator:
             print(f"  [synthesize] Failed response (first 500 chars): {text[:500]!r}")
 
             # Retry: send the broken response back and ask for clean JSON only
-            retry_response = await self.client.messages.create(
-                model=self.model,
-                max_tokens=16000,
+            retry_text = await self.provider.complete(
                 system=SYSTEM_PROMPT + SYNTHESIS_SYSTEM_SUPPLEMENT,
+                max_tokens=16000,
                 messages=[
                     {
                         "role": "user",
@@ -415,8 +420,8 @@ class Orchestrator:
                         ),
                     },
                 ],
+                model=self.model,
             )
-            retry_text = retry_response.content[0].text
             retry_json_str = _extract_json(retry_text)
             try:
                 data = json.loads(retry_json_str)
@@ -465,6 +470,12 @@ class Orchestrator:
             llm_source_names=[str(s) for s in data.get("sources_used", []) if s],
         )
 
+        # Build the entity graph from the raw tool results so the "Ask Anything"
+        # (orchestrator) path gets a populated graph — previously this was left as
+        # the default empty EntityGraph, so the deep-analysis view never showed a
+        # graph. The frontend now renders it in the unified EntityGraphSection (#34).
+        entity_graph = build_graph_from_results(tool_results)
+
         return ImpactAssessment(
             query=AnalystQuery(raw_query=query, scenario_type=st),
             scenario_type=st,
@@ -474,6 +485,7 @@ class Orchestrator:
             confidence_summary=confidence_map,
             sources=merged_sources,
             recommendations=data.get("recommendations", []),
+            entity_graph=entity_graph,
         )
 
     def _fallback_plan(self, query: str) -> list[dict[str, Any]]:

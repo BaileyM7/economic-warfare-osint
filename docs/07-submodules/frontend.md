@@ -13,8 +13,9 @@ vendoring decouples from that upstream, so future UI changes happen directly in 
 - **React 18 + Vite 5 + TypeScript** (strict), **React Router 7** (history mode).
 - **Styling:** Tailwind CSS **v4** (CSS-based `@theme` config in `src/index.css`; no `tailwind.config.js`).
 - **State:** **SWR** for Emissary server-state; **Zustand** for the wargame simulation store.
-- **Visualization:** **Deck.gl** (wargame 3D globe), **vis-network** (entity graphs), **chart.js**
-  (impact/Sankey), Leaflet (maps). PDF export via `html2canvas` + `jspdf`.
+- **Visualization:** **Deck.gl** (wargame 3D globe), **Cytoscape.js** (entity graphs —
+  clustered community boxes, sized/risk-colored nodes; swapped in from vis-network in issue #35),
+  **chart.js** (impact/Sankey), Leaflet (maps). PDF export via `html2canvas` + `jspdf`.
 
 ## Scripts (`package.json`)
 
