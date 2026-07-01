@@ -85,9 +85,31 @@ def _load_fixture() -> list[dict[str, Any]]:
 
 
 def _sort_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order the feed by team priority (issue #32), then severity, category, recency.
+
+    The priority boost is the *primary* key but is 0 for every item when no
+    priorities are configured, so the ordering is identical to the pre-#32
+    severity-first behaviour until the team sets priorities. We annotate each
+    matched item with ``priority_weight`` so the UI can badge it.
+    """
+    from src.common import priorities as pr
+
+    pmap = pr.priority_map()
+    has_priorities = any(level_map for level_map in pmap.values())
+
+    def boost(it: dict[str, Any]) -> float:
+        if not has_priorities:
+            return 0.0
+        text = f"{it.get('entity', '')} {it.get('headline', '')} {it.get('category', '')}"
+        w = pr.text_boost(text, pmap)
+        if w > 0:
+            it["priority_weight"] = w
+        return w
+
     return sorted(
         items,
         key=lambda it: (
+            -boost(it),
             _SEVERITY_RANK.get(it.get("severity", "info"), 99),
             it.get("category", ""),
             it.get("fetched_at", ""),

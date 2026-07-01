@@ -1,8 +1,11 @@
 import { useCallback, useRef, useState } from 'react'
 import GraphViewer, { type GraphViewerHandle } from './GraphViewer'
+import GraphMapView from './GraphMapView'
+import GraphMatrixView from './GraphMatrixView'
 import UBOPanel from './UBOPanel'
 import RiskReportPanel from './RiskReportPanel'
-import { fetchSayariResolve, fetchSayariRelated, fetchEntityRiskReport, fetchSanctionsScreenBatch } from '../api'
+import { fetchSayariResolve, fetchSayariRelated, fetchEntityRiskReport, fetchSanctionsScreenBatch, saveKnowledgeEntity, fetchSimilarEntities, discoverActions } from '../api'
+import type { SimilarEntitiesResponse, DiscoverActionsResponse } from '../api'
 import type { EntityGraphResponse, GraphNode, GraphEdge, SayariUBOOwner, EntityRiskReport } from '../types'
 
 const LEGEND = [
@@ -49,6 +52,10 @@ interface Props {
   uboOwners?: SayariUBOOwner[]
   uboLoading?: boolean
   uboTargetName?: string
+  // Opt-in (#37): when provided (Knowledge Graph page), the node action bar shows
+  // a "Remove" button that deletes the entity from the shared store.
+  onRemoveNode?: (entityId: string, name: string) => void | Promise<void>
+  heading?: string
 }
 
 export default function EntityGraphSection({
@@ -57,6 +64,8 @@ export default function EntityGraphSection({
   uboOwners = [],
   uboLoading = false,
   uboTargetName = '',
+  onRemoveNode,
+  heading = 'Entity Relationship Graph',
 }: Props) {
   const graphRef = useRef<GraphViewerHandle>(null)
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
@@ -69,6 +78,25 @@ export default function EntityGraphSection({
   const [riskReport, setRiskReport] = useState<EntityRiskReport | null>(null)
   const [riskReportLoading, setRiskReportLoading] = useState(false)
   const [riskReportEntityName, setRiskReportEntityName] = useState<string | null>(null)
+
+  // Knowledge store (#29): which nodes the analyst has saved this session, and
+  // which save is in flight, so the action bar can reflect state without a refetch.
+  const [savedNodeIds, setSavedNodeIds] = useState<Set<string>>(new Set())
+  const [savingNode, setSavingNode] = useState<string | null>(null)
+
+  // Similarity (#30): "find similar entities" results for the selected node.
+  const [similar, setSimilar] = useState<SimilarEntitiesResponse | null>(null)
+  const [similarLoading, setSimilarLoading] = useState(false)
+
+  // Graph view mode (#35 scaffold): 'clustered' is live; focus/map/matrix land in
+  // later phases. Kept here so the switcher and the renderer share one source.
+  const [viewMode, setViewMode] = useState<'clustered' | 'focus' | 'map' | 'matrix'>('clustered')
+
+  // Discovery / target generation (#31): proposed-action input + suggestions.
+  const [discoverOpen, setDiscoverOpen] = useState(false)
+  const [discoverAction, setDiscoverAction] = useState('')
+  const [discover, setDiscover] = useState<DiscoverActionsResponse | null>(null)
+  const [discoverLoading, setDiscoverLoading] = useState(false)
 
   const knownIdsRef = useRef<Set<string>>(new Set())
   const allNodesMap = useRef<Map<string, GraphNode>>(new Map())
@@ -99,6 +127,14 @@ export default function EntityGraphSection({
     setRiskReport(null)
     setRiskReportLoading(false)
     setRiskReportEntityName(null)
+    setSavedNodeIds(new Set())
+    setSavingNode(null)
+    setSimilar(null)
+    setSimilarLoading(false)
+    setDiscoverOpen(false)
+    setDiscoverAction('')
+    setDiscover(null)
+    setDiscoverLoading(false)
   } else if (knownIdsRef.current.size === 0 && baseNodes.length > 0) {
     knownIdsRef.current = new Set(baseNodes.map((n) => n.id))
     for (const n of baseNodes) allNodesMap.current.set(n.id, n)
@@ -147,7 +183,7 @@ export default function EntityGraphSection({
         if (!currentKnown.has(nid)) {
           const baseColor = ent.sanctioned ? SANCTIONED_COLOR : SAYARI_ENTITY_COLORS[ent.type] ?? '#ff5a58'
           const tooltip = [ent.label, ent.type, ent.country, ent.sanctioned ? 'SANCTIONED (Sayari)' : null, ent.pep ? 'PEP' : null].filter(Boolean).join(' \u00B7 ')
-          const node: GraphNode = { id: nid, label: truncate(ent.label), title: tooltip, group: ent.type || 'sayari', color: baseColor, sayariId: ent.entity_id }
+          const node: GraphNode = { id: nid, label: truncate(ent.label), title: tooltip, group: ent.type || 'sayari', color: baseColor, sayariId: ent.entity_id, value: 3, riskLevel: ent.sanctioned ? 'HIGH' : undefined }
           newNodes.push(node)
           currentKnown.add(nid)
           allNodesMap.current.set(nid, node)
@@ -225,6 +261,63 @@ export default function EntityGraphSection({
     }
   }, [])
 
+  const handleSaveToGraph = useCallback(async (nodeId: string) => {
+    const node = allNodesMap.current.get(nodeId)
+    if (!node || savingNode) return
+    // Parse country out of the tooltip ("Name\ntype · country"), if present.
+    const country = node.title?.split('\n')[1]?.split('·')[1]?.trim() || undefined
+    setSavingNode(nodeId)
+    try {
+      await saveKnowledgeEntity({
+        entity_id: nodeId,
+        name: fullName(node),
+        entity_type: node.group || 'company',
+        country,
+      })
+      setSavedNodeIds((prev) => new Set(prev).add(nodeId))
+    } catch (err) {
+      console.warn('Save to graph failed:', err)
+    } finally {
+      setSavingNode(null)
+    }
+  }, [savingNode])
+
+  const handleFindSimilar = useCallback(async (nodeId: string) => {
+    const node = allNodesMap.current.get(nodeId)
+    if (!node || similarLoading) return
+    setSimilar(null)
+    setSimilarLoading(true)
+    try {
+      // Rank by name so it works whether or not the node is saved yet; the
+      // backend compares against the shared knowledge store.
+      const res = await fetchSimilarEntities({ name: fullName(node), entity_type: node.group, top_k: 5 })
+      setSimilar(res)
+    } catch (err) {
+      console.warn('Find similar failed:', err)
+    } finally {
+      setSimilarLoading(false)
+    }
+  }, [similarLoading])
+
+  const handleDiscover = useCallback(async (nodeId: string) => {
+    const node = allNodesMap.current.get(nodeId)
+    if (!node || discoverLoading) return
+    setDiscoverLoading(true)
+    setDiscover(null)
+    try {
+      const res = await discoverActions({
+        entity: fullName(node),
+        entity_type: node.group,
+        proposed_action: discoverAction.trim() || undefined,
+      })
+      setDiscover(res)
+    } catch (err) {
+      console.warn('Discover actions failed:', err)
+    } finally {
+      setDiscoverLoading(false)
+    }
+  }, [discoverLoading, discoverAction])
+
   const handleNodeDoubleClick = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId)
     handleRunRiskReport(nodeId)
@@ -246,6 +339,7 @@ export default function EntityGraphSection({
 
   const totalNodes = baseNodes.length + addedCounts.nodes
   const totalEdges = baseEdges.length + addedCounts.edges
+  const summary = graphData?.meta?.summary ?? null
 
   const selectedNode = selectedNodeId ? allNodesMap.current.get(selectedNodeId) : null
   const selectedNodeName = selectedNode ? fullName(selectedNode) : null
@@ -253,8 +347,34 @@ export default function EntityGraphSection({
 
   return (
     <div className="mt-8">
-      <div className="text-sm text-outline uppercase tracking-wider mb-3 pb-2 border-b border-outline-variant/10">
-        Entity Relationship Graph
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-outline-variant/10">
+        <div className="text-sm text-outline uppercase tracking-wider">{heading}</div>
+        {/* View-mode switcher (#35 scaffold). Clustered is live; Focus/Map/Matrix
+            are wired in later phases (#36/#38/#39). */}
+        <div className="flex items-center gap-1 bg-surface-container-lowest border border-outline-variant/15 rounded-lg p-0.5">
+          {(['clustered', 'focus', 'map', 'matrix'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setViewMode(m)}
+              title={
+                m === 'clustered'
+                  ? 'Clustered node-link'
+                  : m === 'focus'
+                    ? 'Ego view — centre on the selected entity, ring neighbours by hops'
+                    : m === 'map'
+                      ? 'Geographic — entities by country with relationship arcs'
+                      : 'Adjacency matrix — cluster-ordered, reveals blocs & cross-bloc ties'
+              }
+              className={`text-[11px] capitalize px-2.5 py-1 rounded-md transition-colors ${
+                viewMode === m
+                  ? 'bg-primary-container text-on-primary-container font-medium'
+                  : 'text-outline hover:text-on-surface-variant disabled:opacity-30 disabled:hover:text-outline disabled:cursor-not-allowed'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="flex flex-wrap gap-3 mb-3">
         {LEGEND.map((item) => (
@@ -265,6 +385,31 @@ export default function EntityGraphSection({
         ))}
       </div>
 
+      {/* Graph summary — at-a-glance digest from /api/entity-graph meta (#28) */}
+      {summary && hasNodes && (
+        <div className="bg-surface-container-low border border-outline-variant/10 rounded-lg px-3.5 py-2.5 mb-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-on-surface-variant">
+            <span className="font-medium">{totalNodes} entities · {totalEdges} relationships</span>
+            {summary.sanctioned_count > 0 && (
+              <span className="text-[#d23c3a] font-medium">{summary.sanctioned_count} sanctioned</span>
+            )}
+            {Object.entries(summary.by_type)
+              .sort((a, b) => b[1] - a[1])
+              .map(([type, count]) => (
+                <span key={type} className="text-outline capitalize">
+                  {count} {type.replace(/_/g, ' ')}
+                </span>
+              ))}
+          </div>
+          {summary.high_risk_entities.length > 0 && (
+            <div className="mt-1.5 text-[11px] text-outline">
+              <span className="text-[#d23c3a] font-medium">High-risk:</span>{' '}
+              {summary.high_risk_entities.join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Selected node action bar */}
       {selectedNode && (
         <div className="flex items-center justify-between gap-3 bg-surface-container-low border border-outline-variant/10 rounded-lg px-3.5 py-2 mb-2 flex-wrap">
@@ -274,6 +419,20 @@ export default function EntityGraphSection({
             <span className="text-[10px] text-outline capitalize ml-1">({selectedNode.group})</span>
           </div>
           <div className="flex gap-2 shrink-0">
+            <button
+              className="bg-surface-container border border-outline-variant/20 text-on-surface-variant text-xs px-3.5 py-1.5 rounded-lg hover:bg-surface-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+              disabled={savingNode === selectedNodeId || savedNodeIds.has(selectedNodeId!)}
+              onClick={() => handleSaveToGraph(selectedNodeId!)}
+              title="Save this entity to the shared knowledge graph"
+            >
+              {savingNode === selectedNodeId ? (
+                <><span className="inline-block w-2.5 h-2.5 border-2 border-outline-variant border-t-primary rounded-full animate-spin mr-1" />Saving&hellip;</>
+              ) : savedNodeIds.has(selectedNodeId!) ? (
+                '✓ Saved'
+              ) : (
+                'Save to Graph'
+              )}
+            </button>
             <button
               className="bg-surface-container border border-outline-variant/20 text-on-surface-variant text-xs px-3.5 py-1.5 rounded-lg hover:bg-surface-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
               disabled={!!expandingNode || alreadyExpanded}
@@ -300,7 +459,120 @@ export default function EntityGraphSection({
                 'Run Risk Report'
               )}
             </button>
+            <button
+              className="bg-surface-container border border-outline-variant/20 text-on-surface-variant text-xs px-3.5 py-1.5 rounded-lg hover:bg-surface-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+              disabled={similarLoading}
+              onClick={() => handleFindSimilar(selectedNodeId!)}
+              title="Find saved entities with similar characteristics"
+            >
+              {similarLoading ? (
+                <><span className="inline-block w-2.5 h-2.5 border-2 border-outline-variant border-t-primary rounded-full animate-spin mr-1" />Matching&hellip;</>
+              ) : (
+                'Find Similar'
+              )}
+            </button>
+            <button
+              className="bg-surface-container border border-outline-variant/20 text-on-surface-variant text-xs px-3.5 py-1.5 rounded-lg hover:bg-surface-bright transition-colors flex items-center"
+              onClick={() => setDiscoverOpen((v) => !v)}
+              title="Generate non-conflicting actions for this entity"
+            >
+              Discover Actions
+            </button>
+            {onRemoveNode && (
+              <button
+                className="bg-surface-container border border-error/30 text-error text-xs px-3.5 py-1.5 rounded-lg hover:bg-error-container/20 transition-colors flex items-center"
+                onClick={() => onRemoveNode(selectedNodeId!, selectedNodeName || selectedNodeId!)}
+                title="Remove this entity from the shared knowledge graph"
+              >
+                Remove
+              </button>
+            )}
           </div>
+        </div>
+      )}
+
+      {/* Similar-entities results (#30) */}
+      {similar && (
+        <div className="bg-surface-container-low border border-outline-variant/10 rounded-lg px-3.5 py-2.5 mb-2">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-medium text-on-surface-variant">
+              Similar to {similar.target.name}
+              <span className="text-[10px] text-outline ml-1.5">({similar.backend_used})</span>
+            </span>
+            <button className="text-[11px] text-outline hover:text-on-surface-variant" onClick={() => setSimilar(null)}>
+              Dismiss
+            </button>
+          </div>
+          {similar.results.length === 0 ? (
+            <div className="text-[11px] text-outline italic">
+              No comparable entities saved yet — use “Save to Graph” to build the knowledge store.
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {similar.results.map((r) => (
+                <li key={r.entity.entity_id} className="flex items-center gap-2 text-xs">
+                  <span className="text-on-surface-variant font-medium min-w-0 truncate">{r.entity.name}</span>
+                  <span className="text-[10px] text-outline capitalize">{r.entity.entity_type}</span>
+                  <span className="ml-auto text-[10px] text-primary font-mono">{(r.score * 100).toFixed(0)}%</span>
+                  <span className="flex gap-1 shrink-0">
+                    {r.basis.same_type && <span className="text-[9px] text-outline bg-surface-container px-1 rounded">type</span>}
+                    {r.basis.same_country && <span className="text-[9px] text-outline bg-surface-container px-1 rounded">country</span>}
+                    {r.basis.shared_terms.slice(0, 2).map((t) => (
+                      <span key={t} className="text-[9px] text-outline bg-surface-container px-1 rounded">{t}</span>
+                    ))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {similar.note && <div className="mt-1.5 text-[10px] text-outline italic">{similar.note}</div>}
+        </div>
+      )}
+
+      {/* Target generation / discovery (#31) */}
+      {discoverOpen && selectedNode && (
+        <div className="bg-surface-container-low border border-outline-variant/10 rounded-lg px-3.5 py-2.5 mb-2">
+          <div className="text-xs font-medium text-on-surface-variant mb-1.5">
+            Discover non-conflicting actions for {selectedNodeName}
+          </div>
+          <div className="flex gap-2 mb-1">
+            <input
+              value={discoverAction}
+              onChange={(e) => setDiscoverAction(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleDiscover(selectedNodeId!) }}
+              placeholder="Proposed action (optional), e.g. Add to BIS Entity List"
+              className="flex-1 bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-1.5 text-xs text-on-surface placeholder:text-outline focus:outline-none"
+            />
+            <button
+              className="bg-secondary-container text-on-secondary-container text-xs px-3.5 py-1.5 rounded-lg hover:brightness-110 disabled:opacity-50 flex items-center"
+              disabled={discoverLoading}
+              onClick={() => handleDiscover(selectedNodeId!)}
+            >
+              {discoverLoading ? (
+                <><span className="inline-block w-2.5 h-2.5 border-2 border-outline-variant border-t-on-secondary-container rounded-full animate-spin mr-1" />Generating&hellip;</>
+              ) : (
+                'Discover'
+              )}
+            </button>
+          </div>
+          {discover && (
+            <div className="mt-1.5">
+              {discover.context.neighbors.length > 0 && (
+                <div className="text-[10px] text-outline mb-1.5">
+                  Grounded in graph neighbors: {discover.context.neighbors.map((n) => n.name).join(', ')}
+                </div>
+              )}
+              {discover.suggested_actions.length > 0 ? (
+                <ol className="list-decimal list-inside flex flex-col gap-1.5 text-xs text-on-surface-variant">
+                  {discover.suggested_actions.map((a, i) => (
+                    <li key={i} className="leading-snug">{a}</li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="text-[11px] text-outline italic">{discover.note || 'No suggestions returned.'}</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -320,11 +592,19 @@ export default function EntityGraphSection({
             {expandMessage}
           </div>
         )}
-        {hasNodes && (
+        {hasNodes && viewMode === 'map' && (
+          <GraphMapView nodes={baseNodes} edges={baseEdges} onNodeClick={handleNodeClick} />
+        )}
+        {hasNodes && viewMode === 'matrix' && (
+          <GraphMatrixView nodes={baseNodes} edges={baseEdges} onNodeClick={handleNodeClick} />
+        )}
+        {hasNodes && (viewMode === 'clustered' || viewMode === 'focus') && (
           <GraphViewer
             ref={graphRef}
             nodes={baseNodes}
             edges={baseEdges}
+            mode={viewMode === 'focus' ? 'focus' : 'clustered'}
+            focusId={selectedNodeId}
             onNodeClick={handleNodeClick}
             onNodeDoubleClick={handleNodeDoubleClick}
           />

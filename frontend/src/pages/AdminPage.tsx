@@ -12,14 +12,18 @@ import {
   Tooltip,
 } from 'chart.js';
 import {
+  deletePriority,
   enrollUser,
+  fetchPriorities,
   fetchUsageSummary,
   listEnrollments,
+  setPriority,
   testEmail,
   testSms,
   unenrollUser,
   type Enrollment,
   type EnrollmentRequest,
+  type Priority,
   type UsageSummary,
 } from '../api';
 
@@ -372,8 +376,160 @@ export default function AdminPage() {
         </Card>
       </div>
 
+      <CollectionPriorities />
+
       <NotificationsEnrollment />
     </div>
+  );
+}
+
+// --- Team-wide collection priorities (issue #32) ---------------------------
+
+const PRIORITY_LEVELS: Array<'country' | 'sector' | 'company'> = ['country', 'sector', 'company'];
+
+function CollectionPriorities() {
+  const [items, setItems] = useState<Priority[]>([]);
+  const [level, setLevel] = useState<'country' | 'sector' | 'company'>('company');
+  const [key, setKey] = useState('');
+  const [weight, setWeight] = useState(5);
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const res = await fetchPriorities();
+      setItems(res.priorities);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const add = async () => {
+    if (!key.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setPriority({ level, key: key.trim(), weight, label: label.trim() });
+      setKey('');
+      setLabel('');
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    try {
+      await deletePriority(id);
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <Card title="Collection Priorities — team-wide (boosts matching risk-feed items)">
+      {error && <div className="mb-3 text-xs text-error">{error}</div>}
+
+      {/* Add form */}
+      <div className="flex flex-wrap items-end gap-2 mb-4">
+        <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wider text-outline">
+          Level
+          <select
+            value={level}
+            onChange={(e) => setLevel(e.target.value as 'country' | 'sector' | 'company')}
+            className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-2 text-sm text-on-surface capitalize"
+          >
+            {PRIORITY_LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wider text-outline flex-1 min-w-[160px]">
+          Key (e.g. CN, semiconductor, Huawei)
+          <input
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="match value"
+            className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-2 text-sm text-on-surface"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wider text-outline w-28">
+          Weight
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={0.5}
+            value={weight}
+            onChange={(e) => setWeight(Number(e.target.value))}
+            className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-2 text-sm text-on-surface"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wider text-outline flex-1 min-w-[120px]">
+          Label (optional)
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="display name"
+            className="bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-2 text-sm text-on-surface"
+          />
+        </label>
+        <button
+          onClick={() => void add()}
+          disabled={busy || !key.trim()}
+          className="bg-primary-container text-on-primary-container text-xs font-bold uppercase tracking-widest px-4 py-2.5 rounded-lg hover:brightness-110 disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : 'Add'}
+        </button>
+      </div>
+
+      {/* List grouped by level */}
+      {items.length === 0 ? (
+        <EmptyState message="No priorities set. Add country / sector / company targets above." />
+      ) : (
+        <div className="space-y-3">
+          {PRIORITY_LEVELS.map((lvl) => {
+            const rows = items.filter((p) => p.level === lvl);
+            if (rows.length === 0) return null;
+            return (
+              <div key={lvl}>
+                <div className="text-[10px] uppercase tracking-wider text-outline mb-1 capitalize">
+                  {lvl}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {rows.map((p) => (
+                    <span
+                      key={p.id}
+                      className="flex items-center gap-2 bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-1.5 text-xs text-on-surface"
+                    >
+                      <span className="font-medium">{p.label || p.key}</span>
+                      <span className="text-[10px] text-primary font-mono">w{p.weight}</span>
+                      <button
+                        onClick={() => void remove(p.id)}
+                        className="text-outline hover:text-error"
+                        title="Remove priority"
+                      >
+                        <span className="material-symbols-outlined text-sm">close</span>
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
   );
 }
 

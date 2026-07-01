@@ -37,20 +37,26 @@ def get_anthropic_client() -> anthropic.AsyncAnthropic | None:
 
 
 async def generate_narrative(prompt: str) -> str:
-    """Generate a 3–5 sentence analyst narrative. Returns '' on any failure."""
-    client = get_anthropic_client()
-    if not client:
+    """Generate a 3–5 sentence analyst narrative. Returns '' on any failure.
+
+    Routed through the pluggable text provider (issue #33) so it works against
+    Anthropic or a local OpenAI-compatible model with no call-site changes.
+    """
+    from src.common.llm_provider import get_text_provider
+
+    provider = get_text_provider()
+    if not provider:
         return ""
     try:
-        response = await asyncio.wait_for(
-            client.messages.create(
-                model=config.model,
-                max_tokens=500,
+        text = await asyncio.wait_for(
+            provider.complete(
+                system="",
                 messages=[{"role": "user", "content": prompt}],
+                max_tokens=500,
             ),
             timeout=15.0,
         )
-        return response.content[0].text.strip()
+        return (text or "").strip()
     except Exception as exc:
         logger.warning("narrative generation failed: %s", exc)
         return ""
@@ -79,9 +85,14 @@ Do NOT conflate these — e.g. do not cite UFLPA for Vietnamese goods or BIS for
 
 
 async def generate_recommendations(data_summary: dict, analyst_question: str = "") -> list[str]:
-    """Generate 3-4 actionable CoAs from analysis data. Returns [] on failure."""
-    client = get_anthropic_client()
-    if not client:
+    """Generate 3-4 actionable CoAs from analysis data. Returns [] on failure.
+
+    Routed through the pluggable text provider (issue #33).
+    """
+    from src.common.llm_provider import get_text_provider
+
+    provider = get_text_provider()
+    if not provider:
         return []
     try:
         user_content = ""
@@ -89,16 +100,15 @@ async def generate_recommendations(data_summary: dict, analyst_question: str = "
             user_content = f"ANALYST QUESTION: {analyst_question}\n\nINTELLIGENCE DATA:\n"
         user_content += json.dumps(data_summary)
 
-        response = await asyncio.wait_for(
-            client.messages.create(
-                model=config.model,
-                max_tokens=600,
+        text = await asyncio.wait_for(
+            provider.complete(
                 system=_COA_SYSTEM,
                 messages=[{"role": "user", "content": user_content}],
+                max_tokens=600,
             ),
             timeout=15.0,
         )
-        text = response.content[0].text.strip()
+        text = (text or "").strip()
         # Parse JSON array from response
         if text.startswith("["):
             return json.loads(text)

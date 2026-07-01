@@ -13,6 +13,7 @@ import {
   fetchSayariUBO,
 } from '../api'
 import { extractTicker } from '../components/QueryBox'
+import { assessmentToEntityGraph } from '../lib/assessmentGraph'
 import type { ImpactChartHandle } from '../components/ImpactChart'
 import type {
   HealthResponse,
@@ -327,6 +328,9 @@ export function useSearchAnalysis() {
 
         if (status.status === 'completed' && status.result) {
           setOrchestratorData(status.result)
+          // Unify the graph (#34): feed the assessment's entity_graph into the
+          // same EntityGraphSection panel the typed searches use.
+          setGraphData(assessmentToEntityGraph(status.result, raw))
           done = true
         } else if (status.status === 'failed') {
           setProgress((prev) => [

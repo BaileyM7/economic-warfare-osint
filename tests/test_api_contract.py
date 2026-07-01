@@ -18,8 +18,10 @@ import pytest
 # Snapshot of the app's route surface. Excludes: FastAPI built-ins (/docs,
 # /redoc, /openapi.json), the conditional /api/wargame* subapp, the conditional
 # /assets static mount (only present when frontend/dist is built — not on CI's
-# test job), and HEAD methods. 61 routes (58 Phase-2 baseline + Phase-3:
-# /api/subscribe, /api/brief/send-now, /api/notifications/diagnostics).
+# test job), and HEAD methods. 74 routes (58 Phase-2 baseline + Phase-3:
+# /api/subscribe, /api/brief/send-now, /api/notifications/diagnostics; + issue
+# #29: 8 /api/knowledge/* routes; + issue #31: /api/discover-actions; + issue
+# #30: /api/entity/similar; + issue #32: 3 /api/priorities routes).
 EXPECTED_ROUTES = {
     "DELETE /api/admin/enrollments/{username}",
     "DELETE /api/briefing/{briefing_id}",
@@ -60,6 +62,23 @@ EXPECTED_ROUTES = {
     "POST /api/entity-graph",
     "POST /api/entity-risk-report",
     "POST /api/followup",
+    # Knowledge store (issue #29) — team-wide saved entities + edges
+    "POST /api/knowledge/entities",
+    "GET /api/knowledge/entities",
+    "GET /api/knowledge/entities/{entity_id}",
+    "DELETE /api/knowledge/entities/{entity_id}",
+    "POST /api/knowledge/edges",
+    "GET /api/knowledge/edges",
+    "DELETE /api/knowledge/edges/{edge_id}",
+    "GET /api/knowledge/graph",
+    # Target generation / discovery (issue #31)
+    "POST /api/discover-actions",
+    # Semantic similarity (issue #30)
+    "POST /api/entity/similar",
+    # Team-wide priorities (issue #32) — read=auth, write=admin
+    "GET /api/priorities",
+    "POST /api/priorities",
+    "DELETE /api/priorities/{priority_id}",
     "POST /api/notifications/send-weekly-digest",
     "POST /api/notifications/twilio/sms-webhook",
     "GET /api/notifications/diagnostics",
@@ -150,6 +169,13 @@ def test_route_surface_matches_snapshot(app_module):
 # (require_auth runs before body validation, so an empty body still yields 401.)
 _PROTECTED = [
     ("get", "/api/tools"),
+    ("get", "/api/knowledge/entities"),
+    ("post", "/api/knowledge/entities"),
+    ("get", "/api/knowledge/graph"),
+    ("post", "/api/discover-actions"),
+    ("post", "/api/entity/similar"),
+    ("get", "/api/priorities"),
+    ("post", "/api/priorities"),
     ("get", "/api/analyze/deadbeef"),
     ("post", "/api/analyze"),
     ("post", "/api/analyze/sync"),

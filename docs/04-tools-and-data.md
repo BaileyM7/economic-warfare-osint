@@ -49,6 +49,7 @@ Every tool function returns a **`ToolResponse`** (`data`, `confidence`, `sources
 | `vessels/` | **AISStream.io** | `AISSTREAM_API_KEY` (optional) | ✅ | Global AIS firehose (WebSocket) |
 | `vessels/` | **OpenSanctions vessel schema** + **`fixtures/vessels.json`** | none | ✅ | Vessel particulars; **fixture wins over OpenSanctions** (commit #19) |
 | `sayari/` | **Sayari Graph** | `SAYARI_CLIENT_ID` + `SAYARI_CLIENT_SECRET` (or `SAYARI_API_KEY`) | 💰 premium | Entity resolution, UBO, traversal |
+| `graph/` | **Emissary knowledge store** (local SQLite) | none | ✅ | Issue #31 — agent tools to *work on the graph*: save entities/edges, list, neighbors, find exposure paths. All go through the `src/common/knowledge_store.py` seam shared with `/api/knowledge/*` |
 | *(person path)* | **Wikidata** | none | ✅ | PEP (politically-exposed person) lookups |
 
 > **`market/` vs `markets/`** — these are different. `market/` is the equity-data **tool**

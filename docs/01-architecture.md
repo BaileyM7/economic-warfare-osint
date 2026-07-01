@@ -116,8 +116,10 @@ free-tier rate limits.
 ## The Emissary dashboard layer (`src/routers/`, `src/db.py`)
 
 Routers add the analyst workbench on top of the engine. They persist to a local **SQLite**
-database ([src/db.py](../src/db.py); 9 tables: `coas`, `briefings`, `exercises`, `injects`,
-`activity_log`, `usage_events`, `watchlist_items`, `users`, `notification_log`). Highlights:
+database ([src/db.py](../src/db.py); 12 tables: `coas`, `briefings`, `exercises`, `injects`,
+`activity_log`, `usage_events`, `watchlist_items`, `users`, `notification_log`, the
+issue-#29 knowledge store `saved_entities` + `saved_edges`, and the issue-#32
+`priorities`). Highlights:
 
 - **risk_feed** + **watchlist** — per-user entity watchlists drive a card-style risk feed;
   clicking an item triggers enrichment ([src/risk_feed/enrich.py](../src/risk_feed/enrich.py)).

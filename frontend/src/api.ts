@@ -110,6 +110,138 @@ export async function fetchEntityGraph(query: string): Promise<EntityGraphRespon
   return parseJson<EntityGraphResponse>(res);
 }
 
+// --- Knowledge store (issue #29): team-wide saved entities + edges ---
+
+export interface SaveEntityPayload {
+  entity_id: string;
+  name: string;
+  entity_type: string;
+  country?: string | null;
+  aliases?: string[];
+  identifiers?: Record<string, string>;
+  notes?: string;
+}
+
+export async function saveKnowledgeEntity(
+  payload: SaveEntityPayload,
+): Promise<{ created: boolean; entity: { entity_id: string; name: string } }> {
+  const url = `${API_BASE}/api/knowledge/entities`;
+  const res = await authedFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJson(res);
+}
+
+export async function fetchKnowledgeGraph(): Promise<EntityGraphResponse> {
+  const url = `${API_BASE}/api/knowledge/graph`;
+  const res = await authedFetch(url);
+  return parseJson<EntityGraphResponse>(res);
+}
+
+export async function deleteKnowledgeEntity(entityId: string): Promise<{ deleted: string }> {
+  const res = await authedFetch(`${API_BASE}/api/knowledge/entities/${encodeURIComponent(entityId)}`, {
+    method: 'DELETE',
+  });
+  return parseJson(res);
+}
+
+// --- Team-wide priorities (issue #32): read=any analyst, write=admin ---
+
+export interface Priority {
+  id: string;
+  level: 'country' | 'sector' | 'company';
+  key: string;
+  weight: number;
+  label: string;
+  notes: string;
+}
+
+export async function fetchPriorities(level?: string): Promise<{ priorities: Priority[]; count: number }> {
+  const qs = level ? `?level=${encodeURIComponent(level)}` : '';
+  const res = await authedFetch(`${API_BASE}/api/priorities${qs}`);
+  return parseJson(res);
+}
+
+export async function setPriority(payload: {
+  level: string;
+  key: string;
+  weight?: number;
+  label?: string;
+  notes?: string;
+}): Promise<{ created: boolean; priority: Priority }> {
+  const res = await authedFetch(`${API_BASE}/api/priorities`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJson(res);
+}
+
+export async function deletePriority(id: string): Promise<{ deleted: string }> {
+  const res = await authedFetch(`${API_BASE}/api/priorities/${id}`, { method: 'DELETE' });
+  return parseJson(res);
+}
+
+export interface SimilarEntityResult {
+  entity: { entity_id: string; name: string; entity_type: string; country?: string | null };
+  score: number;
+  basis: {
+    name_overlap: number;
+    same_type: boolean;
+    same_country: boolean;
+    shared_identifiers: string[];
+    shared_terms: string[];
+  };
+}
+
+export interface SimilarEntitiesResponse {
+  target: { entity_id: string | null; name: string; entity_type?: string | null };
+  backend_used: string;
+  results: SimilarEntityResult[];
+  count: number;
+  note?: string;
+}
+
+export async function fetchSimilarEntities(
+  params: { entity_id?: string; name?: string; entity_type?: string; top_k?: number },
+): Promise<SimilarEntitiesResponse> {
+  const url = `${API_BASE}/api/entity/similar`;
+  const res = await authedFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  return parseJson<SimilarEntitiesResponse>(res);
+}
+
+// --- Target generation / discovery (issue #31) ---
+
+export interface DiscoverActionsResponse {
+  entity: string;
+  proposed_action: string | null;
+  suggested_actions: string[];
+  context: {
+    known_in_graph: boolean;
+    neighbors: { name: string; relationship: string }[];
+  };
+  note?: string;
+}
+
+export async function discoverActions(params: {
+  entity: string;
+  proposed_action?: string;
+  entity_type?: string;
+}): Promise<DiscoverActionsResponse> {
+  const res = await authedFetch(`${API_BASE}/api/discover-actions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  return parseJson<DiscoverActionsResponse>(res);
+}
+
 export async function resolveEntity(query: string): Promise<EntityResolutionResponse> {
   const url = `${API_BASE}/api/resolve-entity`;
   const res = await authedFetch(url, {
@@ -388,6 +520,9 @@ export interface RiskFeedItem {
   event_at: string | null;
   fetched_at: string;
   synthetic_payload: Record<string, unknown>;
+  /** Set by the backend when a team priority (issue #32) matched this item and
+   *  boosted it to the top of the feed; absent otherwise. */
+  priority_weight?: number;
 }
 
 export interface RiskFeedResponse {

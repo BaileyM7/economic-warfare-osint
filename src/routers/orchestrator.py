@@ -67,25 +67,24 @@ def _normalize_query(query: str) -> str:
 
 
 def _tokenize(query: str) -> set[str]:
-    """Content tokens of a query: lowercased alphanumerics, stopwords removed."""
-    import re
+    """Content tokens of a query (shim over the shared similarity tokenizer)."""
+    from src.common.similarity import tokenize
 
-    toks = re.findall(r"[a-z0-9]+", query.lower())
-    return {t for t in toks if t not in _STOPWORDS and len(t) > 1}
+    return tokenize(query, _STOPWORDS)
 
 
 def _query_similarity(a: str, b: str) -> float:
     """Jaccard overlap of two queries' content tokens (0.0–1.0).
 
-    Pure and dependency-free, isolated so it can later be swapped for an
-    embedding-based score without touching callers.
+    Delegates to the shared lexical similarity (src/common/similarity.py) — the
+    single home for "content-token overlap" — passing this module's own
+    stopwords so the "Did you mean…?" behaviour is unchanged. The shared module
+    is where the optional embedding upgrade lives, so this seam can move to
+    embeddings later without touching callers.
     """
-    ta, tb = _tokenize(a), _tokenize(b)
-    if not ta or not tb:
-        return 0.0
-    inter = len(ta & tb)
-    union = len(ta | tb)
-    return inter / union if union else 0.0
+    from src.common.similarity import jaccard_similarity
+
+    return jaccard_similarity(a, b, _STOPWORDS)
 
 
 def _warmed_queries() -> list[str]:

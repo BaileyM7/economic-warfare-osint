@@ -6,9 +6,11 @@ This file covers things that aren't in the README: the structure, the
 backend integration boundary, the dual-domain split (Emissary vs. wargame
 sub-app), and the things that have caused real bugs.
 
-This repo is consumed as a **git submodule** by the parent Emissary
-backend at [github.com/BaileyM7/economic_warfare](https://github.com/BaileyM7/economic_warfare).
-Changes here are picked up by the parent repo on submodule update.
+This frontend is **vendored directly into the Emissary backend repo** as the
+local `frontend/` directory — it is **no longer a git submodule**. (It used to be
+consumed as a submodule by the parent repo; that arrangement has been removed.)
+Changes here are committed in-place alongside the backend, and the build output
+(`frontend/dist/`) is served by the FastAPI app.
 
 ---
 

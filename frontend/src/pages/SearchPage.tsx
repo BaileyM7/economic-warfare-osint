@@ -411,8 +411,12 @@ export default function SearchPage() {
         />
       )}
 
-      {/* Entity graph */}
-      {s.mode !== 'orchestrator' && s.mode !== 'vessel' && (
+      {/* Entity graph — unified panel (#34): now also renders for the
+          orchestrator "Ask Anything" path (graphData is populated from the
+          assessment's entity_graph), so deep searches get the full panel with
+          summary + Save/Find-Similar/Discover/Run-Risk-Report. Vessel keeps its
+          own map-based view. */}
+      {s.mode !== 'vessel' && (
         <EntityGraphSection
           graphData={s.graphData}
           graphLoading={s.graphLoading}

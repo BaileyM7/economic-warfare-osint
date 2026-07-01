@@ -49,6 +49,10 @@ from src.routers.orchestrator import router as orchestrator_router
 from src.routers.sanctions_impact import router as sanctions_impact_router
 from src.routers.followup import router as followup_router
 from src.routers.briefs import router as briefs_router
+from src.routers.knowledge import router as knowledge_router
+from src.routers.discovery import router as discovery_router
+from src.routers.similarity import router as similarity_router
+from src.routers.priorities import router as priorities_router
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,14 @@ app.include_router(orchestrator_router, dependencies=[Depends(require_auth)])
 app.include_router(sanctions_impact_router, dependencies=[Depends(require_auth)])
 app.include_router(followup_router, dependencies=[Depends(require_auth)])
 app.include_router(briefs_router, dependencies=[Depends(require_auth)])
+# Knowledge store endpoints read created_by from the auth'd user (per-route
+# require_auth on writes); the router-level gate keeps the whole surface authed.
+app.include_router(knowledge_router, dependencies=[Depends(require_auth)])
+app.include_router(discovery_router, dependencies=[Depends(require_auth)])
+app.include_router(similarity_router, dependencies=[Depends(require_auth)])
+# Priorities: per-route auth — reads require_auth, writes require_admin (so the
+# whole team sees priorities but only admins set them).
+app.include_router(priorities_router)
 
 # --- Wargame subapp (embedded swarm backend) ---
 # Gated by WARGAME_ENABLED so Emissary's baseline behavior is unaffected

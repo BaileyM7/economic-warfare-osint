@@ -69,6 +69,32 @@ class Config:
         default_factory=lambda: os.getenv("CLAUDE_DECOMPOSE_MODEL", "claude-haiku-4-5-20251001")
     )
 
+    # Semantic similarity backend (issue #30). "lexical" (default) is dependency-
+    # free and fully offline — a weighted token/trait overlap. "embedding" uses a
+    # local sentence-transformers model (install the `similarity` extra); the
+    # endpoint falls back to lexical with a note if the dependency is missing.
+    similarity_backend: str = field(
+        default_factory=lambda: os.getenv("SIMILARITY_BACKEND", "lexical").strip().lower()
+    )
+    similarity_model: str = field(
+        default_factory=lambda: os.getenv(
+            "SIMILARITY_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+        )
+    )
+
+    # LLM provider (issue #33) — local-deployment option. "anthropic" (default)
+    # uses the Claude API. "openai" targets any OpenAI-compatible endpoint
+    # (Ollama / llama.cpp / vLLM / OpenAI) via base URL + model, so the engine
+    # can run against a local/smaller model with no Anthropic key.
+    llm_provider: str = field(
+        default_factory=lambda: os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
+    )
+    llm_base_url: str = field(default_factory=lambda: os.getenv("LLM_BASE_URL", ""))
+    llm_api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", ""))
+    # Decompose model for the local provider; falls back to llm_model if unset.
+    llm_decompose_model: str = field(default_factory=lambda: os.getenv("LLM_DECOMPOSE_MODEL", ""))
+
     # Orchestrator fan-out controls. A single shared semaphore caps total
     # concurrent tool calls across all parallel steps (also bounds the memory
     # spike that OOM'd the 512MB box). `max_tools` caps total agents per plan so
@@ -167,8 +193,21 @@ class Config:
         enabled without provider credentials.
         """
         issues: list[str] = []
-        if not self.anthropic_api_key:
-            issues.append("ANTHROPIC_API_KEY is required")
+        # Provider-aware (issue #33): the Anthropic key is only required when the
+        # Anthropic provider is selected. For an OpenAI-compatible local provider
+        # we instead require a base URL + model so misconfig fails loudly.
+        if self.llm_provider == "anthropic":
+            if not self.anthropic_api_key:
+                issues.append("ANTHROPIC_API_KEY is required")
+        elif self.llm_provider in ("openai", "openai_compatible", "local"):
+            if not self.llm_base_url:
+                issues.append("LLM_BASE_URL is required when LLM_PROVIDER is openai")
+            if not self.llm_model:
+                issues.append("LLM_MODEL is required when LLM_PROVIDER is openai")
+        else:
+            issues.append(
+                f"LLM_PROVIDER '{self.llm_provider}' is not recognized (use 'anthropic' or 'openai')"
+            )
 
         if self.is_production:
             # EMISSARY_AUTH_SECRET is owned by src/auth.py; read the same env var

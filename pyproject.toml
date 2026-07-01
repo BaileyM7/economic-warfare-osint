@@ -83,6 +83,22 @@ wargame = [
     # AISStream.io — WebSocket client for global AIS firehose
     "websockets>=12",
 ]
+# Semantic similarity (issue #30) — local, offline sentence-transformers
+# embeddings for "find similar entities". OPTIONAL and heavy (pulls torch), so it
+# is NOT a default dependency: the similarity feature falls back to a dependency-
+# free lexical backend when this isn't installed. Enable the embedding backend by
+# installing this extra AND setting SIMILARITY_BACKEND=embedding.
+# Install with: uv sync --extra similarity
+similarity = [
+    "sentence-transformers>=3.0.0",
+]
+# Local LLM provider (issue #33) — the OpenAI SDK, used to talk to any
+# OpenAI-compatible endpoint (Ollama / llama.cpp / vLLM) for a local/air-gapped
+# deployment with a smaller model. Optional: only needed when LLM_PROVIDER=openai.
+# Install with: uv sync --extra local
+local = [
+    "openai>=1.0.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

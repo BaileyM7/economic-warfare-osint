@@ -10,6 +10,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { to: '/risk-feed', icon: 'dashboard', label: 'Risk Feed' },
   { to: '/search', icon: 'search', label: 'Search' },
+  { to: '/knowledge-graph', icon: 'hub', label: 'Knowledge Graph' },
   { to: '/coa', icon: 'account_tree', label: 'COA Workspace' },
   { to: '/monitoring', icon: 'monitoring', label: 'Monitoring' },
   { to: '/briefings', icon: 'present_to_all', label: 'Briefings' },

@@ -10,6 +10,7 @@ const MonitoringPage = lazy(() => import('./pages/MonitoringPage'));
 const BriefingsPage = lazy(() => import('./pages/BriefingsPage'));
 const WargamePage = lazy(() => import('./pages/WargamePage'));
 const RiskFeedPage = lazy(() => import('./pages/RiskFeedPage'));
+const KnowledgeGraphPage = lazy(() => import('./pages/KnowledgeGraphPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
 
@@ -41,6 +42,7 @@ export default function App() {
           <Route index element={<Navigate to="/risk-feed" replace />} />
           <Route path="risk-feed" element={<RiskFeedPage />} />
           <Route path="search" element={<SearchPage />} />
+          <Route path="knowledge-graph" element={<KnowledgeGraphPage />} />
           <Route path="coa" element={<COAWorkspacePage />} />
           <Route path="monitoring" element={<MonitoringPage />} />
           <Route path="briefings" element={<BriefingsPage />} />
