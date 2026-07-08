@@ -4,7 +4,7 @@ import GraphMapView from './GraphMapView'
 import GraphMatrixView from './GraphMatrixView'
 import UBOPanel from './UBOPanel'
 import RiskReportPanel from './RiskReportPanel'
-import { fetchSayariResolve, fetchSayariRelated, fetchEntityRiskReport, fetchSanctionsScreenBatch, saveKnowledgeEntity, fetchSimilarEntities, discoverActions } from '../api'
+import { fetchSayariResolve, fetchSayariRelated, fetchEntityRiskReport, fetchSanctionsScreenBatch, saveKnowledgeEntity, saveKnowledgeEdge, fetchSimilarEntities, discoverActions } from '../api'
 import type { SimilarEntitiesResponse, DiscoverActionsResponse } from '../api'
 import type { EntityGraphResponse, GraphNode, GraphEdge, SayariUBOOwner, EntityRiskReport } from '../types'
 
@@ -83,6 +83,11 @@ export default function EntityGraphSection({
   // which save is in flight, so the action bar can reflect state without a refetch.
   const [savedNodeIds, setSavedNodeIds] = useState<Set<string>>(new Set())
   const [savingNode, setSavingNode] = useState<string | null>(null)
+  // Whole-graph save in flight, and a short-lived summary of what the last save
+  // persisted ("3 entities · 2 relationships") so the connection-preserving
+  // behaviour is visible to the analyst.
+  const [savingAll, setSavingAll] = useState(false)
+  const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
   // Similarity (#30): "find similar entities" results for the selected node.
   const [similar, setSimilar] = useState<SimilarEntitiesResponse | null>(null)
@@ -100,6 +105,10 @@ export default function EntityGraphSection({
 
   const knownIdsRef = useRef<Set<string>>(new Set())
   const allNodesMap = useRef<Map<string, GraphNode>>(new Map())
+  // Every edge currently shown (base graph + Sayari expansions). We track these
+  // ourselves because expansions live only inside Cytoscape otherwise, and saving
+  // an entity's *connections* needs the edge list, not just the nodes.
+  const allEdgesRef = useRef<GraphEdge[]>([])
 
   const expandedRef = useRef(expandedNodes)
   expandedRef.current = expandedNodes
@@ -116,6 +125,7 @@ export default function EntityGraphSection({
     const map = new Map<string, GraphNode>()
     for (const n of baseNodes) map.set(n.id, n)
     allNodesMap.current = map
+    allEdgesRef.current = [...baseEdges]
     setExpandedNodes(new Set())
     setExpandingNode(null)
     setAddedCounts({ nodes: 0, edges: 0 })
@@ -129,6 +139,8 @@ export default function EntityGraphSection({
     setRiskReportEntityName(null)
     setSavedNodeIds(new Set())
     setSavingNode(null)
+    setSavingAll(false)
+    setSaveMessage(null)
     setSimilar(null)
     setSimilarLoading(false)
     setDiscoverOpen(false)
@@ -138,6 +150,7 @@ export default function EntityGraphSection({
   } else if (knownIdsRef.current.size === 0 && baseNodes.length > 0) {
     knownIdsRef.current = new Set(baseNodes.map((n) => n.id))
     for (const n of baseNodes) allNodesMap.current.set(n.id, n)
+    allEdgesRef.current = [...baseEdges]
   }
 
   const handleNodeClick = useCallback((nodeId: string) => {
@@ -208,6 +221,9 @@ export default function EntityGraphSection({
 
       if (newNodes.length > 0) {
         graphRef.current?.addData(newNodes, newEdges, nodeId)
+        // Keep our edge list in sync with what the viewer now shows, so these
+        // Sayari connections are included when the analyst saves the graph.
+        allEdgesRef.current.push(...newEdges)
         setAddedCounts((prev) => ({ nodes: prev.nodes + newNodes.length, edges: prev.edges + newEdges.length }))
         setExpandMessage(null)
 
@@ -261,26 +277,92 @@ export default function EntityGraphSection({
     }
   }, [])
 
-  const handleSaveToGraph = useCallback(async (nodeId: string) => {
-    const node = allNodesMap.current.get(nodeId)
-    if (!node || savingNode) return
-    // Parse country out of the tooltip ("Name\ntype · country"), if present.
-    const country = node.title?.split('\n')[1]?.split('·')[1]?.trim() || undefined
-    setSavingNode(nodeId)
-    try {
+  // Persist a set of nodes AND the edges among them into the shared store, so
+  // relationships survive — not just isolated entities (the whole point of the
+  // knowledge graph). Idempotent: the backend upserts, so re-saving is safe.
+  // Returns how many entities/relationships were written.
+  const persistSubgraph = useCallback(async (nodeIds: Iterable<string>) => {
+    const idSet = new Set<string>()
+    for (const id of nodeIds) if (allNodesMap.current.has(id)) idSet.add(id)
+
+    let entityCount = 0
+    for (const id of idSet) {
+      const node = allNodesMap.current.get(id)!
+      // Parse country out of the tooltip ("Name\ntype · country"), if present.
+      const country = node.title?.split('\n')[1]?.split('·')[1]?.trim() || undefined
       await saveKnowledgeEntity({
-        entity_id: nodeId,
+        entity_id: id,
         name: fullName(node),
         entity_type: node.group || 'company',
         country,
       })
-      setSavedNodeIds((prev) => new Set(prev).add(nodeId))
+      entityCount += 1
+    }
+
+    // Save every edge whose endpoints are both in the saved set (the store drops
+    // dangling edges anyway). Dedupe on (from, to, relationship).
+    const seen = new Set<string>()
+    let edgeCount = 0
+    for (const e of allEdgesRef.current) {
+      if (e.from === e.to || !idSet.has(e.from) || !idSet.has(e.to)) continue
+      const relationshipType = (e.label || '').trim().replace(/\s+/g, '_') || 'related'
+      const key = `${e.from}|${e.to}|${relationshipType}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      await saveKnowledgeEdge({ source_id: e.from, target_id: e.to, relationship_type: relationshipType })
+      edgeCount += 1
+    }
+
+    setSavedNodeIds((prev) => {
+      const next = new Set(prev)
+      idSet.forEach((id) => next.add(id))
+      return next
+    })
+    return { entityCount, edgeCount }
+  }, [])
+
+  const summariseSave = useCallback(({ entityCount, edgeCount }: { entityCount: number; edgeCount: number }) => {
+    const parts = [`${entityCount} ${entityCount === 1 ? 'entity' : 'entities'}`]
+    if (edgeCount > 0) parts.push(`${edgeCount} ${edgeCount === 1 ? 'relationship' : 'relationships'}`)
+    setSaveMessage(`Saved ${parts.join(' · ')} to the knowledge graph`)
+  }, [])
+
+  const handleSaveToGraph = useCallback(async (nodeId: string) => {
+    const node = allNodesMap.current.get(nodeId)
+    if (!node || savingNode) return
+    setSavingNode(nodeId)
+    setSaveMessage(null)
+    try {
+      // Save the entity together with its immediate connections (incident edges
+      // + the neighbours on the other end), so its graph is preserved — not just
+      // the lone node.
+      const ids = new Set<string>([nodeId])
+      for (const e of allEdgesRef.current) {
+        if (e.from === nodeId) ids.add(e.to)
+        else if (e.to === nodeId) ids.add(e.from)
+      }
+      summariseSave(await persistSubgraph(ids))
     } catch (err) {
       console.warn('Save to graph failed:', err)
+      setSaveMessage('Save failed — see console for details')
     } finally {
       setSavingNode(null)
     }
-  }, [savingNode])
+  }, [savingNode, persistSubgraph, summariseSave])
+
+  const handleSaveEntireGraph = useCallback(async () => {
+    if (savingAll) return
+    setSavingAll(true)
+    setSaveMessage(null)
+    try {
+      summariseSave(await persistSubgraph(allNodesMap.current.keys()))
+    } catch (err) {
+      console.warn('Save entire graph failed:', err)
+      setSaveMessage('Save failed — see console for details')
+    } finally {
+      setSavingAll(false)
+    }
+  }, [savingAll, persistSubgraph, summariseSave])
 
   const handleFindSimilar = useCallback(async (nodeId: string) => {
     const node = allNodesMap.current.get(nodeId)
@@ -349,6 +431,24 @@ export default function EntityGraphSection({
     <div className="mt-8">
       <div className="flex items-center justify-between mb-3 pb-2 border-b border-outline-variant/10">
         <div className="text-sm text-outline uppercase tracking-wider">{heading}</div>
+        <div className="flex items-center gap-2">
+        {/* Save the whole displayed subgraph (nodes + relationships) at once.
+            Hidden on the Knowledge Graph page itself (where onRemoveNode is set),
+            since everything there is already saved. */}
+        {!onRemoveNode && hasNodes && (
+          <button
+            onClick={() => void handleSaveEntireGraph()}
+            disabled={savingAll || !!savingNode}
+            className="flex items-center gap-1.5 bg-surface-container border border-outline-variant/20 text-on-surface-variant text-[11px] px-3 py-1.5 rounded-lg hover:bg-surface-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Save every entity and relationship shown here to the shared knowledge graph"
+          >
+            {savingAll ? (
+              <><span className="inline-block w-2.5 h-2.5 border-2 border-outline-variant border-t-primary rounded-full animate-spin" />Saving&hellip;</>
+            ) : (
+              <><span className="material-symbols-outlined text-sm">hub</span>Save Entire Graph</>
+            )}
+          </button>
+        )}
         {/* View-mode switcher (#35 scaffold). Clustered is live; Focus/Map/Matrix
             are wired in later phases (#36/#38/#39). */}
         <div className="flex items-center gap-1 bg-surface-container-lowest border border-outline-variant/15 rounded-lg p-0.5">
@@ -374,6 +474,7 @@ export default function EntityGraphSection({
               {m}
             </button>
           ))}
+        </div>
         </div>
       </div>
       <div className="flex flex-wrap gap-3 mb-3">
@@ -423,7 +524,7 @@ export default function EntityGraphSection({
               className="bg-surface-container border border-outline-variant/20 text-on-surface-variant text-xs px-3.5 py-1.5 rounded-lg hover:bg-surface-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
               disabled={savingNode === selectedNodeId || savedNodeIds.has(selectedNodeId!)}
               onClick={() => handleSaveToGraph(selectedNodeId!)}
-              title="Save this entity to the shared knowledge graph"
+              title="Save this entity and its connections to the shared knowledge graph"
             >
               {savingNode === selectedNodeId ? (
                 <><span className="inline-block w-2.5 h-2.5 border-2 border-outline-variant border-t-primary rounded-full animate-spin mr-1" />Saving&hellip;</>
@@ -488,6 +589,19 @@ export default function EntityGraphSection({
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Save confirmation — shows that connections (not just the node) were persisted. */}
+      {saveMessage && (
+        <div className="flex items-center justify-between gap-2 bg-surface-container-low border border-outline-variant/10 rounded-lg px-3.5 py-2 mb-2 text-xs text-on-surface-variant">
+          <span className="flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-sm text-primary">check_circle</span>
+            {saveMessage}
+          </span>
+          <button className="text-[11px] text-outline hover:text-on-surface-variant" onClick={() => setSaveMessage(null)}>
+            Dismiss
+          </button>
         </div>
       )}
 
