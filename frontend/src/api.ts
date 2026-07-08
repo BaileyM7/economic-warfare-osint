@@ -134,6 +134,26 @@ export async function saveKnowledgeEntity(
   return parseJson(res);
 }
 
+export interface SaveEdgePayload {
+  source_id: string;
+  target_id: string;
+  relationship_type: string;
+  properties?: Record<string, unknown>;
+  confidence?: string;
+}
+
+export async function saveKnowledgeEdge(
+  payload: SaveEdgePayload,
+): Promise<{ created: boolean; edge: { id: string } }> {
+  const url = `${API_BASE}/api/knowledge/edges`;
+  const res = await authedFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJson(res);
+}
+
 export async function fetchKnowledgeGraph(): Promise<EntityGraphResponse> {
   const url = `${API_BASE}/api/knowledge/graph`;
   const res = await authedFetch(url);
