@@ -158,12 +158,24 @@ services:
     # volatile-lru (not noeviction/allkeys-lru): every key we write has an explicit
     # TTL, so under pressure it evicts expiring cache entries instead of erroring
     # writes on the rate-limiter path or dropping index docs we still consider live.
+    #
+    # --loadmodule is LOAD-BEARING on Render, verified empirically (2026-07):
+    # Redis 8 auto-discovers its bundled modules (Query Engine / RedisJSON) when
+    # started locally, but that auto-load SILENTLY NO-OPS in Render's container
+    # runtime — the pserv came up with `FT.*`/`JSON.*` absent (`/api/health` showed
+    # search:false) despite the identical image+command loading them in local
+    # Docker on both arm64 and amd64. Loading the two we use explicitly by path
+    # (they ship at /usr/local/lib/redis/modules/ in redis:8.2-alpine) makes it
+    # deterministic. Do NOT add these to docker-compose.yml: locally the modules
+    # auto-load, so an explicit --loadmodule there DOUBLE-loads and crashes redis.
     dockerCommand: >-
       redis-server
       --port $PORT
       --dir /data
       --appendonly yes
       --appendfsync everysec
+      --loadmodule /usr/local/lib/redis/modules/redisearch.so
+      --loadmodule /usr/local/lib/redis/modules/rejson.so
       --maxmemory 400mb
       --maxmemory-policy volatile-lru
       --requirepass $REDIS_PASSWORD
