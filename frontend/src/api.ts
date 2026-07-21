@@ -45,6 +45,30 @@ export function setToken(token: string): void {
 
 export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
+  clearAnalysisSessionId();
+}
+
+// --- Analysis session (agent memory) ---
+//
+// The backend threads working + long-term memory off a `session_id`. We persist
+// it so an analyst's follow-on questions ("what else is exposed to THAT supply
+// chain?") land in the same session and recall prior work — including across
+// reloads, up to the backend's 7-day working-memory TTL. Cross-user reuse in a
+// shared browser is harmless: the backend re-scopes every recall by the auth
+// user_id, so a stale id from another user simply yields no recall (a fresh
+// session), never a leak. Cleared on logout / 401 via clearToken().
+const SESSION_KEY = 'emissary_analysis_session';
+
+export function getAnalysisSessionId(): string | null {
+  return localStorage.getItem(SESSION_KEY);
+}
+
+export function setAnalysisSessionId(id: string): void {
+  localStorage.setItem(SESSION_KEY, id);
+}
+
+export function clearAnalysisSessionId(): void {
+  localStorage.removeItem(SESSION_KEY);
 }
 
 function authHeaders(): Record<string, string> {
@@ -327,12 +351,19 @@ export async function fetchSectorAnalysis(
   return parseJson<SectorAnalysisResponse>(res);
 }
 
-export async function startOrchestratorAnalysis(query: string): Promise<StartAnalysisResponse> {
+export async function startOrchestratorAnalysis(
+  query: string,
+  sessionId?: string | null,
+): Promise<StartAnalysisResponse> {
   const url = `${API_BASE}/api/analyze`;
+  // Only send session_id when we actually have one — the backend mints a fresh
+  // session on the first analyze and returns it for the caller to reuse.
+  const body: Record<string, unknown> = { query };
+  if (sessionId) body.session_id = sessionId;
   const res = await authedFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(body),
   });
   return parseJson<StartAnalysisResponse>(res);
 }

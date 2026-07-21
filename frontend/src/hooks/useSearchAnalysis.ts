@@ -8,6 +8,8 @@ import {
   fetchSectorAnalysis,
   fetchVesselTrack,
   startOrchestratorAnalysis as apiStartOrchestrator,
+  getAnalysisSessionId,
+  setAnalysisSessionId,
   pollAnalysisStatus,
   fetchSayariResolve,
   fetchSayariUBO,
@@ -305,7 +307,12 @@ export function useSearchAnalysis() {
 
     addProgress('Submitting to orchestrator pipeline...')
     try {
-      const { analysis_id } = await apiStartOrchestrator(raw)
+      // Thread agent memory: reuse the persisted session so follow-on questions
+      // recall this run's entities/findings; capture the id the backend returns
+      // (it mints one on the first analyze) for the next question.
+      const started = await apiStartOrchestrator(raw, getAnalysisSessionId())
+      const { analysis_id } = started
+      if (started.session_id) setAnalysisSessionId(started.session_id)
       addProgress(`Pipeline started (ID: ${analysis_id})`)
 
       let done = false
