@@ -1,0 +1,39 @@
+# Local Redis 8 (with the Query Engine + JSON) for developing the semantic
+# features — vector entity search, agent memory, semantic cache, the shared
+# analysis store. This is the SAME `redis:8` image the Render private service
+# runs, so "works locally" means "works there" for the Redis-facing code.
+#
+# This is OPTIONAL. With no REDIS_URL the whole app runs on its lexical / in-memory
+# fallbacks (that's the CI default too) — bring this up only when you want the
+# Query-Engine-backed paths live locally.
+#
+#   docker compose up -d redis          # or: scripts/dev-redis.sh
+#   export REDIS_URL=redis://localhost:6379/0
+#   # (semantic features also need a Voyage key: export VOYAGE_API_KEY=...)
+#   GET /api/health -> {"redis": {"search": true, "json": true, ...}}
+#
+# NOTE the port: 6379. The test suite points at 6399 for its "Redis is
+# unreachable" assertions and 6398 for the integration containers, so this dev
+# instance on 6379 never collides with a test run.
+services:
+  redis:
+    image: docker.io/library/redis:8.2-alpine # pinned; matches render.yaml's pserv
+    container_name: emissary-redis-dev
+    command: >-
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 400mb
+      --maxmemory-policy volatile-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - emissary-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  emissary-redis-data:

@@ -31,6 +31,20 @@ services:
       # query for 24h. Set "0" for production analysts who always need fresh runs.
       - key: EMISSARY_PREWARM_CACHE
         value: "1"
+      # Semantic auto-replay: answer a REWORDED warmed question without asking, when
+      # similarity is high AND the entity signature is identical. Default off — for
+      # analysts, silently answering a near-miss is a liability, and the "Did you
+      # mean…?" suggestion (always on) is the safe path. Set "1" ONLY on a demo
+      # service where the magic-feel is wanted. Needs a Voyage key to do anything.
+      - key: EMISSARY_SEMANTIC_REPLAY
+        value: "0"
+      # Analysis state backend. "memory" (default) is process-local — fine for the
+      # single web instance we run today. Set "redis" to share live analysis
+      # status/progress/results across instances and survive restarts (needs the
+      # Redis 8 pserv below; closes fragility F3). Flip to "redis" before scaling
+      # the web service past one instance.
+      - key: ANALYSES_BACKEND
+        value: "memory"
       - key: ANTHROPIC_API_KEY
         sync: false  # set manually in Render dashboard
       - key: FRED_API_KEY
@@ -49,11 +63,21 @@ services:
         fromDatabase:
           name: swarm-db
           property: connectionString
-      - key: REDIS_URL
+      # Redis 8 (private service `emissary-redis` below). A pserv exposes host/port,
+      # NOT a connectionString, and render.yaml can't interpolate strings — so we
+      # feed the pieces to config._compose_redis_url(), which assembles REDIS_URL.
+      # Everything downstream (rate limiter, wargame pub/sub, redisvl) still reads
+      # REDIS_URL exactly as before.
+      - key: REDIS_HOSTPORT
         fromService:
-          type: keyvalue
-          name: swarm-redis
-          property: connectionString
+          type: pserv
+          name: emissary-redis
+          property: hostport
+      - key: REDIS_PASSWORD
+        fromService:
+          type: pserv
+          name: emissary-redis
+          envVarKey: REDIS_PASSWORD
       # ── Notifications (Twilio SMS + SendGrid email) ──
       - key: NOTIFICATIONS_ENABLED
         value: "true"
@@ -103,12 +127,54 @@ services:
           name: economic-warfare-osint
           envVarKey: APP_BASE_URL
 
-  # ─── Swarm Redis (world-state pub/sub during live sims) ──────────
-  - type: keyvalue
-    name: swarm-redis
+  # ─── Redis 8 (private service) ───────────────────────────────────
+  # Replaces the old `swarm-redis` KEY VALUE service, which was Valkey and had NO
+  # modules — so no FT.* (Query Engine) and no JSON. This runs the stock upstream
+  # `redis:8` image, which bundles the Query Engine + RedisJSON, unlocking the
+  # semantic features (vector entity search, agent long-term memory, semantic
+  # cache) while staying a strict protocol superset — the rate limiter and the
+  # wargame pub/sub keep working unchanged.
+  #
+  # It's a superset AND cheaper: pserv starter is ~$7/mo vs the keyvalue's ~$10.
+  #
+  # ⚠️ AGPL/procurement: the redis:8 image is AGPLv3. Running it unmodified as a
+  # network service creates no source-disclosure obligation (and Redis 8 is
+  # tri-licensed, so RSALv2 is available), but some DoD/prime SBOM policies
+  # blanket-ban AGPL artifacts. Confirm that's cleared before merging this.
+  #
+  # ⚠️ After the first sync, DELETE the old `swarm-redis` Key Value service in the
+  # Render dashboard — removing it from the blueprint does not always auto-destroy
+  # a managed datastore.
+  - type: pserv
+    name: emissary-redis
+    runtime: image
+    image:
+      url: docker.io/library/redis:8.2-alpine  # PINNED — never :8 or :latest
     region: virginia
-    plan: starter  # $10/mo — Render Key Value has no free tier
-    ipAllowList: []  # only reachable from services inside this project
+    plan: starter  # 512 MB RAM
+    # Bind Render's assigned $PORT (its private-network router points at it), write
+    # the AOF to the persistent disk (without --dir it lands on the ephemeral
+    # container fs and is lost on restart), and cap memory below the plan ceiling.
+    # volatile-lru (not noeviction/allkeys-lru): every key we write has an explicit
+    # TTL, so under pressure it evicts expiring cache entries instead of erroring
+    # writes on the rate-limiter path or dropping index docs we still consider live.
+    dockerCommand: >-
+      redis-server
+      --port $PORT
+      --dir /data
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 400mb
+      --maxmemory-policy volatile-lru
+      --requirepass $REDIS_PASSWORD
+    disk:
+      name: redis-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      # Generated once by Render, shared to the web service via fromService above.
+      - key: REDIS_PASSWORD
+        generateValue: true
 
 # ─── Swarm Postgres (with pgvector for agent memory RAG) ───────────
 # Extension must be enabled once via the Render shell:
