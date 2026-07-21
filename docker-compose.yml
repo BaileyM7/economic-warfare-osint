@@ -17,7 +17,11 @@
 # instance on 6379 never collides with a test run.
 services:
   redis:
-    image: docker.io/library/redis:8.2-alpine # pinned; matches render.yaml's pserv
+    image: docker.io/library/redis:8.2-alpine # pinned; same image as render.yaml's pserv
+    # NB: no --loadmodule here (unlike render.yaml). Locally Redis 8 auto-loads its
+    # bundled Query Engine / RedisJSON, so an explicit --loadmodule would double-load
+    # and crash. Render's runtime does NOT auto-load them, so the pserv loads them
+    # explicitly — see the render.yaml dockerCommand comment.
     container_name: emissary-redis-dev
     command: >-
       redis-server
