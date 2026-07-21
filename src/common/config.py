@@ -13,6 +13,67 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_project_root / ".env")
 
 
+# Output width per Voyage model, verified against the live API. Having this map is
+# what stops EMBEDDING_MODEL and EMBEDDING_DIMS drifting into an impossible pair
+# (this repo shipped voyage-3 + 1536 for months; voyage-3 emits 1024).
+#
+# Duplicated in src/wargame_ai/memory/embeddings.py on purpose: the wargame is an
+# optional extra (`uv sync --extra wargame`) that this module must not import, and
+# it deliberately never imports src.* either. Update both.
+_EMBED_MODEL_DIMS: dict[str, int] = {
+    "voyage-3": 1024,
+    "voyage-3-lite": 512,
+    "voyage-3-large": 1024,
+    "voyage-large-2": 1536,
+    "voyage-code-3": 1024,
+    "voyage-finance-2": 1024,
+    "voyage-law-2": 1024,
+    "voyage-multilingual-2": 1024,
+}
+# Matches the deployed EMBEDDING_MODEL and the wargame's agent_memory column width.
+_DEFAULT_EMBED_MODEL = "voyage-large-2"
+
+
+def _resolve_embedding_dims() -> int:
+    """Vector width for the configured model.
+
+    An explicit ``EMBEDDING_DIMS`` always wins (needed for models newer than this
+    map). Otherwise it's derived from ``EMBEDDING_MODEL`` so the two can't silently
+    disagree. Either way ``src/common/embeddings.py`` asserts the result against a
+    live response before any vector is written.
+    """
+    explicit = os.getenv("EMBEDDING_DIMS", "").strip()
+    if explicit:
+        return int(explicit)
+    model = os.getenv("EMBEDDING_MODEL", _DEFAULT_EMBED_MODEL).strip()
+    return _EMBED_MODEL_DIMS.get(model, _EMBED_MODEL_DIMS[_DEFAULT_EMBED_MODEL])
+
+
+def _compose_redis_url() -> str:
+    """The Redis URL, from `REDIS_URL` or composed from host/port + password.
+
+    A Render **private service** (which is how we get a real Redis 8 with the
+    Query Engine — the managed `keyvalue` service is Valkey and has no modules)
+    exposes `host`/`port`/`hostport` via `fromService`, NOT a `connectionString`
+    the way a managed datastore does. And render.yaml cannot interpolate strings,
+    so the URL has to be assembled here rather than in the blueprint.
+
+    `REDIS_URL` still wins when set, so local dev, the existing managed keyvalue,
+    and CI (which forces it empty) all keep working unchanged.
+    """
+    explicit = os.getenv("REDIS_URL", "").strip()
+    if explicit:
+        return explicit
+
+    hostport = os.getenv("REDIS_HOSTPORT", "").strip()
+    if not hostport:
+        return ""
+
+    password = os.getenv("REDIS_PASSWORD", "").strip()
+    auth = f":{password}@" if password else ""
+    return f"redis://{auth}{hostport}/0"
+
+
 @dataclass
 class Config:
     """Central configuration — all values come from env vars."""
@@ -81,6 +142,26 @@ class Config:
             "SIMILARITY_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
         )
     )
+
+    # --- Embeddings (src/common/embeddings.py) ---
+    # The hosted-embedding seam shared by semantic search / semantic cache / agent
+    # memory. Same env-var names the wargame already uses, so there is ONE Voyage
+    # convention across the repo.
+    #
+    # No key => embeddings are OFF and every caller falls back to its lexical path.
+    # There is deliberately no stub/hash embedder: fake vectors produce confident,
+    # plausible, meaningless neighbours, which in an intel tool is how you ship a
+    # wrong assessment. Off and honest beats on and wrong.
+    #
+    # embedding_dims is DERIVED from the model unless explicitly set, because the
+    # two defaulting independently is exactly how this repo ended up shipping a
+    # voyage-3 + 1536 pair that cannot exist (voyage-3 emits 1024). It is also
+    # asserted against the live response at startup rather than trusted.
+    voyage_api_key: str = field(default_factory=lambda: os.getenv("VOYAGE_API_KEY", ""))
+    embedding_model: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_MODEL", _DEFAULT_EMBED_MODEL).strip()
+    )
+    embedding_dims: int = field(default_factory=lambda: _resolve_embedding_dims())
 
     # LLM provider (issue #33) — local-deployment option. "anthropic" (default)
     # uses the Claude API. "openai" targets any OpenAI-compatible endpoint
@@ -159,7 +240,11 @@ class Config:
             "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173",
         )
     )
-    redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", ""))
+    # Empty = no Redis; every Redis-backed feature then falls back (in-memory rate
+    # limiting, disk cache, lexical search). See src/common/redis_client.py — and
+    # note that a *reachable* Redis is not necessarily a *capable* one: Valkey has
+    # no FT.*/JSON.*, so semantic features gate on redis_client.capabilities().
+    redis_url: str = field(default_factory=_compose_redis_url)
     risk_feed_mode: str = field(default_factory=lambda: os.getenv("RISK_FEED_MODE", "auto"))
     emissary_demo_username: str = field(
         default_factory=lambda: os.getenv("EMISSARY_DEMO_USERNAME", "analyst")
