@@ -25,14 +25,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["briefings"])
 
 
-# --- Reference to the in-memory analyses dict (set by api.py) ---
+# --- Reference to the shared analysis store (set by api.py) ---
+# Read-only here: briefings pull a completed analysis's result to cite its
+# sources. Uses store.get() so it works with either the in-memory or the
+# Redis-backed store (Phase 7).
 
-_analyses_ref: dict[str, dict[str, Any]] | None = None
+_analyses_ref: Any = None
 
 
-def set_analyses_ref(analyses: dict[str, dict[str, Any]]) -> None:
+def set_analyses_ref(store: Any) -> None:
     global _analyses_ref
-    _analyses_ref = analyses
+    _analyses_ref = store
 
 
 # --- Request models ---
@@ -207,10 +210,11 @@ async def generate_briefing(request: Request, response: Response, req: BriefingG
         if coa_row:
             source_data = row_to_coa(coa_row)
             source_title = f"Briefing: {coa_row['name']}"
-    elif req.analysis_id and _analyses_ref and req.analysis_id in _analyses_ref:
-        analysis = _analyses_ref[req.analysis_id]
-        source_data = analysis.get("result", {})
-        source_title = f"Briefing: Analysis {req.analysis_id}"
+    elif req.analysis_id and _analyses_ref is not None:
+        analysis = _analyses_ref.get(req.analysis_id)
+        if analysis:
+            source_data = analysis.get("result", {})
+            source_title = f"Briefing: Analysis {req.analysis_id}"
 
     sources = _extract_sources(source_data)
     # Fallback: COAs created before source plumbing existed (or via the manual
@@ -221,9 +225,10 @@ async def generate_briefing(request: Request, response: Response, req: BriefingG
     # is still cached.
     if not sources and req.coa_id:
         analysis_id = source_data.get("source_analysis_id")
-        if analysis_id and _analyses_ref and analysis_id in _analyses_ref:
-            cached = _analyses_ref[analysis_id].get("result", {})
-            sources = _extract_sources(cached)
+        if analysis_id and _analyses_ref is not None:
+            analysis = _analyses_ref.get(analysis_id)
+            if analysis:
+                sources = _extract_sources(analysis.get("result", {}))
     sources_block = _format_sources_for_prompt(sources)
 
     user_content = (

@@ -23,7 +23,9 @@ from src.common.types import (
     SourceReference,
 )
 from src.orchestrator.prompts import (
+    DECOMPOSITION_MEMORY_BLOCK,
     DECOMPOSITION_PROMPT,
+    SYNTHESIS_MEMORY_BLOCK,
     SYNTHESIS_PROMPT,
     SYNTHESIS_SYSTEM_SUPPLEMENT,
     SYSTEM_PROMPT,
@@ -61,18 +63,29 @@ class Orchestrator:
         self.tool_registry = ToolRegistry()
 
     async def analyze(
-        self, query: str, progress_callback=None, event_callback=None
+        self,
+        query: str,
+        progress_callback=None,
+        event_callback=None,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> ImpactAssessment:
         """Run the full analysis pipeline for an analyst's question.
 
         ``progress_callback(msg: str)`` gets human-readable log lines (legacy).
         ``event_callback(event: dict)`` gets STRUCTURED events so a UI can render
         the agent swarm live. Event shapes:
-          {"type":"phase","name":"decompose|execute|synthesize|complete","status":...}
+          {"type":"phase","name":"recall|decompose|execute|synthesize|complete","status":...}
+          {"type":"memory","items":[{"text","confidence","sources"}]}
           {"type":"plan","steps":[{"step","description","tools":[name,...]}]}
           {"type":"tool","step","name","domain","task","status":"running"} then
           {"type":"tool","step","name","domain","status":"done|error","summary","ms"}
         Both callbacks are optional and independent.
+
+        ``user_id`` scopes long-term memory recall (Phase 5). When set, this
+        analyst's prior findings are recalled BEFORE decomposition and injected
+        into the plan + synthesis prompts as UNVERIFIED prior work — never as a
+        cited source. Without it, the pipeline is exactly as before.
         """
 
         def _emit(msg: str) -> None:
@@ -86,10 +99,29 @@ class Orchestrator:
 
         _emit(f"Query received: {query[:120]}")
 
+        # Step 0: Recall what this analyst already knows (Phase 5). Cheap — one
+        # embed + one FT.SEARCH (~20-40ms), or a lexical scan when the index is
+        # off. Runs BEFORE decompose so it can change the PLAN, not just the prose.
+        recalled = await self._recall(query, user_id, session_id, _emit)
+        if recalled:
+            _event(
+                {
+                    "type": "memory",
+                    "items": [
+                        {
+                            "text": m["text"],
+                            "confidence": m["confidence"],
+                            "sources": [s.get("name") for s in m.get("sources") or []],
+                        }
+                        for m, _ in recalled
+                    ],
+                }
+            )
+
         # Step 1: Decompose the question into a research plan
         _emit("[1/4] Decomposing question into research plan...")
         _event({"type": "phase", "name": "decompose", "status": "start"})
-        plan = await self._decompose(query)
+        plan = await self._decompose(query, memory=recalled)
         _emit(f"[1/4] Research plan: {len(plan)} step(s) identified")
         _event(
             {
@@ -114,7 +146,7 @@ class Orchestrator:
         # Step 3: Synthesize results
         _emit("[3/4] Synthesizing findings with Claude...")
         _event({"type": "phase", "name": "synthesize", "status": "start"})
-        assessment = await self._synthesize(query, tool_results, on_event=_event)
+        assessment = await self._synthesize(query, tool_results, on_event=_event, memory=recalled)
         assessment.tool_results = tool_results
 
         # Step 4: Done
@@ -123,11 +155,80 @@ class Orchestrator:
 
         return assessment
 
-    async def _decompose(self, query: str) -> list[dict[str, Any]]:
-        """Use the LLM to decompose the question into a research plan."""
+    async def _recall(self, query: str, user_id: str | None, session_id: str | None, emit) -> list:
+        """Recall this analyst's prior facts relevant to the query. [] if none/off.
+
+        Two prongs, merged:
+          1. **Semantic** — vector KNN of the query over the user's memories.
+          2. **Entity-anchored** — if the session's working memory knows which
+             entities this thread is about, recall memories tagged with those
+             entities. This is what resolves anaphora: "what else is exposed to
+             *that supply chain*?" shares almost no words with "DRAM line / UMC",
+             but the thread's entities (Fujian Jinhua, UMC, Micron) pin it to the
+             semiconductor context. Bare-query recall alone would drift toward
+             generic "supply chain / logistics" matches.
+
+        Best-effort: recall must never break an analysis.
+        """
+        if not user_id:
+            return []
+        try:
+            from src.common import agent_memory
+
+            merged: dict[str, tuple[dict, float]] = {}
+
+            for m, score in await agent_memory.recall(query, user_id=user_id, k=8):
+                merged[m["memory_id"]] = (m, score)
+
+            # Entity-anchored pass, using what the thread is already about.
+            entity_names = self._session_entities(session_id, user_id)
+            if entity_names:
+                anchored = await agent_memory.recall(
+                    query, user_id=user_id, k=8, entity_names=entity_names
+                )
+                for m, score in anchored:
+                    # Anchored hits are more on-topic; keep the higher score.
+                    prev = merged.get(m["memory_id"])
+                    if prev is None or score > prev[1]:
+                        merged[m["memory_id"]] = (m, score)
+
+            hits = sorted(merged.values(), key=lambda x: x[1], reverse=True)[:8]
+            if hits:
+                emit(f"[0/4] Recalled {len(hits)} prior finding(s) for this analyst.")
+            return hits
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [recall] skipped: {exc}")
+            return []
+
+    def _session_entities(self, session_id: str | None, user_id: str | None) -> list[str]:
+        """Entity names this thread is about, from working memory ([] if none)."""
+        if not session_id or not user_id:
+            return []
+        try:
+            from src.common import agent_memory
+
+            wm = agent_memory.get_working(session_id, user_id)
+            if wm is None:
+                return []
+            return [e.get("name") for e in wm.entities if e.get("name")][:12]
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _decompose(self, query: str, memory: list | None = None) -> list[dict[str, Any]]:
+        """Use the LLM to decompose the question into a research plan.
+
+        When ``memory`` (recalled prior facts) is present, a block is appended to
+        the decomposition prompt so the plan can be SHARPER — skip reconfirming
+        HIGH-confidence facts, push past what's known, verify shaky ones.
+        """
+        user_content = DECOMPOSITION_PROMPT.format(query=query)
+        mem_block = _format_memory_block(memory)
+        if mem_block:
+            user_content = f"{user_content}\n\n{DECOMPOSITION_MEMORY_BLOCK}\n{mem_block}"
+
         text = await self.provider.complete(
             system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": DECOMPOSITION_PROMPT.format(query=query)}],
+            messages=[{"role": "user", "content": user_content}],
             max_tokens=3000,
             model=self.decompose_model,
         )
@@ -346,7 +447,7 @@ class Orchestrator:
             return resp.content[0].text
 
     async def _synthesize(
-        self, query: str, tool_results: dict[str, Any], on_event=None
+        self, query: str, tool_results: dict[str, Any], on_event=None, memory: list | None = None
     ) -> ImpactAssessment:
         """Use Claude to synthesize tool results into a final assessment."""
         # Determine scenario type from results
@@ -388,6 +489,11 @@ class Orchestrator:
             scenario_type=scenario_type,
             tool_results=results_text,
         )
+        mem_block = _format_memory_block(memory)
+        if mem_block:
+            # Context only. Every claim still stands on the tool results above, and
+            # _merge_sources never harvests memory — provenance stays live-tool-only.
+            user_content = f"{user_content}\n\n{SYNTHESIS_MEMORY_BLOCK}\n{mem_block}"
         text = await self._stream_synthesis(synthesis_system, user_content, on_event)
         json_str = _extract_json(text)
 
@@ -561,6 +667,30 @@ def _looks_like_opaque_id(name: str) -> bool:
         return True
     # long single token with several digits and no spaces → opaque key
     return sum(c.isdigit() for c in n) >= 4 and re.fullmatch(r"[A-Za-z0-9_\-]+", n) is not None
+
+
+def _format_memory_block(memory: list | None) -> str:
+    """Render recalled memories as prompt lines, or "" when there are none.
+
+    Each line: ``- [CONFIDENCE, entities] text  (src: ...)``. Kept compact — this
+    rides on every decompose + synthesis prompt when memory is present.
+    """
+    if not memory:
+        return ""
+    lines: list[str] = []
+    for item in memory[:8]:
+        m = item[0] if isinstance(item, tuple) else item
+        if not isinstance(m, dict) or not m.get("text"):
+            continue
+        conf = m.get("confidence", "?")
+        ents = ", ".join(m.get("entity_names") or [])
+        srcs = ", ".join(s.get("name", "") for s in (m.get("sources") or []) if s.get("name"))
+        tag = f"{conf}" + (f", {ents}" if ents else "")
+        line = f"- [{tag}] {m['text']}"
+        if srcs:
+            line += f"  (src: {srcs})"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _merge_sources(

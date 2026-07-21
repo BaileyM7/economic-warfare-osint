@@ -329,3 +329,40 @@ def test_email(username: str, admin: str = Depends(require_admin)) -> dict:
         "provider_message_id": result.provider_message_id,
         "error": result.error,
     }
+
+
+# --- Entity vector index maintenance ------------------------------------
+#
+# Startup drains only the *dirty* set (entities changed since the last index
+# write); it does not cover entities that already existed before the index was
+# ever built. After first standing up Redis 8 + Voyage, the index is empty, so
+# there is nothing to drain — this endpoint does the one-time (or on-demand)
+# full backfill over every saved entity. Safe to re-run: unchanged entities are
+# skipped via the text_hash guard, so it's idempotent and cheap on repeat.
+
+
+@router.post("/reindex-entities")
+async def reindex_entities(admin: str = Depends(require_admin)) -> dict:
+    """Backfill the entity vector index from the SQLite system of record.
+
+    No-op (with a reason) when the index is unavailable — Redis 8 / Voyage off —
+    so it degrades exactly like every other semantic feature instead of 500ing.
+    """
+    from src.common import knowledge_store, vector_index
+
+    if not vector_index.is_available():
+        return {"status": "unavailable", **vector_index.status()}
+
+    entities = knowledge_store.list_entities()
+    result = await vector_index.backfill(entities)
+    log_activity(
+        event_type="admin_reindex_entities",
+        message=f"{admin} reindexed entities -> {result}",
+        source=admin,
+    )
+    return {
+        "status": "ok",
+        "total_entities": len(entities),
+        **result,
+        "index": vector_index.status(),
+    }

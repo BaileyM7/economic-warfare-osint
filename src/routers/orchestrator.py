@@ -13,20 +13,23 @@ original inline handlers.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.common.analyses import ANALYSES_EVENTS_CAP as _ANALYSES_EVENTS_CAP
-from src.common.analyses import ANALYSES_PROGRESS_CAP as _ANALYSES_PROGRESS_CAP
-from src.common.analyses import analyses as _analyses
+from src.auth import require_auth
+from src.common import agent_memory
+from src.common.analyses import get_analysis_store
 from src.common.cache import get_cached, set_cached
 from src.orchestrator.main import Orchestrator
 from src.orchestrator.tool_registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["orchestrator"])
 
@@ -43,9 +46,6 @@ _PREWARM_TTL = 86400  # 24h
 # strings so the suggestion reads naturally.
 _REGISTRY_KEY = "warmed_query_registry"
 _REGISTRY_MAX = 200
-# Similarity at/above which we surface a suggestion. High enough that only a
-# genuine rewording of a warmed question matches — it's a suggestion, not a replay.
-_SUGGEST_THRESHOLD = 0.6
 # The canonical demo questions (see docs/demo-runbook.md). Seeded as a constant
 # floor so suggestions work on a fresh box before the registry is populated.
 _DEMO_QUERIES = [
@@ -54,37 +54,10 @@ _DEMO_QUERIES = [
     "How exposed is the drone supply chain to a DJI export ban?",
     "Map Rosatom’s subsidiaries and their Western trade links.",
 ]
-# Low-signal tokens dropped before comparing queries so structural filler
-# ("what happens if we …") doesn't inflate the overlap score.
-_STOPWORDS = frozenset(
-    "a an the of to in on for and or if we our is are be do does what who how "
-    "their its it this that with from into about as at by".split()
-)
 
 
 def _normalize_query(query: str) -> str:
     return " ".join(query.lower().split())
-
-
-def _tokenize(query: str) -> set[str]:
-    """Content tokens of a query (shim over the shared similarity tokenizer)."""
-    from src.common.similarity import tokenize
-
-    return tokenize(query, _STOPWORDS)
-
-
-def _query_similarity(a: str, b: str) -> float:
-    """Jaccard overlap of two queries' content tokens (0.0–1.0).
-
-    Delegates to the shared lexical similarity (src/common/similarity.py) — the
-    single home for "content-token overlap" — passing this module's own
-    stopwords so the "Did you mean…?" behaviour is unchanged. The shared module
-    is where the optional embedding upgrade lives, so this seam can move to
-    embeddings later without touching callers.
-    """
-    from src.common.similarity import jaccard_similarity
-
-    return jaccard_similarity(a, b, _STOPWORDS)
 
 
 def _warmed_queries() -> list[str]:
@@ -115,25 +88,25 @@ def _register_warmed_query(query: str) -> None:
     set_cached(out, _PREWARM_NS, ttl=_PREWARM_TTL, registry=_REGISTRY_KEY)
 
 
-def _suggest_query(query: str) -> tuple[str | None, float]:
-    """Best warmed query for a near-miss, or (None, 0.0).
+async def _suggest_query(query: str) -> tuple[str | None, float, str]:
+    """Best warmed query for a near-miss: ``(suggestion, score, backend)``.
 
-    Never returns an exact match (those already instant-replay) — only a *different*
-    warmed query similar enough to be worth confirming. The caller surfaces it as a
-    suggestion; it is never auto-run.
+    Semantic when embeddings are available (a *reworded* demo question now matches,
+    not just a token-overlapping one), else the original Jaccard. Either way this
+    is suggest-only — it never auto-answers a near-miss with a different question's
+    assessment; the exact/auto-replay paths handle answering.
+
+    Delegates to src/common/semantic_cache.py, the single home for query matching.
     """
-    qn = _normalize_query(query)
-    best: str | None = None
-    best_score = 0.0
-    for cand in _warmed_queries():
-        if _normalize_query(cand) == qn:
-            continue  # exact — replay path already handles it
-        score = _query_similarity(query, cand)
-        if score > best_score:
-            best, best_score = cand, score
-    if best is not None and best_score >= _SUGGEST_THRESHOLD:
-        return best, round(best_score, 3)
-    return None, 0.0
+    from src.common import semantic_cache
+
+    match = await semantic_cache.match_query(query, _warmed_queries())
+    if match.band in ("suggest", "auto_replay") and match.query is not None:
+        # An auto_replay-band match is still a fine *suggestion* to surface here;
+        # the suggest endpoint never answers, so the entity-signature guard that
+        # gates auto-replay isn't needed for merely offering it.
+        return match.query, round(match.similarity, 3), match.backend
+    return None, 0.0, match.backend
 
 
 async def _replay_cached(analysis_id: str, cached: dict[str, Any], on_event, on_progress) -> None:
@@ -142,10 +115,7 @@ async def _replay_cached(analysis_id: str, cached: dict[str, Any], on_event, on_
         on_event(ev)
         # Pace so the board lights up over ~10s instead of resolving instantly.
         await asyncio.sleep(0.12 if ev.get("type") == "tool" else 0.3)
-    entry = _analyses.get(analysis_id)
-    if entry is not None:
-        entry["result"] = cached.get("result")
-        entry["status"] = "completed"
+    get_analysis_store().set_fields(analysis_id, result=cached.get("result"), status="completed")
     on_progress("Analysis complete.")
 
 
@@ -154,11 +124,21 @@ async def _replay_cached(analysis_id: str, cached: dict[str, Any], on_event, on_
 
 class AnalyzeRequest(BaseModel):
     query: str
+    # Continue an existing thread. Optional and additive: omit it (as today's
+    # frontend does) and a fresh session is minted per analysis, which is exactly
+    # the current behaviour.
+    session_id: str | None = None
+    # Opt out of semantic auto-replay for this request — always run the question
+    # live. The "Run this exact question instead" button posts this. Additive.
+    force_fresh: bool = False
 
 
 class AnalyzeResponse(BaseModel):
     analysis_id: str
     status: str
+    # Additive — old clients ignore it. Pass it back on the next /analyze or
+    # /followup to keep the thread.
+    session_id: str | None = None
 
 
 class SuggestResponse(BaseModel):
@@ -167,11 +147,20 @@ class SuggestResponse(BaseModel):
     # we never auto-answer a near-miss with a different question's assessment.
     suggestion: str | None = None
     score: float = 0.0
+    # "vector" (semantic) or "lexical" (Jaccard fallback) — lets the UI/ops see
+    # which path produced the suggestion without guessing.
+    backend: str = "lexical"
 
 
 class AnalysisStatus(BaseModel):
     analysis_id: str
     status: str
+    session_id: str | None = None  # additive; lets a poller pick up the thread
+    # Set when this run was answered by a semantically-equivalent WARMED question
+    # rather than the exact one asked. {"query": <warmed>, "similarity": float}.
+    # The UI must disclose this and offer "run the exact question instead".
+    replayed_from: dict[str, Any] | None = None
+    notice: str | None = None
     progress: list[str]
     # Structured agent-swarm events (plan / per-tool running|done). Drives the
     # live "swarm of AI agents" UI; see _run_analysis.on_event for the shapes.
@@ -189,57 +178,197 @@ async def list_tools():
     return {"tools": registry.list_tools()}
 
 
-async def _run_analysis(analysis_id: str, query: str) -> None:
+def _remember_run(
+    session_id: str | None,
+    user_id: str | None,
+    query: str,
+    analysis_id: str,
+    assessment: dict[str, Any] | None,
+) -> None:
+    """Record a completed run in the thread's working memory.
+
+    Best-effort by construction: memory is an enhancement, the assessment is the
+    product, so nothing here may fail an analysis.
+
+    Called from BOTH the live and the cached-replay paths. Missing the replay path
+    would make a warm demo question silently produce an amnesiac session — the
+    follow-up would have no idea what was just asked, and only on the questions
+    most likely to be demoed.
+    """
+    if not session_id or not user_id or not assessment:
+        return
+    try:
+        agent_memory.append_turn(
+            session_id, user_id, agent_memory.Turn(role="user", text=query, analysis_id=analysis_id)
+        )
+        summary = (assessment.get("executive_summary") or "").strip()
+        if summary:
+            agent_memory.append_turn(
+                session_id,
+                user_id,
+                agent_memory.Turn(role="assistant", text=summary, analysis_id=analysis_id),
+            )
+        agent_memory.set_run_state(
+            session_id,
+            user_id,
+            assessment=assessment,
+            entities=agent_memory.entities_from_assessment(assessment),
+            context_type="orchestrator",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not record working memory for %s: %s", analysis_id, exc)
+
+
+def _extract_memories_bg(
+    query: str,
+    assessment: dict[str, Any] | None,
+    user_id: str | None,
+    session_id: str | None,
+    analysis_id: str,
+) -> None:
+    """Schedule background long-term-memory extraction. Never blocks/raises.
+
+    Extraction is a 3-5s Haiku call; it runs as a detached task so the analyst is
+    never made to wait, and a failure only means "no new memories", never a failed
+    analysis. Skipped entirely without a user (nothing to scope memory to).
+    """
+    if not user_id or not assessment:
+        return
+
+    async def _do() -> None:
+        try:
+            from src.orchestrator.memory_extract import extract_and_remember
+
+            n = await extract_and_remember(
+                query=query,
+                assessment=assessment,
+                user_id=user_id,
+                session_id=session_id,
+                analysis_id=analysis_id,
+            )
+            if n:
+                logger.info("Extracted %d new long-term memories from %s", n, analysis_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Background memory extraction failed for %s: %s", analysis_id, exc)
+
+    try:
+        asyncio.create_task(_do())
+    except RuntimeError:
+        pass  # no running loop (shouldn't happen in the request path)
+
+
+async def _try_semantic_replay(
+    analysis_id: str, query: str, on_event, on_progress
+) -> dict[str, Any] | None:
+    """If a semantically-equivalent WARMED question exists, replay it. Else None.
+
+    Only fires in the ``auto_replay`` band — low distance AND identical entity
+    signature AND EMISSARY_SEMANTIC_REPLAY=1 — so it can never serve a different
+    company's assessment for a subtly different question (the Nuctech→Hikvision
+    trap). Returns the replayed result dict on success; None otherwise.
+
+    On a hit, the FIRST thing surfaced is the disclosure, so the analyst sees what
+    they're being given before they read it.
+    """
+    from src.common import semantic_cache
+
+    match = await semantic_cache.match_query(query, _warmed_queries())
+    if match.band != "auto_replay" or not match.query:
+        return None
+
+    cached = get_cached(_PREWARM_NS, q=_normalize_query(match.query))
+    if not (isinstance(cached, dict) and cached.get("result")):
+        return None
+
+    pct = round(match.similarity * 100)
+    on_event(
+        {
+            "type": "replay_notice",
+            "replayed_from": match.query,
+            "similarity": match.similarity,
+            "message": (
+                f"Answering the previously-run, semantically equivalent question "
+                f"“{match.query}” ({pct}% match). Run the exact question instead?"
+            ),
+        }
+    )
+    on_progress(f"Replaying semantically equivalent warmed question ({pct}% match).")
+
+    await _replay_cached(analysis_id, cached, on_event, on_progress)
+    get_analysis_store().set_fields(
+        analysis_id,
+        replayed_from={"query": match.query, "similarity": match.similarity},
+        notice=(
+            f"Answered from a semantically equivalent warmed question "
+            f"(“{match.query}”, {pct}% match). Re-run for the exact question."
+        ),
+    )
+    return cached.get("result")
+
+
+async def _run_analysis(
+    analysis_id: str,
+    query: str,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    force_fresh: bool = False,
+) -> None:
+    store = get_analysis_store()
+
     def on_progress(msg: str) -> None:
-        entry = _analyses.get(analysis_id)
-        if entry is None:
-            return  # evicted by TTL/LRU mid-run; drop further updates
-        progress = entry["progress"]
-        progress.append(msg)
-        if len(progress) > _ANALYSES_PROGRESS_CAP:
-            del progress[:-_ANALYSES_PROGRESS_CAP]
+        # append_progress is a no-op if the entry was evicted (TTL/LRU) mid-run,
+        # and caps the list server-side; no read-modify-write here.
+        store.append_progress(analysis_id, msg)
 
     def on_event(event: dict[str, Any]) -> None:
-        entry = _analyses.get(analysis_id)
-        if entry is None:
-            return
-        events = entry["events"]
-        events.append(event)
-        if len(events) > _ANALYSES_EVENTS_CAP:
-            del events[:-_ANALYSES_EVENTS_CAP]
+        store.append_event(analysis_id, event)
 
     qn = _normalize_query(query)
     if _PREWARM:
         cached = get_cached(_PREWARM_NS, q=qn)
         if isinstance(cached, dict) and cached.get("result"):
             await _replay_cached(analysis_id, cached, on_event, on_progress)
+            # A replayed run is still a turn in the thread — see _remember_run.
+            _remember_run(session_id, user_id, query, analysis_id, cached.get("result"))
             return
+
+        # No exact hit — try a semantic auto-replay (opt-in + entity-signature
+        # gated). force_fresh (the "run the exact question" button) skips this.
+        if not force_fresh:
+            replayed = await _try_semantic_replay(analysis_id, query, on_event, on_progress)
+            if replayed is not None:
+                _remember_run(session_id, user_id, query, analysis_id, replayed)
+                return
 
     on_progress("Starting analysis pipeline...")
     try:
         orchestrator = Orchestrator()
         assessment = await orchestrator.analyze(
-            query, progress_callback=on_progress, event_callback=on_event
+            query,
+            progress_callback=on_progress,
+            event_callback=on_event,
+            user_id=user_id,
+            session_id=session_id,
         )
-        entry = _analyses.get(analysis_id)
-        if entry is not None:
-            entry["result"] = assessment.model_dump(mode="json")
-            entry["status"] = "completed"
-            if _PREWARM:
-                set_cached(
-                    {"events": list(entry.get("events") or []), "result": entry["result"]},
-                    _PREWARM_NS,
-                    ttl=_PREWARM_TTL,
-                    q=qn,
-                )
-                # Track the original query so "Did you mean…?" can suggest it later.
-                _register_warmed_query(query)
+        result = assessment.model_dump(mode="json")
+        store.set_fields(analysis_id, result=result, status="completed")
+        if _PREWARM:
+            snapshot = store.get(analysis_id) or {}
+            set_cached(
+                {"events": list(snapshot.get("events") or []), "result": result},
+                _PREWARM_NS,
+                ttl=_PREWARM_TTL,
+                q=qn,
+            )
+            # Track the original query so "Did you mean…?" can suggest it later.
+            _register_warmed_query(query)
+        _remember_run(session_id, user_id, query, analysis_id, result)
+        # Fire-and-forget: extract durable facts into long-term memory. Runs
+        # AFTER the result is stored and never blocks or fails the analysis.
+        _extract_memories_bg(query, result, user_id, session_id, analysis_id)
         on_progress("Done.")
     except Exception as e:
-        entry = _analyses.get(analysis_id)
-        if entry is not None:
-            entry["status"] = "failed"
-            entry["error"] = str(e)
+        store.set_fields(analysis_id, status="failed", error=str(e))
         on_progress(f"Error: {e}")
 
 
@@ -253,45 +382,68 @@ async def suggest_analysis(req: AnalyzeRequest):
     query = (req.query or "").strip()
     if not query:
         return SuggestResponse(suggestion=None, score=0.0)
-    suggestion, score = _suggest_query(query)
-    return SuggestResponse(suggestion=suggestion, score=score)
+    suggestion, score, backend = await _suggest_query(query)
+    return SuggestResponse(suggestion=suggestion, score=score, backend=backend)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
-async def start_analysis(req: AnalyzeRequest):
+async def start_analysis(req: AnalyzeRequest, username: str = Depends(require_auth)):
     query = (req.query or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
+    # Continue the caller's thread when they pass a live one; otherwise start a
+    # new thread. An unknown/expired/someone-else's id silently becomes a new
+    # session rather than a 4xx — a stale tab shouldn't be an error.
+    session_id = req.session_id or ""
+    if not session_id or agent_memory.get_working(session_id, username) is None:
+        session_id = agent_memory.new_session(username)
+
     analysis_id = uuid.uuid4().hex[:8]
-    _analyses[analysis_id] = {
-        "analysis_id": analysis_id,
-        "status": "running",
-        "progress": ["Queued"],
-        "events": [],
-        "result": None,
-        "markdown": None,
-        "graph_data": None,
-        "error": None,
-    }
-    asyncio.create_task(_run_analysis(analysis_id, query))
-    return {"analysis_id": analysis_id, "status": "running"}
+    get_analysis_store().create(
+        analysis_id,
+        {
+            "analysis_id": analysis_id,
+            "status": "running",
+            "session_id": session_id,
+            "replayed_from": None,
+            "notice": None,
+            "progress": ["Queued"],
+            "events": [],
+            "result": None,
+            "markdown": None,
+            "graph_data": None,
+            "error": None,
+        },
+    )
+    asyncio.create_task(
+        _run_analysis(analysis_id, query, session_id, username, force_fresh=req.force_fresh)
+    )
+    return {"analysis_id": analysis_id, "status": "running", "session_id": session_id}
 
 
 @router.get("/analyze/{analysis_id}", response_model=AnalysisStatus)
 async def get_analysis(analysis_id: str):
-    status = _analyses.get(analysis_id)
+    status = get_analysis_store().get(analysis_id)
     if not status:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return status
 
 
 @router.post("/analyze/sync")
-async def analyze_sync(req: AnalyzeRequest):
+async def analyze_sync(req: AnalyzeRequest, username: str = Depends(require_auth)):
     query = (req.query or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
     orchestrator = Orchestrator()
     assessment = await orchestrator.analyze(query)
-    return JSONResponse(content=assessment.model_dump(mode="json"))
+    result = assessment.model_dump(mode="json")
+
+    # Thread this run too, but only when the caller opted in with a session_id —
+    # the sync endpoint is used for one-shot scripted calls, so minting a session
+    # per request would fill the store with threads nobody continues.
+    if req.session_id and agent_memory.get_working(req.session_id, username) is not None:
+        _remember_run(req.session_id, username, query, "sync", result)
+
+    return JSONResponse(content=result)

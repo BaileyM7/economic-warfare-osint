@@ -32,7 +32,9 @@ class SimilarRequest(BaseModel):
     entity_type: str | None = Field(default=None, max_length=50)
     country: str | None = Field(default=None, max_length=100)
     top_k: int = Field(default=5, ge=1, le=50)
-    backend: str | None = Field(default=None, description="override: 'lexical' | 'embedding'")
+    backend: str | None = Field(
+        default=None, description="override: 'lexical' | 'embedding' | 'hybrid'"
+    )
 
 
 @router.post("/similar")
@@ -59,9 +61,20 @@ async def similar_entities(req: SimilarRequest) -> dict:
     else:
         raise HTTPException(status_code=400, detail="Provide entity_id or name")
 
-    candidates = ks.list_entities()
     backend = (req.backend or config.similarity_backend or "lexical").strip().lower()
-    results, backend_used = sim.rank_similar(target, candidates, top_k=req.top_k, backend=backend)
+
+    if backend == "hybrid":
+        # Redis recalls, then we re-rank + explain. Degrades to lexical inside
+        # rank_similar_indexed when Redis/embeddings are unavailable — no O(N)
+        # full-table load on the happy path.
+        results, backend_used = await sim.rank_similar_indexed(
+            target, top_k=req.top_k, entity_type=req.entity_type, country=req.country
+        )
+    else:
+        candidates = ks.list_entities()
+        results, backend_used = sim.rank_similar(
+            target, candidates, top_k=req.top_k, backend=backend
+        )
 
     resp: dict = {
         "target": {
@@ -73,7 +86,14 @@ async def similar_entities(req: SimilarRequest) -> dict:
         "results": results,
         "count": len(results),
     }
-    if backend == "embedding" and backend_used != "embedding":
+    # Tell the truth about a fallback rather than passing lexical results off as
+    # semantic ones. `backend_used` already carries it; the note is for humans.
+    if backend == "hybrid" and backend_used != "hybrid":
+        resp["note"] = (
+            "Semantic index unavailable (needs Redis 8 with the Query Engine plus a "
+            "VOYAGE_API_KEY — see /api/health); fell back to the lexical backend."
+        )
+    elif backend == "embedding" and backend_used != "embedding":
         resp["note"] = (
             "Embedding backend unavailable (install the `similarity` extra); "
             "fell back to the lexical backend."

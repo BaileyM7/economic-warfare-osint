@@ -15,9 +15,11 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from src.auth import require_auth
+from src.common import agent_memory
 from src.common.config import config
 from src.llm import get_anthropic_client as _get_anthropic_client
 
@@ -33,13 +35,21 @@ class FollowUpMessage(BaseModel):
 
 class FollowUpRequest(BaseModel):
     question: str
-    context_type: str  # 'company' | 'orchestrator'
-    context: dict[str, Any]
+    context_type: str = "orchestrator"  # 'company' | 'orchestrator' | 'vessel' | 'coa'
+    # Now OPTIONAL. When present it is used verbatim — byte-for-byte the existing
+    # behaviour — so today's frontend is unaffected. When absent, we hydrate it
+    # from the session's working memory instead, which is what lets a client stop
+    # posting the whole assessment back on every single question.
+    context: dict[str, Any] = {}
     history: list[FollowUpMessage] = []
+    session_id: str | None = None
 
 
 class FollowUpResponse(BaseModel):
     answer: str
+    # Additive: echoes the thread this answer belongs to (null when the caller
+    # didn't use one).
+    session_id: str | None = None
 
 
 def _fmt_pct(v: Any) -> str:
@@ -333,8 +343,44 @@ Friendly Fire Risks:
 • Keep answers tight. No padding."""
 
 
+def _resolve_context(
+    req: FollowUpRequest, username: str
+) -> tuple[dict[str, Any], str, list[FollowUpMessage]]:
+    """Work out what to ground this answer in: (context, context_type, history).
+
+    Resolution order matters, and client-supplied context WINS:
+
+      1. ``req.context`` non-empty -> use it verbatim. This is the existing
+         contract, unchanged down to the byte, so the current frontend (which
+         always posts context) behaves exactly as it does today.
+      2. else ``req.session_id``  -> hydrate from working memory. ``wm.assessment``
+         is an ``ImpactAssessment.model_dump(mode="json")`` — the *same shape* the
+         browser posts back — so every ``_build_*_followup_system`` builder works
+         on it untouched.
+      3. else -> nothing to ground in; the caller gets a 400 as before.
+
+    Same for history: the client's wins; otherwise we replay the thread's turns.
+    """
+    context = req.context or {}
+    context_type = req.context_type
+    history = req.history
+
+    if context:
+        return context, context_type, history
+
+    if req.session_id:
+        wm = agent_memory.get_working(req.session_id, username)
+        if wm is not None and wm.assessment:
+            context = wm.assessment
+            context_type = wm.context_type or context_type
+            if not history:
+                history = [FollowUpMessage(role=t.role, text=t.text) for t in wm.turns]
+
+    return context, context_type, history
+
+
 @router.post("/followup", response_model=FollowUpResponse)
-async def followup(req: FollowUpRequest) -> FollowUpResponse:
+async def followup(req: FollowUpRequest, username: str = Depends(require_auth)) -> FollowUpResponse:
     """Answer a follow-up question grounded in the current analysis context."""
     client = _get_anthropic_client()
     if not client:
@@ -344,18 +390,26 @@ async def followup(req: FollowUpRequest) -> FollowUpResponse:
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    if req.context_type == "company":
-        system_prompt = _build_company_followup_system(req.context)
-    elif req.context_type == "vessel":
-        system_prompt = _build_vessel_followup_system(req.context)
-    elif req.context_type == "coa":
-        system_prompt = _build_coa_followup_system(req.context)
+    context, context_type, history = _resolve_context(req, username)
+    if not context:
+        raise HTTPException(
+            status_code=400,
+            detail="No context to answer from: provide `context`, or a `session_id` for a "
+            "session that has a completed analysis.",
+        )
+
+    if context_type == "company":
+        system_prompt = _build_company_followup_system(context)
+    elif context_type == "vessel":
+        system_prompt = _build_vessel_followup_system(context)
+    elif context_type == "coa":
+        system_prompt = _build_coa_followup_system(context)
     else:
-        system_prompt = _build_orchestrator_followup_system(req.context)
+        system_prompt = _build_orchestrator_followup_system(context)
 
     # Build multi-turn message list from history + current question
     messages: list[dict[str, str]] = []
-    for msg in req.history:
+    for msg in history:
         messages.append({"role": msg.role, "content": msg.text})
     messages.append({"role": "user", "content": question})
 
@@ -369,7 +423,24 @@ async def followup(req: FollowUpRequest) -> FollowUpResponse:
             ),
             timeout=60.0,
         )
-        return FollowUpResponse(answer=response.content[0].text.strip())
+        answer = response.content[0].text.strip()
     except Exception as exc:
         logger.warning("followup failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+    # Record the exchange server-side whenever a thread is in play. This is what
+    # makes the server's copy authoritative *while the client still thinks it owns
+    # the history* — which is exactly what lets the frontend drop `context` and
+    # `history` later without a flag-day change.
+    if req.session_id:
+        try:
+            agent_memory.append_turn(
+                req.session_id, username, agent_memory.Turn(role="user", text=question)
+            )
+            agent_memory.append_turn(
+                req.session_id, username, agent_memory.Turn(role="assistant", text=answer)
+            )
+        except Exception as exc:  # noqa: BLE001 — memory must never fail an answer
+            logger.warning("Could not record follow-up turns for %s: %s", req.session_id, exc)
+
+    return FollowUpResponse(answer=answer, session_id=req.session_id)

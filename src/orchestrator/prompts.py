@@ -207,3 +207,25 @@ Additional synthesis rules:
 
 Return **only** valid JSON matching the schema (no markdown outside the JSON object).
 """
+
+
+# --- Long-term memory injection (Phase 5) ------------------------------------
+# Both blocks are appended ONLY when this analyst has relevant prior findings.
+# Memories are labeled UNVERIFIED prior work, never ground truth, and never enter
+# the assessment's cited sources.
+
+DECOMPOSITION_MEMORY_BLOCK = """\
+## What this analyst already knows (UNVERIFIED prior work — NOT ground truth)
+
+Use this to make the plan SHARPER, not shorter:
+- Do NOT re-run tool calls that would merely reconfirm a HIGH-confidence fact below. Spend the budget elsewhere.
+- DO plan at least one step that pushes PAST what is listed — the next hop, the untested link, the unnamed counterparty.
+- If a fact below is MEDIUM/LOW confidence and the question depends on it, plan a step that VERIFIES it against a live source.
+- If the question refers to something anaphorically ("that supply chain", "the same company"), resolve it from these facts and use the resolved entity names in your tool parameters.
+"""
+
+SYNTHESIS_MEMORY_BLOCK = """\
+## Prior work by this analyst (context only — UNVERIFIED, do NOT cite as a source)
+
+You may reference these to connect the current findings to earlier work (e.g. "building on the earlier assessment of X…"), but they are NOT evidence: every claim in your assessment must still stand on the tool results above, and none of these may appear in `sources`.
+"""
