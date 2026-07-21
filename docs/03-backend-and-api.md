@@ -72,10 +72,84 @@ the bottom group of routers above (same paths, same `require_auth` applied at in
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/tools` | List available tools (from `ToolRegistry`) |
-| POST | `/api/analyze` | Start async analysis → `{analysis_id}` |
-| GET | `/api/analyze/{analysis_id}` | Poll status / progress / result |
-| POST | `/api/analyze/sync` | Run analysis synchronously (blocks) |
-| POST | `/api/followup` | Follow-up Q grounded in current analysis (the old duplicate `/api/follow-up` was removed in Phase 2) |
+| POST | `/api/analyze` | Start async analysis → `{analysis_id, session_id}`. Optional `session_id` continues a thread |
+| GET | `/api/analyze/{analysis_id}` | Poll status / progress / result (also echoes `session_id`) |
+| POST | `/api/analyze/sync` | Run analysis synchronously (blocks). Threads only if given a `session_id` |
+| POST | `/api/followup` | Follow-up Q grounded in `context` **or** a `session_id` (the old duplicate `/api/follow-up` was removed in Phase 2) |
+
+#### Sessions / working memory
+
+`POST /api/analyze` returns a **`session_id`** and threads the conversation server-side via
+[common/agent_memory.py](../src/common/agent_memory.py) — turns, the last assessment, and the
+entities it surfaced. Pass that id back on the next `/api/analyze` or `/api/followup` to continue
+the thread ("what else is exposed to *that* supply chain?" resolves against the stored entities).
+
+All of it is **additive**: omit `session_id` and behaviour is exactly as before. On `/api/followup`,
+a client-supplied `context` still **wins** and produces a byte-identical prompt — so the current
+frontend, which posts the whole assessment back on every question, is unaffected. Omit `context`
+and pass `session_id` instead and the server hydrates it from working memory (`wm.assessment` is
+the same `ImpactAssessment.model_dump()` shape the browser posts), which is how the client will
+eventually stop shipping hundreds of KB per follow-up.
+
+Storage: Redis when `REDIS_URL` is set (7-day TTL, **plain `SET`/`GET`/`EXPIRE` — no `FT.*`, so it
+works on Render's Valkey keyvalue**), otherwise a process-local `TTLCache`. Threads are scoped by
+the authenticated username, checked inside the seam — another user's `session_id` reads as absent
+and is never hijackable. Redis being down degrades to "no memory", never a 500.
+Check the mode: `GET /api/health` → `{"working_memory": {"backend": "redis"|"memory"}}`.
+
+#### Long-term memory ([routers/memory.py](../src/routers/memory.py))
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/memory` | List everything remembered about the caller's prior work |
+| GET | `/api/memory/search?q=` | Semantic (or lexical-fallback) search over the caller's memories |
+| DELETE | `/api/memory/{memory_id}` | Delete one of the caller's memories |
+
+Beyond the *session* thread above, Emissary keeps **durable, extracted facts** across sessions
+([common/agent_memory.py](../src/common/agent_memory.py) long-term half). After each analysis a
+background Haiku pass extracts reusable facts (ownership, sanctions status, supply-chain links) —
+but **only** ones citing a source the analysis actually used (the anti-poisoning guard; see
+[orchestrator/memory_extract.py](../src/orchestrator/memory_extract.py)). Before the *next*
+analysis the orchestrator recalls this analyst's relevant prior facts and injects them into the
+decompose + synthesis prompts as **UNVERIFIED prior work** — never as a cited source — so a
+Friday question builds on Monday's findings ("what else is exposed to *that* supply chain?").
+
+Storage: **SQLite `agent_memories` is the system of record**; a per-user Redis vector index is a
+derived accelerator (needs Redis 8 + a Voyage key). Recall is semantic when both are present,
+otherwise a lexical scan — always scoped to the caller. Analysts can see and delete their own
+memories (the endpoints above), which is what makes the poisoning guard auditable in practice.
+Check the mode: `GET /api/health` → `{"long_term_memory": {"backend": "redis"|"lexical"}}`.
+
+#### Semantic pre-warm cache ([common/semantic_cache.py](../src/common/semantic_cache.py))
+
+The pre-warm cache replays a warmed analysis instead of paying a ~4.5-min cold run. Phase 6
+upgraded query matching from exact-string / Jaccard to **semantic** (when a Voyage key is set):
+
+- **`POST /api/analyze/suggest`** ("Did you mean…?") now matches a *reworded* demo question, not
+  just a token-overlapping one. Always suggest-only — a human confirms — so it's the safe,
+  always-on upgrade. Response gains `backend` (`vector`|`lexical`).
+- **Auto-replay** — answering a reworded question from a warmed one *without* confirmation — is
+  **opt-in** (`EMISSARY_SEMANTIC_REPLAY`, default off) and **entity-signature gated**. Measured on
+  the real API, entity swaps overlap real paraphrases (Fujian Jinhua→SMIC scores **0.961**, higher
+  than a genuine paraphrase's 0.956), so **no distance threshold is safe alone**. Auto-replay
+  requires high similarity AND an identical entity signature (proper nouns / acronyms / years); a
+  differing signature is demoted to a suggestion regardless of cosine. When it does fire, the first
+  event emitted is the disclosure (`replay_notice`) and `AnalysisStatus.replayed_from` is set;
+  `POST /api/analyze {"force_fresh": true}` (the "run the exact question" button) bypasses it.
+- The **lexical fallback can never auto-replay** — a missing Voyage key degrades to suggest-only,
+  never a silent wrong answer. `GET /api/health` → `{"semantic_cache": {"suggest_backend": …,
+  "auto_replay": bool}}`. Payloads stay in diskcache; this layer only resolves the query string.
+
+#### Analysis state store ([common/analyses.py](../src/common/analyses.py))
+
+Live analysis status/progress/events/result is held in an `AnalysisStore` — `InMemoryAnalysisStore`
+(default; process-local `TTLCache`, byte-identical to before) or `RedisAnalysisStore` (RedisJSON,
+1h TTL), selected by `ANALYSES_BACKEND=memory|redis`. The Redis backend makes analysis state
+**survive a restart and be shared across web instances** (closes fragility **F3**): the write path
+is explicit methods, and Redis appends use atomic `JSON.ARRAPPEND` + `JSON.ARRTRIM` so concurrent
+writers can't clobber each other. Falls back to memory (loudly) if Redis JSON is unavailable, and
+never 500s a running analysis on a Redis hiccup. `GET /api/health` →
+`{"analysis_store": {"backend": "redis"|"memory"}}`.
 
 ### Entity / search (auth) — in the analysis/search routers (`src/routers/`)
 | Method | Path | Purpose |
