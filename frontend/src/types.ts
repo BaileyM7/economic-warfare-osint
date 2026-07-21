@@ -280,6 +280,8 @@ export interface OrchestratorStatusResponse {
   events?: OrchestratorEvent[];
   result: ImpactAssessmentResult | null;
   error: string | null;
+  /** Agent-memory session this run belongs to (additive; may be absent). */
+  session_id?: string | null;
 }
 
 // --- Self-serve briefs (Phase 3 contract) ---
@@ -300,6 +302,9 @@ export interface SendBriefNowResponse {
 export interface StartAnalysisResponse {
   analysis_id: string;
   status: string;
+  /** Agent-memory session (additive). Present when memory is enabled; the client
+   *  persists it and sends it on follow-on analyses to thread recall. */
+  session_id?: string | null;
 }
 
 // "Did you mean…?" near-match: the nearest fast-replay query for a close-but-not-
