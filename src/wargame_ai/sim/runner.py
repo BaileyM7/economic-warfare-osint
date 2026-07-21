@@ -25,7 +25,7 @@ from wargame_backend.app.db.session import AsyncSessionLocal
 from wargame_ai.agents.arbiter import Arbiter
 from wargame_ai.agents.country_agent import ChatAnthropicClient, CountryAgent
 from wargame_ai.agents.leader_profile import LeaderProfileError, parse_persona_file
-from wargame_ai.memory.embeddings import Embedder, HashEmbedder, VoyageEmbedder
+from wargame_ai.memory.embeddings import Embedder, VoyageEmbedder
 from wargame_ai.memory.store import AgentMemoryStore
 from wargame_ai.sim.extractors import default_extractors
 from wargame_ai.sim.loop import ScenarioSpec, SimLoop, seed_world_from_countries
@@ -122,23 +122,26 @@ class LangGraphSimRunner:
                 country_codes = [str(c).upper() for c in (scenario_row.country_ids or [])]
                 world = self._build_world(country_codes)
 
-                # Build agents + arbiter + memory store
+                # Build agents + arbiter + memory store. No embedder (no Voyage key)
+                # => no memory store: the loop skips recall/remember rather than
+                # retrieving meaningless vectors.
                 embedder = self._build_embedder(settings)
-                memory_store = AgentMemoryStore(db, embedder)
+                memory_store = AgentMemoryStore(db, embedder) if embedder else None
                 agents = self._build_agents(world, settings)
                 arbiter = Arbiter(llm=None)  # LLM client injection pending
 
                 # Seed each country's memory from recent data-lake events
-                for code in country_codes:
-                    try:
-                        await memory_store.seed_from_events(
-                            sim_id=simulation_id,
-                            country_code=code,
-                            lookback_days=60,
-                            limit=50,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("seed_memory_failed", code=code, error=str(exc))
+                if memory_store is not None:
+                    for code in country_codes:
+                        try:
+                            await memory_store.seed_from_events(
+                                sim_id=simulation_id,
+                                country_code=code,
+                                lookback_days=60,
+                                limit=50,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("seed_memory_failed", code=code, error=str(exc))
 
                 scenario = ScenarioSpec(
                     id=scenario_id,
@@ -223,16 +226,23 @@ class LangGraphSimRunner:
             )
         return agents
 
-    def _build_embedder(self, settings: Any) -> Embedder:
-        """Return a production embedder or fall back to HashEmbedder."""
+    def _build_embedder(self, settings: Any) -> Embedder | None:
+        """Return a production embedder, or None when no key is configured.
+
+        None means agent memory is **off** for this run — not "on, with fake
+        vectors". The previous behaviour fell back to a SHA-256 hash embedder,
+        so with VOYAGE_API_KEY unset (the prod state) recall returned
+        confidently-ranked but meaningless memories. Off and honest beats on and
+        wrong; SimLoop already treats memory_store=None as "skip recall/remember".
+        """
         if settings.voyage_api_key:
             return VoyageEmbedder(
                 api_key=settings.voyage_api_key,
                 model=settings.embedding_model,
                 dimensions=settings.embedding_dims,
             )
-        log.warning("voyage_api_key_missing_using_hash_embedder")
-        return HashEmbedder(dimensions=settings.embedding_dims)
+        log.warning("voyage_api_key_missing_agent_memory_disabled")
+        return None
 
     @staticmethod
     def _load_country_seeds() -> list[dict[str, Any]]:
