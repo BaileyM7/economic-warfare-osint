@@ -199,6 +199,40 @@ def init_db() -> None:
                 UNIQUE (level, key)
             );
             CREATE INDEX IF NOT EXISTS idx_priorities_level ON priorities(level);
+
+            -- Agent long-term memory (Phase 5). Extracted, durable facts about
+            -- entities the analyst has investigated, so a later session can build
+            -- on an earlier one ("what else is exposed to that supply chain?").
+            --
+            -- SQLite is the SYSTEM OF RECORD; the Redis vector index over these
+            -- rows is a derived accelerator. A Redis wipe loses fast semantic
+            -- recall, never the memories — they can be re-indexed from here.
+            --
+            -- PER-USER: memories are scoped by `user_id` (the auth'd username),
+            -- unlike the team-wide entity graph. `entity_names` / `topics` are
+            -- JSON arrays (lowercased for matching); `sources` is a JSON array of
+            -- {name,url?} so a recalled fact keeps its provenance.
+            CREATE TABLE IF NOT EXISTS agent_memories (
+                memory_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                memory_type TEXT NOT NULL DEFAULT 'fact',  -- fact | preference | summary
+                topics TEXT DEFAULT '[]',                  -- JSON array
+                entity_names TEXT DEFAULT '[]',            -- JSON array, lowercased
+                entity_ids TEXT DEFAULT '[]',              -- JSON array (resolved)
+                confidence TEXT DEFAULT 'MEDIUM',          -- HIGH | MEDIUM | LOW
+                sources TEXT DEFAULT '[]',                 -- JSON array of {name,url?}
+                source_analysis_id TEXT,
+                source_session_id TEXT,
+                text_hash TEXT NOT NULL,                   -- sha256(normalized text) for exact dedup
+                created_at TEXT,
+                last_seen_at TEXT,
+                seen_count INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_memories_user ON agent_memories(user_id);
+            -- Exact-dedup + reinforcement lookups are keyed by (user, text_hash).
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memories_user_hash
+                ON agent_memories(user_id, text_hash);
             """
         )
         conn.commit()
@@ -821,6 +855,27 @@ def row_to_priority(row: sqlite3.Row) -> dict:
         "created_by": row["created_by"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+    }
+
+
+def row_to_agent_memory(row: sqlite3.Row) -> dict:
+    """A row from agent_memories → the dict shape agent_memory.py works with."""
+    return {
+        "memory_id": row["memory_id"],
+        "user_id": row["user_id"],
+        "text": row["text"],
+        "memory_type": row["memory_type"] or "fact",
+        "topics": json.loads(row["topics"] or "[]"),
+        "entity_names": json.loads(row["entity_names"] or "[]"),
+        "entity_ids": json.loads(row["entity_ids"] or "[]"),
+        "confidence": row["confidence"] or "MEDIUM",
+        "sources": json.loads(row["sources"] or "[]"),
+        "source_analysis_id": row["source_analysis_id"],
+        "source_session_id": row["source_session_id"],
+        "text_hash": row["text_hash"],
+        "created_at": row["created_at"],
+        "last_seen_at": row["last_seen_at"],
+        "seen_count": row["seen_count"] if "seen_count" in row.keys() else 1,
     }
 
 

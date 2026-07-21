@@ -1,0 +1,6 @@
+results/
+node_modules/
+ui/node_modules/
+ui/test-results/
+ui/playwright-report/
+__pycache__/

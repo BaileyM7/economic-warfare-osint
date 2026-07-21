@@ -53,3 +53,13 @@ Agile Defense Design System/
 # Diagnostic screenshots from manual smoke tests
 vessel-track-*.png
 wargame-loads.png
+
+# Benchmark run artifacts (health-stamped result sets, reports, videos) — the
+# harness code is committed, the outputs are local/ephemeral.
+benchmarks/results/
+benchmarks/ui/node_modules/
+benchmarks/ui/playwright-report/
+benchmarks/ui/test-results/
+
+# Local scratch / temp working files
+FRAGILITY_METHODOLOGY.tmp.md

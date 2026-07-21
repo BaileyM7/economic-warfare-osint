@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     voyage_api_key: str = Field(
         default="",
         alias="VOYAGE_API_KEY",
-        description="Voyage AI key for generating 1536-dim text embeddings.",
+        description="Voyage AI key for agent-memory embeddings. Unset => agent memory is OFF.",
     )
     agent_model: str = Field(
         default="claude-sonnet-4-6",
@@ -68,14 +68,23 @@ class Settings(BaseSettings):
         description="LLM used for arbiter conflict adjudication.",
     )
     embedding_model: str = Field(
-        default="voyage-3",
+        default="voyage-large-2",
         alias="EMBEDDING_MODEL",
-        description="Voyage AI model for generating agent-memory embeddings.",
+        description=(
+            "Voyage AI model for agent-memory embeddings. Must match the width of the "
+            "agent_memory.embedding pgvector column (1536) — changing it needs a migration."
+        ),
     )
     embedding_dims: int = Field(
         default=1536,
         alias="EMBEDDING_DIMS",
-        description="Dimensionality of the embedding vector.  Must match vector column.",
+        description=(
+            "Dimensionality of the embedding vector. Must match BOTH the model's real "
+            "output and the agent_memory.embedding column (1536). This pair used to "
+            "default to voyage-3 + 1536, which is impossible — voyage-3 emits 1024. "
+            "VoyageEmbedder now asserts the live response against this value, so a "
+            "mismatch fails loudly instead of corrupting the vector index."
+        ),
     )
 
     # ------------------------------------------------------------------ #

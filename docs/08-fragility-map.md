@@ -40,20 +40,27 @@ logic landed in helper modules: `src/llm.py` (now also `generate_narrative` /
   `src/wargame_*` is now canonical, with the upstream provenance documented in
   [07-submodules/swarm-wargame.md](07-submodules/swarm-wargame.md).
 
-### F3 — App state is in-memory and/or on an ephemeral disk — **PARTIAL (Phase 2)**
-**PARTIAL (Phase 2):** the data-loss vectors are fixed — `seed_mock_data()` is now
-**seed-only-if-empty** (with a `force=` param) so deploys can't wipe analyst-created
-COAs/briefings, and [render.yaml](../render.yaml) now declares a **1 GB persistent disk** at
-`/opt/render/project/src/data` so the SQLite DB survives deploys. The `_analyses` store was
-relocated to [src/common/analyses.py](../src/common/analyses.py) — but it is **still in-memory
-and process-local**, so the durability / multi-instance concern for live analyses partly remains.
-- **Brittle:** `_analyses` (analysis results) and `_ws_manager` are **process-local** — lost on
-  restart, not shared across workers/instances. *(The SQLite-DB ephemerality is now resolved by
-  the persistent disk above.)*
-- **Breaks:** the in-memory analysis store silently 404s after a restart mid-analysis; still can't
-  run >1 web instance without a shared store.
-- **Direction:** move `_analyses` to a shared store (DB/Redis) or accept single-instance and
-  document it explicitly.
+### F3 — App state is in-memory and/or on an ephemeral disk — **RESOLVED (Redis phase)**
+**RESOLVED:** every process-local store now has a shared, durable, opt-in Redis backend, and the
+data-loss vectors were already fixed in Phase 2 (`seed_mock_data()` is **seed-only-if-empty**;
+[render.yaml](../render.yaml) declares a **1 GB persistent disk** so the SQLite DB survives
+deploys).
+- **The analysis store** ([common/analyses.py](../src/common/analyses.py)) is now an
+  `AnalysisStore` interface: `InMemoryAnalysisStore` (default, byte-identical to before) and
+  `RedisAnalysisStore` (RedisJSON docs, 1h TTL) selected by `ANALYSES_BACKEND`. The write path is
+  explicit methods (`append_progress`/`append_event`/`set_fields`) — the run loop no longer mutates
+  entries in place — with Redis appends done via atomic `JSON.ARRAPPEND` + `JSON.ARRTRIM`. Proven:
+  a two-instance integration test writes from one store object and reads from a second, with
+  concurrent appends that don't clobber (`tests/integration/test_analysis_store_redis.py`). With
+  `ANALYSES_BACKEND=redis`, **live analyses survive a restart and >1 web instance is possible.**
+- **Session / conversation state** ([common/agent_memory.py](../src/common/agent_memory.py)) keeps
+  threads in Redis (7-day TTL) with a `TTLCache` fallback.
+- **Long-term memory** mirrors to SQLite (system of record) + a Redis vector index.
+- All three default to the process-local backend (no behaviour change) and degrade to it if Redis
+  is down, so single-instance dev is unaffected; check the mode at `GET /api/health`.
+- **Still process-local:** `_ws_manager` (the `/ws/monitoring` socket registry) — a WebSocket
+  connection is inherently pinned to the instance holding it, so this is sticky-session territory,
+  not a shared-store problem. Out of scope for the analysis-state fix.
 
 ### ~~F4 — Configuration is split three ways with no single source of truth~~
 **RESOLVED (Phase 2):** app config is consolidated in

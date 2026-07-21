@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 import logging
 
-from src.common.analyses import analyses as _analyses
+from src.common.analyses import get_analysis_store
 from src.common.config import config
 from src.tools.geopolitical.client import refresh_acled_token
 from src.db import init_db, seed_mock_data
@@ -53,6 +53,7 @@ from src.routers.knowledge import router as knowledge_router
 from src.routers.discovery import router as discovery_router
 from src.routers.similarity import router as similarity_router
 from src.routers.priorities import router as priorities_router
+from src.routers.memory import router as memory_router
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,8 @@ app.include_router(briefs_router, dependencies=[Depends(require_auth)])
 app.include_router(knowledge_router, dependencies=[Depends(require_auth)])
 app.include_router(discovery_router, dependencies=[Depends(require_auth)])
 app.include_router(similarity_router, dependencies=[Depends(require_auth)])
+# Long-term memory: per-route require_auth (each handler scopes to the caller).
+app.include_router(memory_router, dependencies=[Depends(require_auth)])
 # Priorities: per-route auth — reads require_auth, writes require_admin (so the
 # whole team sees priorities but only admins set them).
 app.include_router(priorities_router)
@@ -201,6 +204,20 @@ async def _startup() -> None:
     for _issue in config.validate():
         _log = logger.error if config.is_production else logger.warning
         _log("CONFIG: %s", _issue)
+
+    # Entity vector index: create it if it's missing and flush anything the
+    # write-through couldn't land (Voyage down, Redis restarting, a CLI write with
+    # no event loop). A no-op without Redis 8 + a Voyage key. Never fatal — the
+    # app is fully functional on the lexical path, just less clever.
+    try:
+        from src.common.vector_index import drain_dirty, ensure_index
+
+        if ensure_index():
+            drained = await drain_dirty()
+            if drained.get("indexed"):
+                logger.info("Entity index: drained %d pending entities", drained["indexed"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Entity vector index setup skipped: %s", exc)
 
     # Enter the swarm subapp's lifespan manually. FastAPI does NOT run a
     # mounted sub-app's lifespan automatically — this sets up swarm's DB
@@ -298,11 +315,12 @@ async def ws_monitoring(websocket: WebSocket, token: str | None = None):
         _ws_manager.disconnect(websocket)
 
 
-# --- In-memory state for async orchestrator analyses ---
-# The store itself now lives in src.common.analyses (imported above as
-# `_analyses`) so the orchestrator router and this module share one object.
-# Wire that same dict into the briefing router for its generate endpoint.
-_briefings_mod.set_analyses_ref(_analyses)
+# --- Shared analysis store (Phase 7) ---
+# The store lives in src.common.analyses (in-memory by default, Redis-backed when
+# ANALYSES_BACKEND=redis) so the orchestrator router and the briefing router share
+# one store — the same object the briefing generator reads to cite an analysis's
+# sources.
+_briefings_mod.set_analyses_ref(get_analysis_store())
 
 
 # --- Request / Response models ---
@@ -324,12 +342,46 @@ async def root():
 
 @app.get("/api/health")
 async def health():
+    from src.common.agent_memory import backend_name as _wm_backend
+    from src.common.agent_memory import memory_backend_name as _ltm_backend
+    from src.common.analyses import backend_name as _analysis_store_backend
+    from src.common.embeddings import embeddings_status as _embeddings_status
+    from src.common.redis_client import capabilities as _redis_capabilities
+    from src.common.semantic_cache import REPLAY_ENABLED as _semantic_replay_enabled
+    from src.common.semantic_cache import is_semantic_available as _semantic_available
+    from src.common.vector_index import status as _vector_index_status
+
     issues = config.validate()
     return {
         "status": "ok" if not issues else "misconfigured",
         "issues": issues,
         "model": config.model,
         "tools_available": True,
+        # `search: false` with a Redis URL set means we're pointed at Valkey (or a
+        # Redis without the Query Engine) and every semantic feature is silently
+        # running its lexical fallback. Surfacing it here is the difference between
+        # finding that out now and finding it out during a demo.
+        "redis": _redis_capabilities().as_dict(),
+        # Same idea: `enabled: false` means no vectors, so semantic search / cache /
+        # memory are all on their lexical fallback. `reason` says why.
+        "embeddings": _embeddings_status(),
+        # "memory" = process-local working memory: threads die on restart and are
+        # not shared across instances. "redis" = durable + shared.
+        "working_memory": {"backend": _wm_backend()},
+        # `available: false` => entity similarity is running on lexical overlap.
+        "entity_index": _vector_index_status(),
+        # Long-term memory recall: "redis" = semantic (vector), "lexical" = fallback.
+        "long_term_memory": {"backend": _ltm_backend()},
+        # Semantic pre-warm cache. `suggest_backend` = vector|lexical (always on);
+        # `auto_replay` = whether a reworded question can replay WITHOUT confirmation
+        # (opt-in via EMISSARY_SEMANTIC_REPLAY, and still entity-signature gated).
+        "semantic_cache": {
+            "suggest_backend": "vector" if _semantic_available() else "lexical",
+            "auto_replay": _semantic_replay_enabled,
+        },
+        # "redis" = analysis state shared across instances + survives restart (F3
+        # closed); "memory" = process-local (single-instance only).
+        "analysis_store": {"backend": _analysis_store_backend()},
     }
 
 

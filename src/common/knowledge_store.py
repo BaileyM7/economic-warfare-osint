@@ -15,8 +15,36 @@ rest of the app's DB access pattern.
 from __future__ import annotations
 
 import json
+import logging
 
 from src.db import _new_id, _now, get_db, row_to_saved_edge, row_to_saved_entity
+
+logger = logging.getLogger(__name__)
+
+
+# --- Vector-index write-through ---------------------------------------------
+# Imported lazily and wrapped: the index is an optional accelerator (it needs
+# Redis 8 + a Voyage key), and this module is the system of record. Nothing here
+# may raise into a caller that is just trying to save a row.
+
+
+def _enqueue_reindex(entity: dict) -> None:
+    try:
+        from src.common.vector_index import enqueue_reindex
+
+        enqueue_reindex(entity)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Vector reindex enqueue skipped (non-fatal): %s", exc)
+
+
+def _enqueue_removal(entity_id: str) -> None:
+    try:
+        from src.common.vector_index import enqueue_removal
+
+        enqueue_removal(entity_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Vector removal enqueue skipped (non-fatal): %s", exc)
+
 
 # --- Entities ---------------------------------------------------------------
 
@@ -84,7 +112,15 @@ def upsert_entity(
         ).fetchone()
     finally:
         conn.close()
-    return row_to_saved_entity(row), created
+
+    entity = row_to_saved_entity(row)
+    # Keep the Redis vector index in sync — AFTER the commit, and best-effort.
+    # This function stays synchronous and must never block on (or fail because of)
+    # a network call: embedding takes ~200ms and can time out, and "Voyage is slow"
+    # must never mean "saving an entity failed". The row is already durable; the
+    # index catches up via a fire-and-forget task plus a durable dirty set.
+    _enqueue_reindex(entity)
+    return entity, created
 
 
 def get_entity(entity_id: str) -> dict | None:
@@ -132,7 +168,66 @@ def delete_entity(entity_id: str) -> int:
         conn.commit()
     finally:
         conn.close()
+    if deleted:
+        # A deleted entity must not linger as a search result.
+        _enqueue_removal(entity_id)
     return deleted
+
+
+def get_entities_by_ids(entity_ids: list[str]) -> list[dict]:
+    """Fetch many entities in ONE query, preserving the caller's id order.
+
+    Exists so a vector search can hydrate its hits from the system of record in a
+    single round trip: the index returns ids + scores, the entities themselves
+    always come from SQLite, so a result can never be stale relative to the DB.
+    """
+    if not entity_ids:
+        return []
+    conn = get_db()
+    try:
+        placeholders = ",".join("?" for _ in entity_ids)
+        rows = conn.execute(
+            f"SELECT * FROM saved_entities WHERE entity_id IN ({placeholders})",
+            entity_ids,
+        ).fetchall()
+    finally:
+        conn.close()
+    by_id = {r["entity_id"]: row_to_saved_entity(r) for r in rows}
+    return [by_id[eid] for eid in entity_ids if eid in by_id]
+
+
+async def search_entities(
+    q: str,
+    *,
+    entity_type: str | None = None,
+    country: str | None = None,
+    limit: int = 20,
+) -> tuple[list[dict], str]:
+    """Semantic+lexical entity search. Returns ``(entities, backend_used)``.
+
+    Deliberately NOT a change to ``list_entities``: that one's ``LIKE`` is a
+    substring *filter*, and `graph_list_entities` / `src/routers/discovery.py`
+    depend on it behaving exactly that way. This is a *ranker*, and a new
+    function, so neither caller changes.
+
+    ``backend_used`` is "hybrid" or "lexical" — callers should surface it rather
+    than pretend a fallback was a semantic result.
+    """
+    try:
+        from src.common.vector_index import search_entity_ids
+
+        hits = await search_entity_ids(q, entity_type=entity_type, country=country, top_k=limit)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Entity vector search failed; using lexical: %s", exc)
+        hits = None
+
+    if hits is None:  # index unavailable -> today's behaviour, unchanged
+        return list_entities(q=q, entity_type=entity_type)[:limit], "lexical"
+
+    entities = get_entities_by_ids([eid for eid, _ in hits])
+    if country:
+        entities = [e for e in entities if e.get("country") == country]
+    return entities[:limit], "hybrid"
 
 
 # --- Edges ------------------------------------------------------------------

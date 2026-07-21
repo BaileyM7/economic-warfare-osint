@@ -194,3 +194,137 @@ def rank_similar(
         {"entity": c, "score": round(s, 4), "basis": b} for s, c, b in scored[: max(0, top_k)]
     ]
     return results, backend_used
+
+
+# --- Hybrid backend (Redis recalls, Python re-ranks) -------------------------
+
+# Ranking is the SEMANTIC score alone. Lexical is kept for EXPLANATION only.
+#
+# This is measured, not assumed. Real voyage-large-2, target "Fujian Jinhua" (a
+# DRAM fab), against the saved graph:
+#
+#     entity                  semantic   lexical   0.7*sem + 0.3*lex
+#     SMIC (foundry)             0.910     0.250        0.712
+#     Jinhua Group Holdings      0.872     0.400        0.730  <-- wins the blend
+#     (a real-estate developer)
+#
+# Semantic alone ranks these correctly (SMIC first). Blending in even 30% lexical
+# flips it back to the wrong answer — the "jinhua" token collision reasserts
+# itself and the real-estate firm outranks the foundry again, which is the exact
+# bug this index exists to fix. The semantic gap here is only 0.038 (everything in
+# this domain sits in a compressed 0.8–0.95 band), so ANY meaningful lexical
+# weight can flip it.
+#
+# The deeper reason: **name-token overlap is a false signal for entity
+# similarity.** Companies sharing a name token are frequently unrelated, while
+# genuinely related ones (e.g. "Rosatom" / "Rosatom Overseas") score high
+# semantically anyway. So name overlap adds false positives without adding true
+# ones. Traits that CAN'T collide by coincidence (a shared LEI) are a real signal
+# and are surfaced in the basis — promoting them into the score is a separate
+# change that should be made with its own measurements, not guessed at here.
+SEMANTIC_WEIGHT = 1.0
+LEXICAL_WEIGHT = 0.0
+
+# Above this, a match is "mostly meaning". If it is ALSO lexically empty, the
+# result gets an explicit warning — see _explain.
+_SEMANTIC_ONLY_FLOOR = 0.55
+
+
+def _explain(basis: dict, semantic: float, lexical: float) -> str:
+    """One line an analyst can read (and defend) about why this matched.
+
+    A bare cosine is not a rationale. This is deliberately blunt when the evidence
+    is thin: a strong semantic score with zero lexical overlap is exactly the case
+    where a vector is doing real work AND is most likely to be subtly wrong, so it
+    says so rather than letting 0.87 imply confidence.
+    """
+    parts: list[str] = []
+    if basis.get("shared_terms"):
+        parts.append("shares " + ", ".join(f"'{t}'" for t in basis["shared_terms"][:3]))
+    if basis.get("shared_identifiers"):
+        parts.append("same identifier " + ", ".join(basis["shared_identifiers"][:2]))
+    if basis.get("same_type"):
+        parts.append("same type")
+    if basis.get("same_country"):
+        parts.append("same country")
+
+    lead = f"Semantic match ({semantic:.2f})"
+    if not parts:
+        if semantic >= _SEMANTIC_ONLY_FLOOR:
+            return f"{lead} only — no lexical overlap or shared traits. Verify before citing."
+        return f"{lead}; weak on every other signal. Low confidence."
+    detail = "; ".join(parts)
+    if lexical == 0.0:
+        return f"{lead} with no name overlap; {detail}. Verify before citing."
+    return f"{lead}, lexical {lexical:.2f}; {detail}."
+
+
+async def rank_similar_indexed(
+    target: dict,
+    *,
+    top_k: int = 5,
+    entity_type: str | None = None,
+    country: str | None = None,
+) -> tuple[list[dict], str]:
+    """Rank saved entities by similarity to ``target`` using the vector index.
+
+    Returns ``(results, backend_used)`` in the SAME shape as `rank_similar`, with
+    ``backend_used`` in {"hybrid", "lexical"}.
+
+    Redis recalls a wide-ish candidate set (vector KNN + BM25 + tag filters), then
+    we re-rank *those* with the existing `_lexical_pair` — which is what attaches
+    the explainable `basis`. That is the cheap version of what the old `embedding`
+    backend did: it re-embedded every candidate on every request (O(N) network),
+    whereas here the vectors are already in the index and `_lexical_pair` only runs
+    on ~20 rows.
+
+    Falls back to `rank_similar(..., "lexical")` whenever the index or embeddings
+    are unavailable, so the caller always gets a real answer.
+    """
+    from src.common import knowledge_store as ks
+    from src.common.vector_index import DEFAULT_RECALL, search_entity_ids
+
+    def _lexical_fallback() -> tuple[list[dict], str]:
+        return rank_similar(target, ks.list_entities(), top_k=top_k, backend="lexical")
+
+    text = entity_text(target)
+    if not text.strip():
+        return _lexical_fallback()
+
+    try:
+        hits = await search_entity_ids(
+            text,
+            entity_type=entity_type,
+            country=country,
+            top_k=max(top_k * 4, DEFAULT_RECALL),
+        )
+    except Exception:  # noqa: BLE001
+        hits = None
+
+    if hits is None:  # no Redis 8 / no embeddings / query failed
+        return _lexical_fallback()
+
+    scores = {eid: s for eid, s in hits}
+    candidates = ks.get_entities_by_ids(list(scores.keys()))
+
+    out: list[dict] = []
+    for cand in candidates:
+        if cand.get("entity_id") == target.get("entity_id"):
+            continue  # never compare the target to itself
+        semantic = scores.get(cand["entity_id"], 0.0)
+        lexical, basis = _lexical_pair(target, cand)
+        # Every existing basis key survives — the frontend renders them, and a
+        # score without an explanation is a regression for an intel product.
+        basis["semantic_score"] = round(semantic, 3)
+        basis["lexical_score"] = round(lexical, 3)
+        basis["why"] = _explain(basis, semantic, lexical)
+        out.append(
+            {
+                "entity": cand,
+                "score": round(SEMANTIC_WEIGHT * semantic + LEXICAL_WEIGHT * lexical, 4),
+                "basis": basis,
+            }
+        )
+
+    out.sort(key=lambda r: r["score"], reverse=True)
+    return out[: max(0, top_k)], "hybrid"

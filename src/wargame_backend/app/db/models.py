@@ -1,7 +1,7 @@
 """SQLAlchemy 2.0 async ORM models for the Swarm wargame simulator.
 
 All tables use UUID primary keys and TIMESTAMPTZ timestamps.
-Vector columns use pgvector (voyage-3 embeddings, 1536 dims).
+Vector columns use pgvector (voyage-large-2 embeddings, 1536 dims).
 """
 
 from __future__ import annotations
@@ -31,6 +31,17 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from wargame_backend.app.db.base import Base
+
+# Width of the pgvector embedding column. Must equal the `EMBEDDING_DIMS` setting
+# AND the configured model's true output width. **1536 == voyage-large-2**, which
+# is what EMBEDDING_MODEL is actually set to (verified against the live API:
+# voyage-large-2 -> 1536, voyage-3 -> 1024).
+#
+# Changing the model therefore requires a migration of this column, so it is NOT
+# derived from settings at runtime — a column width cannot follow an env var.
+# `VoyageEmbedder` asserts the live response matches, so a mismatch fails loudly
+# instead of corrupting the index.
+EMBEDDING_DIMS = 1536
 
 # ---------------------------------------------------------------------------
 # Python-side enums (also registered as Postgres ENUM types via SQLAlchemy)
@@ -429,8 +440,12 @@ class AgentMemory(Base):
     """Per-country episodic memory with vector embedding for RAG.
 
     Each row is one memory fragment (decision, observation, intel) with a
-    1536-dim Voyage-3 embedding for semantic retrieval during the PERCEIVE step.
-    HNSW index (m=16, ef_construction=64) on the embedding column.
+    1536-dim voyage-large-2 embedding for semantic retrieval during the PERCEIVE
+    step. HNSW index (m=16, ef_construction=64) on the embedding column.
+
+    The width must match the configured EMBEDDING_MODEL's real output; switching
+    models (e.g. to voyage-3, which emits 1024) needs a migration of this column
+    and its HNSW index, not just an env-var change.
     """
 
     __tablename__ = "agent_memory"
@@ -444,8 +459,8 @@ class AgentMemory(Base):
     )
     country_iso3: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # voyage-3 embedding: 1536 dimensions
-    embedding: Mapped[Any] = mapped_column(Vector(1536), nullable=False)
+    # voyage-large-2 embedding: 1536 dimensions
+    embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIMS), nullable=False)
     memory_type: Mapped[MemoryType] = mapped_column(
         Enum(MemoryType, name="memory_type"),
         nullable=False,

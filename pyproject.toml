@@ -34,6 +34,12 @@ dependencies = [
     "redis>=5.2.0",
     "limits[redis]>=3.13.0",
     "cachetools>=7.1.1",
+    # Redis Query Engine client (vector / hybrid search, semantic cache, agent memory).
+    # Needs a real Redis 8 (FT.* commands) — Render Key Value runs Valkey and has NO
+    # modules, so every caller must gate on redis_client.capabilities()["search"] and
+    # degrade to the lexical path. MIT-licensed; the Voyage vectorizer is NOT installed
+    # (we wrap our own httpx call in src/common/embeddings.py instead of the SDK).
+    "redisvl>=0.8.0",
     # Notifications (Twilio SMS + SendGrid email)
     "twilio>=9.0.0",
     "sendgrid>=6.11.0",
@@ -103,6 +109,14 @@ local = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    # Needs a real Redis 8 (Query Engine / FT.*) and a live embedding key, so it
+    # cannot run on the default hermetic config. Self-skips when they're absent:
+    #   docker run -d -p 6399:6379 redis:8.2-alpine
+    #   EMISSARY_TEST_REDIS_URL=redis://localhost:6399/0 VOYAGE_API_KEY=... \
+    #     uv run pytest tests/integration -v
+    "integration: requires a real Redis 8 + embeddings (skipped by default)",
+]
 
 [tool.ruff]
 line-length = 100

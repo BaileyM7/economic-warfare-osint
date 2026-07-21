@@ -51,6 +51,7 @@ EXPECTED_ROUTES = {
     "POST /api/admin/enrollments",
     "POST /api/admin/enrollments/{username}/test-email",
     "POST /api/admin/enrollments/{username}/test-sms",
+    "POST /api/admin/reindex-entities",
     "POST /api/analyze",
     "POST /api/analyze/suggest",
     "POST /api/analyze/sync",
@@ -75,6 +76,10 @@ EXPECTED_ROUTES = {
     "POST /api/discover-actions",
     # Semantic similarity (issue #30)
     "POST /api/entity/similar",
+    # Long-term agent memory (Phase 5)
+    "GET /api/memory",
+    "GET /api/memory/search",
+    "DELETE /api/memory/{memory_id}",
     # Team-wide priorities (issue #32) — read=auth, write=admin
     "GET /api/priorities",
     "POST /api/priorities",
@@ -174,6 +179,9 @@ _PROTECTED = [
     ("get", "/api/knowledge/graph"),
     ("post", "/api/discover-actions"),
     ("post", "/api/entity/similar"),
+    ("get", "/api/memory"),
+    ("get", "/api/memory/search"),
+    ("delete", "/api/memory/abc123"),
     ("get", "/api/priorities"),
     ("post", "/api/priorities"),
     ("get", "/api/analyze/deadbeef"),
@@ -201,7 +209,10 @@ _PROTECTED = [
 @pytest.mark.parametrize("method,path", _PROTECTED)
 def test_protected_endpoint_rejects_unauthenticated(app_client, method, path):
     client_method = getattr(app_client, method)
-    resp = client_method(path) if method == "get" else client_method(path, json={})
+    # GET/DELETE take no JSON body in TestClient; only send one for POST/PUT/PATCH.
+    resp = (
+        client_method(path, json={}) if method in ("post", "put", "patch") else client_method(path)
+    )
     assert resp.status_code == 401, (
         f"{method.upper()} {path} returned {resp.status_code}, expected 401"
     )

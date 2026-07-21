@@ -40,8 +40,25 @@ jobs:
         run: ruff format --check .
 
   test:
+    # Name pinned to the branch-protection required-check context; the Redis 8
+    # integration runs inside this same job (see the service + steps below).
     name: Pytest (unit + e2e replay)
     runs-on: ubuntu-latest
+    # A real Redis 8 (Query Engine + JSON) so the integration suite actually runs
+    # here — vector entity search, agent-memory recall, and the shared analysis
+    # store (F3). Without this the tests/integration/* tests self-skip and the
+    # entire Redis-backed code path has no PR protection. Uses recorded fixture
+    # vectors, so NO Voyage key is needed.
+    services:
+      redis:
+        image: redis:8.2-alpine
+        ports:
+          - 6398:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -56,9 +73,26 @@ jobs:
           pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Verify the Redis service has the Query Engine
+        # Fail loudly if the image ever ships without FT.*/JSON, rather than
+        # letting the integration tests silently skip and hide a regression.
+        # Uses redis-py (already installed) so no redis-cli/apt is needed.
+        run: |
+          python -c "
+          import redis
+          r = redis.Redis.from_url('redis://localhost:6398/0')
+          r.execute_command('FT._LIST')
+          r.execute_command('JSON.SET', '_probe', '\$', '{}'); r.delete('_probe')
+          print('Redis 8 Query Engine + JSON: OK')
+          "
+
       - name: Pytest
-        # No secrets needed — VCR replay-only, ANTHROPIC_API_KEY cleared
-        # by tests/conftest.py. Coverage is informational, not a gate.
+        # No secrets needed — VCR replay-only + recorded embedding fixtures;
+        # ANTHROPIC_API_KEY cleared by tests/conftest.py. EMISSARY_TEST_REDIS_URL
+        # activates the integration suite against the service above (port 6398,
+        # matching the integration tests' convention). Coverage is informational.
+        env:
+          EMISSARY_TEST_REDIS_URL: redis://localhost:6398/0
         run: pytest tests/ --cov=src --cov-report=term --no-header
 
   frontend-build:
