@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import anthropic
+
 from src.common.config import config
-from src.llm import get_anthropic_client
 
 
 def answer_text(assessment: dict[str, Any] | None) -> str:
@@ -39,7 +40,12 @@ def answer_text(assessment: dict[str, Any] | None) -> str:
 
 
 def _client():
-    return get_anthropic_client()
+    # The app's shared client is AsyncAnthropic; the judge is a synchronous local
+    # script, so it needs its own SYNC client (calling .create() on the async one
+    # returns an un-awaited coroutine and silently scores nothing).
+    if not config.anthropic_api_key:
+        return None
+    return anthropic.Anthropic(api_key=config.anthropic_api_key)
 
 
 def _ask_json(client, prompt: str, max_tokens: int = 600) -> dict[str, Any] | None:
