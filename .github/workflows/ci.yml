@@ -40,7 +40,9 @@ jobs:
         run: ruff format --check .
 
   test:
-    name: Pytest (unit + e2e replay + Redis 8 integration)
+    # Name pinned to the branch-protection required-check context; the Redis 8
+    # integration runs inside this same job (see the service + steps below).
+    name: Pytest (unit + e2e replay)
     runs-on: ubuntu-latest
     # A real Redis 8 (Query Engine + JSON) so the integration suite actually runs
     # here — vector entity search, agent-memory recall, and the shared analysis
