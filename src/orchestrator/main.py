@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from typing import Any
@@ -31,6 +32,11 @@ from src.orchestrator.prompts import (
     SYSTEM_PROMPT,
 )
 from src.orchestrator.tool_registry import ToolRegistry
+
+# Hard ceiling on the synthesis LLM call. A real heavy synthesis is ~2.5 min; the
+# raw Anthropic client has no explicit timeout, so this bounds a stalled stream
+# (turning an apparent hang into a fast, surfaced failure). Overridable via env.
+_SYNTHESIS_TIMEOUT_S = int(os.getenv("SYNTHESIS_TIMEOUT_S", "360"))
 
 
 class Orchestrator:
@@ -143,10 +149,25 @@ class Orchestrator:
         tool_results = await self._execute_plan(plan, _emit, _event)
         _emit(f"[2/4] Collected results from {len(tool_results)} research step(s)")
 
-        # Step 3: Synthesize results
+        # Step 3: Synthesize results.
+        # Bound the synthesis: the raw Anthropic client has no explicit timeout
+        # (SDK default ~10 min) and streams, so a stalled stream would hang the
+        # whole analysis for minutes with the browser polling a "running" doc.
+        # A hard cap turns a stall into a fast failure (the run loop marks the
+        # analysis failed) instead of an apparent hang. A real heavy synthesis is
+        # ~2.5 min, so this leaves generous headroom.
         _emit("[3/4] Synthesizing findings with Claude...")
         _event({"type": "phase", "name": "synthesize", "status": "start"})
-        assessment = await self._synthesize(query, tool_results, on_event=_event, memory=recalled)
+        try:
+            assessment = await asyncio.wait_for(
+                self._synthesize(query, tool_results, on_event=_event, memory=recalled),
+                timeout=_SYNTHESIS_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"Synthesis timed out after {_SYNTHESIS_TIMEOUT_S}s "
+                "(the model stalled while writing the assessment)"
+            ) from None
         assessment.tool_results = tool_results
 
         # Step 4: Done

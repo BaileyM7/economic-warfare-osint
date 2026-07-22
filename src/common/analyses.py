@@ -158,21 +158,77 @@ class RedisAnalysisStore:
 
     def set_fields(self, analysis_id: str, **fields: Any) -> None:
         key = self._key(analysis_id)
-        try:
-            for name, value in fields.items():
+        # Each field is written independently. Critically, a failure writing the
+        # (large, deeply-nested) `result` must NEVER prevent `status` from being
+        # written — otherwise the analysis is stuck "running" forever and the
+        # browser polls it indefinitely (agents show done, the summary "hangs").
+        for name, value in fields.items():
+            try:
                 if name == "result" and value is not None:
-                    blob = json.dumps(value)
-                    if len(blob.encode()) > _MAX_RESULT_BYTES:
-                        logger.warning(
-                            "Analysis %s result is %d bytes (> cap); storing a stub instead.",
-                            analysis_id,
-                            len(blob.encode()),
-                        )
-                        value = {"error": "result too large to store"}
+                    value = self._fit_result(analysis_id, value)
                 self._r.execute_command("JSON.SET", key, f"$.{name}", json.dumps(value))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Analysis store set_fields(%s) failed for %s: %s", name, analysis_id, exc
+                )
+                # If the RESULT itself is unstorable (e.g. a RedisJSON limit even
+                # after trimming), fall back to a marker so the poller still sees
+                # a completed run with content rather than hanging on null.
+                if name == "result" and value is not None:
+                    try:
+                        self._r.execute_command(
+                            "JSON.SET",
+                            key,
+                            "$.result",
+                            json.dumps({"error": "result could not be stored", "_partial": True}),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+        try:
             self._r.expire(key, ANALYSES_TTL_SEC)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Analysis store set_fields failed for %s: %s", analysis_id, exc)
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _fit_result(analysis_id: str, value: Any) -> Any:
+        """Shrink an oversized result so it stores without losing the graph/findings.
+
+        The bulk (and the deep nesting) lives in ``tool_results`` — raw per-agent
+        API payloads that the main assessment view doesn't render (they're kept for
+        follow-up chat). Drop those first; keep the presentation fields. Only if it's
+        *still* too big do we fall back to a presentation-only projection.
+        """
+        if not isinstance(value, dict):
+            return value
+        if len(json.dumps(value).encode()) <= _MAX_RESULT_BYTES:
+            return value
+
+        trimmed = {k: v for k, v in value.items() if k != "tool_results"}
+        trimmed["tool_results_omitted"] = True
+        if len(json.dumps(trimmed).encode()) <= _MAX_RESULT_BYTES:
+            logger.warning("Analysis %s: dropped tool_results to fit the store cap.", analysis_id)
+            return trimmed
+
+        # Still too large — keep only what the assessment view needs to render.
+        keep_keys = (
+            "query",
+            "scenario_type",
+            "executive_summary",
+            "findings",
+            "sources",
+            "entity_graph",
+            "recommendations",
+            "friendly_fire",
+            "confidence_summary",
+        )
+        projection = {k: value.get(k) for k in keep_keys if k in value}
+        projection["_truncated"] = True
+        logger.warning(
+            "Analysis %s: result too large even without tool_results; stored a "
+            "presentation-only projection.",
+            analysis_id,
+        )
+        return projection
 
     def append_progress(self, analysis_id: str, msg: str) -> None:
         self._append(analysis_id, "progress", msg, ANALYSES_PROGRESS_CAP)
