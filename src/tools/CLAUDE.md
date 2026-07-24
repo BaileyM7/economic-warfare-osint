@@ -26,11 +26,12 @@ tools/<name>/
 Each server.py exposes tools via the MCP Python SDK:
 ```python
 from mcp.server.fastmcp import FastMCP
+
 mcp = FastMCP("tool-name")
 
+
 @mcp.tool()
-async def search_entity(query: str) -> ToolResponse:
-    ...
+async def search_entity(query: str) -> ToolResponse: ...
 ```
 
 ## Key Rules

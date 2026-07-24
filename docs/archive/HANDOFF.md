@@ -382,15 +382,15 @@ Add near the top of `api.py`:
 ```python
 _anthropic_client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
 
+
 async def _generate_narrative(prompt: str) -> str:
     """Generate a 3–5 sentence analyst narrative from structured data."""
     try:
         response = await asyncio.wait_for(
             _anthropic_client.messages.create(
-                model=config.model, max_tokens=500,
-                messages=[{"role": "user", "content": prompt}]
+                model=config.model, max_tokens=500, messages=[{"role": "user", "content": prompt}]
             ),
-            timeout=15.0
+            timeout=15.0,
         )
         return response.content[0].text.strip()
     except Exception:

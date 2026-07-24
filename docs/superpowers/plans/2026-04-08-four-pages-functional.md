@@ -20,6 +20,7 @@
 
 ```python
 """SQLite database layer for Emissary platform state."""
+
 from __future__ import annotations
 
 import json
@@ -30,11 +31,14 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data" / "emissary.db"
 
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
+
 
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -95,10 +99,12 @@ def init_db() -> None:
     """)
     conn.close()
 
+
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def log_activity(
     event_type: str,
@@ -117,10 +123,12 @@ def log_activity(
     finally:
         conn.close()
 
+
 # --- Row converters (handle JSON deserialization) ---
 
 _JSON_FIELDS_COA = {"target_entities", "recommendations", "friendly_fire", "expected_effects"}
 _JSON_FIELDS_INJECT = {"target_groups"}
+
 
 def _row_to_dict(row: sqlite3.Row, json_fields: set[str] | None = None) -> dict:
     d = dict(row)
@@ -133,17 +141,22 @@ def _row_to_dict(row: sqlite3.Row, json_fields: set[str] | None = None) -> dict:
                     d[f] = []
     return d
 
+
 def row_to_coa(row: sqlite3.Row) -> dict:
     return _row_to_dict(row, _JSON_FIELDS_COA)
+
 
 def row_to_inject(row: sqlite3.Row) -> dict:
     return _row_to_dict(row, _JSON_FIELDS_INJECT)
 
+
 def row_to_activity(row: sqlite3.Row) -> dict:
     return _row_to_dict(row)
 
+
 def row_to_briefing(row: sqlite3.Row) -> dict:
     return _row_to_dict(row)
+
 
 def row_to_exercise(row: sqlite3.Row) -> dict:
     return _row_to_dict(row)
@@ -194,14 +207,22 @@ feat: add SQLite database layer for Emissary platform state
 Add to the imports section (near line 18):
 ```python
 from src.db import (
-    get_db, log_activity, _now, _new_id,
-    row_to_coa, row_to_briefing, row_to_exercise, row_to_inject, row_to_activity,
+    get_db,
+    log_activity,
+    _now,
+    _new_id,
+    row_to_coa,
+    row_to_briefing,
+    row_to_exercise,
+    row_to_inject,
+    row_to_activity,
 )
 ```
 
 Add request models after the existing model definitions (around line 240):
 ```python
 # --- COA Workspace models ---
+
 
 class COACreateRequest(BaseModel):
     name: str
@@ -214,6 +235,7 @@ class COACreateRequest(BaseModel):
     friendly_fire: list[dict] = []
     expected_effects: list[str] = []
 
+
 class COAUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
@@ -224,6 +246,7 @@ class COAUpdateRequest(BaseModel):
     recommendations: list[str] | None = None
     friendly_fire: list[dict] | None = None
     expected_effects: list[str] | None = None
+
 
 class COAGenerateRequest(BaseModel):
     analysis_data: dict | None = None
@@ -237,6 +260,7 @@ Insert before the `# --- Static file catch-all ---` comment (line ~2499):
 ```python
 # --- COA Workspace ---
 
+
 @app.post("/api/coa")
 async def create_coa(req: COACreateRequest):
     coa_id = _new_id()
@@ -248,10 +272,20 @@ async def create_coa(req: COACreateRequest):
                status, confidence, source_analysis_id, recommendations, friendly_fire,
                expected_effects, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)""",
-            (coa_id, req.name, req.description, json.dumps(req.target_entities),
-             req.action_type, req.confidence, req.source_analysis_id,
-             json.dumps(req.recommendations), json.dumps(req.friendly_fire),
-             json.dumps(req.expected_effects), now, now),
+            (
+                coa_id,
+                req.name,
+                req.description,
+                json.dumps(req.target_entities),
+                req.action_type,
+                req.confidence,
+                req.source_analysis_id,
+                json.dumps(req.recommendations),
+                json.dumps(req.friendly_fire),
+                json.dumps(req.expected_effects),
+                now,
+                now,
+            ),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM coas WHERE id = ?", (coa_id,)).fetchone()
@@ -260,17 +294,21 @@ async def create_coa(req: COACreateRequest):
     log_activity("coa_created", f"COA '{req.name}' created", related_id=coa_id)
     return row_to_coa(row)
 
+
 @app.get("/api/coa")
 async def list_coas(status: str | None = None):
     conn = get_db()
     try:
         if status:
-            rows = conn.execute("SELECT * FROM coas WHERE status = ? ORDER BY updated_at DESC", (status,)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM coas WHERE status = ? ORDER BY updated_at DESC", (status,)
+            ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM coas ORDER BY updated_at DESC").fetchall()
     finally:
         conn.close()
     return [row_to_coa(r) for r in rows]
+
 
 @app.get("/api/coa/{coa_id}")
 async def get_coa(coa_id: str):
@@ -282,6 +320,7 @@ async def get_coa(coa_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="COA not found")
     return row_to_coa(row)
+
 
 @app.put("/api/coa/{coa_id}")
 async def update_coa(coa_id: str, req: COAUpdateRequest):
@@ -308,8 +347,13 @@ async def update_coa(coa_id: str, req: COAUpdateRequest):
     finally:
         conn.close()
     if req.status:
-        log_activity("coa_status_changed", f"COA '{row_to_coa(row)['name']}' moved to {req.status}", related_id=coa_id)
+        log_activity(
+            "coa_status_changed",
+            f"COA '{row_to_coa(row)['name']}' moved to {req.status}",
+            related_id=coa_id,
+        )
     return row_to_coa(row)
+
 
 @app.delete("/api/coa/{coa_id}")
 async def delete_coa(coa_id: str):
@@ -342,6 +386,7 @@ Return a JSON array where each element has:
 
 Return ONLY the JSON array, no markdown fences."""
 
+
 @app.post("/api/coa/generate")
 async def generate_coa_options(req: COAGenerateRequest):
     client = _get_anthropic_client()
@@ -362,7 +407,7 @@ async def generate_coa_options(req: COAGenerateRequest):
         text = response.content[0].text.strip()
         if text.startswith("["):
             return json.loads(text)
-        match = re.search(r'\[.*\]', text, re.DOTALL)
+        match = re.search(r"\[.*\]", text, re.DOTALL)
         if match:
             return json.loads(match.group())
         return []
@@ -400,29 +445,36 @@ Add after the COA models:
 ```python
 # --- Briefing models ---
 
+
 class BriefingCreateRequest(BaseModel):
     title: str
     type: str = "situation_update"
     reference_id: str | None = None
     content_markdown: str = ""
 
+
 class BriefingGenerateRequest(BaseModel):
     coa_id: str | None = None
     analysis_id: str | None = None
     briefing_type: str = "situation_update"
+
 
 class BriefingUpdateRequest(BaseModel):
     status: str | None = None
     title: str | None = None
     content_markdown: str | None = None
 
+
 # --- Exercise models ---
+
 
 class ExerciseCreateRequest(BaseModel):
     name: str
 
+
 class ExerciseUpdateRequest(BaseModel):
     status: str
+
 
 class InjectCreateRequest(BaseModel):
     inject_type: str
@@ -430,6 +482,7 @@ class InjectCreateRequest(BaseModel):
     content: str = ""
     scheduled_offset: str = "00:00"
     urgency: str = "routine"
+
 
 class InjectUpdateRequest(BaseModel):
     inject_type: str | None = None
@@ -448,22 +501,59 @@ Insert after the COA endpoints:
 # --- Monitoring ---
 
 _MONITORING_ZONES = [
-    {"lat": 14.5, "lon": 114.0, "label": "South China Sea", "type": "monitoring_zone", "status": "active"},
-    {"lat": 25.0, "lon": 121.5, "label": "Taiwan Strait", "type": "monitoring_zone", "status": "active"},
-    {"lat": 2.0, "lon": 103.0, "label": "Strait of Malacca", "type": "monitoring_zone", "status": "active"},
-    {"lat": 35.0, "lon": 129.0, "label": "Korean Peninsula", "type": "monitoring_zone", "status": "monitoring"},
-    {"lat": -6.0, "lon": 106.0, "label": "Sunda Strait", "type": "monitoring_zone", "status": "monitoring"},
+    {
+        "lat": 14.5,
+        "lon": 114.0,
+        "label": "South China Sea",
+        "type": "monitoring_zone",
+        "status": "active",
+    },
+    {
+        "lat": 25.0,
+        "lon": 121.5,
+        "label": "Taiwan Strait",
+        "type": "monitoring_zone",
+        "status": "active",
+    },
+    {
+        "lat": 2.0,
+        "lon": 103.0,
+        "label": "Strait of Malacca",
+        "type": "monitoring_zone",
+        "status": "active",
+    },
+    {
+        "lat": 35.0,
+        "lon": 129.0,
+        "label": "Korean Peninsula",
+        "type": "monitoring_zone",
+        "status": "monitoring",
+    },
+    {
+        "lat": -6.0,
+        "lon": 106.0,
+        "label": "Sunda Strait",
+        "type": "monitoring_zone",
+        "status": "monitoring",
+    },
 ]
+
 
 @app.get("/api/monitoring/kpis")
 async def get_monitoring_kpis():
     conn = get_db()
     try:
-        active_coas = conn.execute("SELECT COUNT(*) FROM coas WHERE status IN ('approved','executing')").fetchone()[0]
+        active_coas = conn.execute(
+            "SELECT COUNT(*) FROM coas WHERE status IN ('approved','executing')"
+        ).fetchone()[0]
         total_coas = conn.execute("SELECT COUNT(*) FROM coas").fetchone()[0]
         total_activity = conn.execute("SELECT COUNT(*) FROM activity_log").fetchone()[0]
-        active_injects = conn.execute("SELECT COUNT(*) FROM injects WHERE status = 'delivered'").fetchone()[0]
-        last_row = conn.execute("SELECT timestamp FROM activity_log ORDER BY id DESC LIMIT 1").fetchone()
+        active_injects = conn.execute(
+            "SELECT COUNT(*) FROM injects WHERE status = 'delivered'"
+        ).fetchone()[0]
+        last_row = conn.execute(
+            "SELECT timestamp FROM activity_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         last_event = last_row["timestamp"] if last_row else None
         total_briefings = conn.execute("SELECT COUNT(*) FROM briefings").fetchone()[0]
     finally:
@@ -477,14 +567,18 @@ async def get_monitoring_kpis():
         "total_briefings": total_briefings,
     }
 
+
 @app.get("/api/monitoring/activity")
 async def get_monitoring_activity(limit: int = 50):
     conn = get_db()
     try:
-        rows = conn.execute("SELECT * FROM activity_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM activity_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
     finally:
         conn.close()
     return [row_to_activity(r) for r in rows]
+
 
 @app.get("/api/monitoring/map-data")
 async def get_monitoring_map_data():
@@ -519,6 +613,7 @@ Structure:
 
 Write with authority. Use specific data from the source material. Be concise but thorough."""
 
+
 @app.post("/api/briefing")
 async def create_briefing(req: BriefingCreateRequest):
     briefing_id = _new_id()
@@ -535,6 +630,7 @@ async def create_briefing(req: BriefingCreateRequest):
         conn.close()
     log_activity("briefing_created", f"Briefing '{req.title}' created", related_id=briefing_id)
     return row_to_briefing(row)
+
 
 @app.post("/api/briefing/generate")
 async def generate_briefing(req: BriefingGenerateRequest):
@@ -576,26 +672,40 @@ async def generate_briefing(req: BriefingGenerateRequest):
     try:
         conn.execute(
             "INSERT INTO briefings (id, title, type, status, reference_id, content_markdown, created_at, updated_at) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)",
-            (briefing_id, title, req.briefing_type, req.coa_id or req.analysis_id, content, now, now),
+            (
+                briefing_id,
+                title,
+                req.briefing_type,
+                req.coa_id or req.analysis_id,
+                content,
+                now,
+                now,
+            ),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM briefings WHERE id = ?", (briefing_id,)).fetchone()
     finally:
         conn.close()
-    log_activity("briefing_generated", f"Briefing '{title}' generated via LLM", related_id=briefing_id)
+    log_activity(
+        "briefing_generated", f"Briefing '{title}' generated via LLM", related_id=briefing_id
+    )
     return row_to_briefing(row)
+
 
 @app.get("/api/briefing")
 async def list_briefings(status: str | None = None):
     conn = get_db()
     try:
         if status:
-            rows = conn.execute("SELECT * FROM briefings WHERE status = ? ORDER BY updated_at DESC", (status,)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM briefings WHERE status = ? ORDER BY updated_at DESC", (status,)
+            ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM briefings ORDER BY updated_at DESC").fetchall()
     finally:
         conn.close()
     return [row_to_briefing(r) for r in rows]
+
 
 @app.get("/api/briefing/{briefing_id}")
 async def get_briefing(briefing_id: str):
@@ -607,6 +717,7 @@ async def get_briefing(briefing_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Briefing not found")
     return row_to_briefing(row)
+
 
 @app.put("/api/briefing/{briefing_id}")
 async def update_briefing(briefing_id: str, req: BriefingUpdateRequest):
@@ -625,14 +736,21 @@ async def update_briefing(briefing_id: str, req: BriefingUpdateRequest):
         if updates:
             updates["updated_at"] = _now()
             set_clause = ", ".join(f"{k} = ?" for k in updates)
-            conn.execute(f"UPDATE briefings SET {set_clause} WHERE id = ?", (*updates.values(), briefing_id))
+            conn.execute(
+                f"UPDATE briefings SET {set_clause} WHERE id = ?", (*updates.values(), briefing_id)
+            )
             conn.commit()
         row = conn.execute("SELECT * FROM briefings WHERE id = ?", (briefing_id,)).fetchone()
     finally:
         conn.close()
     if req.status:
-        log_activity("briefing_status_changed", f"Briefing status changed to {req.status}", related_id=briefing_id)
+        log_activity(
+            "briefing_status_changed",
+            f"Briefing status changed to {req.status}",
+            related_id=briefing_id,
+        )
     return row_to_briefing(row)
+
 
 @app.delete("/api/briefing/{briefing_id}")
 async def delete_briefing(briefing_id: str):
@@ -654,6 +772,7 @@ async def delete_briefing(briefing_id: str):
 ```python
 # --- Exercise Control ---
 
+
 @app.post("/api/exercise")
 async def create_exercise(req: ExerciseCreateRequest):
     exercise_id = _new_id()
@@ -671,6 +790,7 @@ async def create_exercise(req: ExerciseCreateRequest):
     log_activity("exercise_created", f"Exercise '{req.name}' created", related_id=exercise_id)
     return row_to_exercise(row)
 
+
 @app.get("/api/exercise")
 async def list_exercises():
     conn = get_db()
@@ -680,6 +800,7 @@ async def list_exercises():
         conn.close()
     return [row_to_exercise(r) for r in rows]
 
+
 @app.get("/api/exercise/{exercise_id}")
 async def get_exercise(exercise_id: str):
     conn = get_db()
@@ -687,12 +808,15 @@ async def get_exercise(exercise_id: str):
         row = conn.execute("SELECT * FROM exercises WHERE id = ?", (exercise_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Exercise not found")
-        inject_rows = conn.execute("SELECT * FROM injects WHERE exercise_id = ? ORDER BY scheduled_offset", (exercise_id,)).fetchall()
+        inject_rows = conn.execute(
+            "SELECT * FROM injects WHERE exercise_id = ? ORDER BY scheduled_offset", (exercise_id,)
+        ).fetchall()
     finally:
         conn.close()
     result = row_to_exercise(row)
     result["injects"] = [row_to_inject(r) for r in inject_rows]
     return result
+
 
 @app.put("/api/exercise/{exercise_id}")
 async def update_exercise(exercise_id: str, req: ExerciseUpdateRequest):
@@ -707,8 +831,14 @@ async def update_exercise(exercise_id: str, req: ExerciseUpdateRequest):
     finally:
         conn.close()
     severity = "warning" if req.status == "paused" else "info"
-    log_activity("exercise_status_changed", f"Exercise status changed to {req.status}", severity=severity, related_id=exercise_id)
+    log_activity(
+        "exercise_status_changed",
+        f"Exercise status changed to {req.status}",
+        severity=severity,
+        related_id=exercise_id,
+    )
     return row_to_exercise(row)
+
 
 @app.post("/api/exercise/{exercise_id}/inject")
 async def create_inject(exercise_id: str, req: InjectCreateRequest):
@@ -721,29 +851,48 @@ async def create_inject(exercise_id: str, req: InjectCreateRequest):
         now = _now()
         conn.execute(
             "INSERT INTO injects (id, exercise_id, inject_type, target_groups, content, scheduled_offset, urgency, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-            (inject_id, exercise_id, req.inject_type, json.dumps(req.target_groups), req.content, req.scheduled_offset, req.urgency, now),
+            (
+                inject_id,
+                exercise_id,
+                req.inject_type,
+                json.dumps(req.target_groups),
+                req.content,
+                req.scheduled_offset,
+                req.urgency,
+                now,
+            ),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM injects WHERE id = ?", (inject_id,)).fetchone()
     finally:
         conn.close()
-    log_activity("inject_created", f"Inject '{req.inject_type}' added at T+{req.scheduled_offset}", related_id=inject_id)
+    log_activity(
+        "inject_created",
+        f"Inject '{req.inject_type}' added at T+{req.scheduled_offset}",
+        related_id=inject_id,
+    )
     return row_to_inject(row)
+
 
 @app.get("/api/exercise/{exercise_id}/injects")
 async def list_injects(exercise_id: str):
     conn = get_db()
     try:
-        rows = conn.execute("SELECT * FROM injects WHERE exercise_id = ? ORDER BY scheduled_offset", (exercise_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM injects WHERE exercise_id = ? ORDER BY scheduled_offset", (exercise_id,)
+        ).fetchall()
     finally:
         conn.close()
     return [row_to_inject(r) for r in rows]
+
 
 @app.put("/api/exercise/{exercise_id}/inject/{inject_id}")
 async def update_inject(exercise_id: str, inject_id: str, req: InjectUpdateRequest):
     conn = get_db()
     try:
-        existing = conn.execute("SELECT * FROM injects WHERE id = ? AND exercise_id = ?", (inject_id, exercise_id)).fetchone()
+        existing = conn.execute(
+            "SELECT * FROM injects WHERE id = ? AND exercise_id = ?", (inject_id, exercise_id)
+        ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Inject not found")
         updates: dict[str, Any] = {}
@@ -761,18 +910,23 @@ async def update_inject(exercise_id: str, inject_id: str, req: InjectUpdateReque
             updates["status"] = req.status
         if updates:
             set_clause = ", ".join(f"{k} = ?" for k in updates)
-            conn.execute(f"UPDATE injects SET {set_clause} WHERE id = ?", (*updates.values(), inject_id))
+            conn.execute(
+                f"UPDATE injects SET {set_clause} WHERE id = ?", (*updates.values(), inject_id)
+            )
             conn.commit()
         row = conn.execute("SELECT * FROM injects WHERE id = ?", (inject_id,)).fetchone()
     finally:
         conn.close()
     return row_to_inject(row)
 
+
 @app.delete("/api/exercise/{exercise_id}/inject/{inject_id}")
 async def delete_inject(exercise_id: str, inject_id: str):
     conn = get_db()
     try:
-        existing = conn.execute("SELECT * FROM injects WHERE id = ? AND exercise_id = ?", (inject_id, exercise_id)).fetchone()
+        existing = conn.execute(
+            "SELECT * FROM injects WHERE id = ? AND exercise_id = ?", (inject_id, exercise_id)
+        ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Inject not found")
         conn.execute("DELETE FROM injects WHERE id = ?", (inject_id,))
