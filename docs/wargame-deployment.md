@@ -207,6 +207,7 @@ fly secrets set \
   ANTHROPIC_API_KEY="sk-ant-..." \
   AGENT_MODEL="claude-sonnet-4-6" \
   ARBITER_MODEL="claude-opus-4-6" \
+  EXTRACT_MODEL="claude-haiku-4-5" \
   AGENT_RUNNER_IMPL="langgraph" \
   CORS_ORIGINS="https://<your-emissary-frontend-url>" \
   --app swarm-backend
@@ -296,7 +297,9 @@ for some reason. Create three resources in the Render dashboard by hand:
 3. **swarm-redis**: Render Key Value store, Starter tier ($10/mo).
 
 Set `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `CORS_ORIGINS`,
-`AGENT_MODEL`, `ARBITER_MODEL`, `AGENT_RUNNER_IMPL=langgraph` on the
+`AGENT_MODEL`, `ARBITER_MODEL`, `EXTRACT_MODEL` (optional — defaults to
+`claude-haiku-4-5`, used by free-form scenario seed-event extraction),
+`AGENT_RUNNER_IMPL=langgraph` on the
 swarm-api service. Deploy, then run `alembic upgrade head` and the
 ingest runner in the Render shell.
 

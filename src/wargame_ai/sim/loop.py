@@ -218,6 +218,7 @@ class SimLoop:
                     break
 
                 self.world.turn = turn
+                await self._persist_current_turn(db, simulation_id, turn)
                 await self._emit_turn_start(simulation_id, redis)
 
                 # --- Parallel agent perceive → decide → propose ----------
@@ -558,6 +559,30 @@ class SimLoop:
             escalation_rung=int(EscalationRung(rung)),
             explainability=explainability,
         )
+
+    async def _persist_current_turn(
+        self,
+        db: AsyncSession | None,
+        sim_id: uuid.UUID,
+        turn: int,
+    ) -> None:
+        """Persist current_turn each turn so API pollers see live progress.
+
+        Best-effort like _persist_sim_event. The commit also lands any events
+        flushed last turn, making progress visible outside the run session.
+        """
+        if db is None:
+            return
+        try:
+            # KNOWN COMPROMISE: ai.* imports from app.db.models for ORM types.
+            from wargame_backend.app.db.models import Simulation as SimulationORM
+
+            sim_row = await db.get(SimulationORM, sim_id)
+            if sim_row is not None:
+                sim_row.current_turn = turn
+                await db.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("persist_current_turn_failed", error=str(exc))
 
     async def _persist_sim_event(
         self,

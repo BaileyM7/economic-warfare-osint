@@ -67,6 +67,14 @@ class Settings(BaseSettings):
         alias="ARBITER_MODEL",
         description="LLM used for arbiter conflict adjudication.",
     )
+    extract_model: str = Field(
+        default="claude-haiku-4-5",
+        alias="EXTRACT_MODEL",
+        description=(
+            "LLM used for free-form scenario seed-event extraction. Haiku by design: "
+            "the user is waiting on the confirmation dialog, so latency beats depth."
+        ),
+    )
     embedding_model: str = Field(
         default="voyage-large-2",
         alias="EMBEDDING_MODEL",
