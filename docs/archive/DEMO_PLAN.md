@@ -227,8 +227,7 @@ Each endpoint returns structured data but no natural-language analysis. Add a `n
 async def _generate_narrative(data: dict, scenario_type: str) -> str:
     prompt = NARRATIVE_PROMPTS[scenario_type].format_map(data)
     response = await anthropic_client.messages.create(
-        model=config.model, max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
+        model=config.model, max_tokens=500, messages=[{"role": "user", "content": prompt}]
     )
     return response.content[0].text
 ```

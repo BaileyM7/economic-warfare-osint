@@ -143,8 +143,10 @@ Wire swarm's app as a sub-app of Emissary's, gated by env var.
 
 ```python
 import os
+
 if os.environ.get("WARGAME_ENABLED", "").lower() in {"1", "true", "yes"}:
     from src.wargame_backend.app.main import app as wargame_app
+
     app.mount("/api/wargame", wargame_app)
     logger.info("Wargame subapp mounted at /api/wargame")
 ```
