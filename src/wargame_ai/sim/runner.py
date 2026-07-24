@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +117,10 @@ class LangGraphSimRunner:
                     log.error("simulation_not_found", simulation_id=str(simulation_id))
                     return
                 sim_row.status = SimulationStatus.running
-                await db.flush()
+                sim_row.started_at = datetime.now(timezone.utc)
+                # Commit (not flush) so API pollers see running/started_at while
+                # the loop runs — a flush stays invisible until the final commit.
+                await db.commit()
 
                 # Build world from seed YAML filtered by scenario.country_ids
                 country_codes = [str(c).upper() for c in (scenario_row.country_ids or [])]
@@ -173,6 +177,7 @@ class LangGraphSimRunner:
                     else SimulationStatus.completed
                 )
                 sim_row.world_state_snapshot = world.snapshot()
+                sim_row.completed_at = datetime.now(timezone.utc)
                 await db.commit()
 
                 self._statuses[simulation_id] = sim_row.status
@@ -180,12 +185,36 @@ class LangGraphSimRunner:
         except asyncio.CancelledError:
             log.info("langgraph_runner_cancelled", simulation_id=str(simulation_id))
             self._statuses[simulation_id] = SimulationStatus.aborted
+            # Shielded: we're inside a cancelled task, and the row write must
+            # survive the cancellation or the sim stays 'running' forever.
+            await asyncio.shield(self._finalize_row(simulation_id, SimulationStatus.aborted))
             raise
         except Exception as exc:  # noqa: BLE001
             log.exception(
                 "langgraph_runner_error", simulation_id=str(simulation_id), error=str(exc)
             )
             self._statuses[simulation_id] = SimulationStatus.error
+            await self._finalize_row(simulation_id, SimulationStatus.error)
+
+    async def _finalize_row(
+        self,
+        simulation_id: uuid.UUID,
+        status: SimulationStatus,
+    ) -> None:
+        """Best-effort terminal-state write in a fresh session.
+
+        The run session may be dead (cancelled task, DB error) — without this
+        the row stays 'running' forever after a crash or hard abort.
+        """
+        try:
+            async with AsyncSessionLocal() as db:
+                sim_row = await db.get(SimulationORM, simulation_id)
+                if sim_row is not None and sim_row.completed_at is None:
+                    sim_row.status = status
+                    sim_row.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("finalize_row_failed", simulation_id=str(simulation_id), error=str(exc))
 
     # ------------------------------------------------------------------ #
     # Builders                                                             #

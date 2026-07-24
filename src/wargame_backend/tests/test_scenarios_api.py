@@ -165,3 +165,137 @@ async def test_get_scenario_invalid_uuid(client: AsyncClient) -> None:
     """A malformed UUID path parameter should return 422."""
     response = await client.get("/api/scenarios/not-a-uuid")
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /api/scenarios/extract-events
+# ---------------------------------------------------------------------------
+
+
+class _FakeSettings:
+    anthropic_api_key = "sk-ant-test"
+    extract_model = "claude-haiku-4-5"
+
+
+class _FakeBlock:
+    type = "tool_use"
+
+    def __init__(self, tool_input: dict) -> None:
+        self.input = tool_input
+
+
+class _FakeResponse:
+    def __init__(self, tool_input: dict) -> None:
+        self.content = [_FakeBlock(tool_input)]
+
+
+class _FakeAnthropicClient:
+    def __init__(self, tool_input: dict) -> None:
+        self._tool_input = tool_input
+        self.messages = self
+
+    async def create(self, **kwargs) -> _FakeResponse:
+        return _FakeResponse(self._tool_input)
+
+
+@pytest.mark.asyncio
+async def test_extract_events_no_key_returns_fallback(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without an Anthropic key the endpoint degrades to the empty stub."""
+    from wargame_backend.app.api import scenarios as scenarios_mod
+
+    class _NoKeySettings:
+        anthropic_api_key = ""
+        extract_model = "claude-haiku-4-5"
+
+    monkeypatch.setattr(scenarios_mod, "get_settings", lambda: _NoKeySettings())
+
+    response = await client.post(
+        "/api/scenarios/extract-events",
+        json={"description": "China blockades Taiwan.", "country_ids": []},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["is_stub"] is True
+    assert data["source"] == "fallback"
+    assert data["seed_events"] == []
+
+
+@pytest.mark.asyncio
+async def test_extract_events_llm_success(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A well-formed tool_use payload maps onto the response contract."""
+    from wargame_backend.app.api import scenarios as scenarios_mod
+
+    tool_input = {
+        "seed_events": [
+            {
+                "actor_country": "CHN",
+                "target_country": "TWN",
+                "domain": "kinetic_limited",
+                "action_type": "naval_blockade",
+                "rationale": "China initiates a quarantine blockade of the strait.",
+                "payload": {"location": "Taiwan Strait"},
+                "escalation_rung": 3,
+            },
+            {
+                # Unsupported actor — must be dropped, flipping source to partial.
+                "actor_country": "GBR",
+                "domain": "diplomatic",
+                "action_type": "statement",
+                "rationale": "UK issues a statement.",
+            },
+        ],
+        "selected_countries": [
+            {"iso3": "CHN", "relevance_score": 1.0, "rationale": "Aggressor."},
+            {"iso3": "TWN", "relevance_score": 0.95, "rationale": "Primary target."},
+        ],
+        "posture_overrides": {"CHN": "aggressive", "GBR": "neutral", "TWN": "not-a-posture"},
+    }
+
+    monkeypatch.setattr(scenarios_mod, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(
+        scenarios_mod, "_anthropic_client", lambda: _FakeAnthropicClient(tool_input)
+    )
+
+    response = await client.post(
+        "/api/scenarios/extract-events",
+        json={"description": "China blockades Taiwan.", "country_ids": ["CHN", "TWN"]},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["is_stub"] is False
+    assert data["source"] == "partial_fallback"  # the GBR event was dropped
+    assert len(data["seed_events"]) == 1
+    assert data["seed_events"][0]["actor_country"] == "CHN"
+    assert [c["iso3"] for c in data["selected_countries"]] == ["CHN", "TWN"]
+    assert data["posture_overrides"] == {"CHN": "aggressive"}
+
+
+@pytest.mark.asyncio
+async def test_extract_events_llm_error_returns_fallback(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any LLM failure degrades to the fallback rather than a 500."""
+    from wargame_backend.app.api import scenarios as scenarios_mod
+
+    class _ExplodingClient:
+        def __init__(self) -> None:
+            self.messages = self
+
+        async def create(self, **kwargs):
+            raise RuntimeError("api down")
+
+    monkeypatch.setattr(scenarios_mod, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(scenarios_mod, "_anthropic_client", lambda: _ExplodingClient())
+
+    response = await client.post(
+        "/api/scenarios/extract-events",
+        json={"description": "China blockades Taiwan.", "country_ids": []},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["is_stub"] is True
+    assert data["source"] == "fallback"
