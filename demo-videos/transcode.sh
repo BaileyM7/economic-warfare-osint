@@ -39,14 +39,16 @@ src_dur = float(json.loads(probe.stdout)['format']['duration'])
 keep = sum(durs) + 1.2
 print(f'{max(0.0, src_dur - keep):.2f}')
 ")
+  # Full 1920w: clips open in a near-fullscreen lightbox on the landing page,
+  # so downscaling would smear the app's small UI text.
   ffmpeg -y -ss "$keep" -i "$src" \
     -an \
-    -vf "scale=1280:-2" \
-    -c:v libx264 -preset slow -crf 26 -pix_fmt yuv420p \
+    -vf "scale=1920:-2" \
+    -c:v libx264 -preset slow -crf 25 -pix_fmt yuv420p \
     -movflags +faststart \
     "$DEST/$slug.mp4" 2>/dev/null
-  # Poster: a mid-video frame (first frames can be mid-load).
-  ffmpeg -y -ss 3 -i "$DEST/$slug.mp4" -frames:v 1 -q:v 4 "$DEST/$slug.jpg" 2>/dev/null
+  # Poster: a mid-video frame (first frames can be mid-load), 1280w is plenty.
+  ffmpeg -y -ss 3 -i "$DEST/$slug.mp4" -frames:v 1 -vf "scale=1280:-2" -q:v 4 "$DEST/$slug.jpg" 2>/dev/null
   ls -la "$DEST/$slug.mp4" "$DEST/$slug.jpg" | awk '{print "  " $5 "\t" $9}'
 done
 
