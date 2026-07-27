@@ -182,8 +182,24 @@ if config.wargame_debug_errors:
 
 
 _DIST = Path(__file__).parent.parent / "frontend" / "dist"
+
+# index.html must always revalidate (Cache-Control: no-cache + ETag → cheap 304s).
+# Without it browsers cache it heuristically and keep serving a pre-deploy bundle —
+# users saw the old router (e.g. "/" → login) for hours after a release.
+_INDEX_HEADERS = {"Cache-Control": "no-cache"}
+
+
+class _HashedStaticFiles(StaticFiles):
+    """Vite content-hashes every file under /assets, so they are immutable."""
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 if (_DIST / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
+    app.mount("/assets", _HashedStaticFiles(directory=str(_DIST / "assets")), name="assets")
 
 _browser_opened = False
 
@@ -337,7 +353,7 @@ async def root():
             status_code=503,
             detail="Frontend not built. Run: cd frontend && npm install && npm run build",
         )
-    return FileResponse(str(index))
+    return FileResponse(str(index), headers=_INDEX_HEADERS)
 
 
 @app.get("/api/health")
@@ -396,5 +412,6 @@ async def serve_static_or_spa(filename: str):
         return FileResponse(str(static_file))
     index = _DIST / "index.html"
     if index.exists():
-        return FileResponse(str(index))
+        # SPA fallback is index.html under another name — same no-cache rule.
+        return FileResponse(str(index), headers=_INDEX_HEADERS)
     raise HTTPException(status_code=404)
