@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../../brand';
-import { useScrolledPast } from './hooks';
+import { launchTarget, useScrolledPast } from './hooks';
 
 export default function LandingNav() {
   const navigate = useNavigate();
@@ -31,7 +31,7 @@ export default function LandingNav() {
           <Button
             variant="primary"
             className="h-9 whitespace-nowrap px-4 text-xs"
-            onClick={() => navigate('/login')}
+            onClick={() => navigate(launchTarget())}
           >
             Launch app
           </Button>

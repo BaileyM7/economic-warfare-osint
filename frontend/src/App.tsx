@@ -20,12 +20,6 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
   return children;
 }
 
-/** "/" shows the public marketing page; signed-in users go straight to the app. */
-function LandingGate() {
-  if (getToken()) return <Navigate to="/risk-feed" replace />;
-  return <LandingPage />;
-}
-
 function RequireAdmin({ children }: { children: React.ReactElement }) {
   const { isAdmin, loading } = useAuth();
   if (!getToken()) return <Navigate to="/login" replace />;
@@ -38,7 +32,9 @@ export default function App() {
   return (
     <Suspense fallback={null}>
       <Routes>
-        <Route path="/" element={<LandingGate />} />
+        {/* "/" is the marketing page for everyone — signed in or not. The
+            landing's "Launch app" buttons route past /login when a token exists. */}
+        <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route
           element={
