@@ -451,7 +451,7 @@ export default function EntityGraphSection({
         )}
         {/* View-mode switcher (#35 scaffold). Clustered is live; Focus/Map/Matrix
             are wired in later phases (#36/#38/#39). */}
-        <div className="flex items-center gap-1 bg-surface-container-lowest border border-outline-variant/15 rounded-lg p-0.5">
+        <div data-vn="graph-views" className="flex items-center gap-1 bg-surface-container-lowest border border-outline-variant/15 rounded-lg p-0.5">
           {(['clustered', 'focus', 'map', 'matrix'] as const).map((m) => (
             <button
               key={m}

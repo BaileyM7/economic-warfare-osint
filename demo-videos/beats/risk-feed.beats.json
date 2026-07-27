@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "title": "Risk Feed walkthrough",
+    "slug": "risk-feed",
+    "targetLengthSec": 16
+  },
+  "baseUrl": "http://127.0.0.1:8000",
+  "viewport": { "width": 1920, "height": 1080 },
+  "auth": {
+    "loginUrl": "/login",
+    "steps": [
+      { "fill": "input[type=text]", "value": "env:DEMO_USERNAME" },
+      { "fill": "input[type=password]", "value": "env:DEMO_PASSWORD" },
+      { "click": "button[type=submit]" }
+    ],
+    "success": { "urlGlob": "**/search*" }
+  },
+  "beats": [
+    {
+      "id": 1,
+      "page": "/risk-feed",
+      "durationSec": 4,
+      "text": "The Risk Feed surfaces risk shifts on its own, pulled from sanctions lists, event data, and markets.",
+      "actions": [
+        { "fn": "waitFor", "sel": "[data-vn=feed-refresh]" },
+        { "fn": "waitFor", "sel": "[data-vn=risk-card]" }
+      ]
+    },
+    {
+      "id": 2,
+      "durationSec": 6,
+      "text": "Each card ranks by priority for the entities on your watch list.",
+      "actions": [
+        { "fn": "scrollToEl", "sel": "[data-vn=risk-card]" },
+        { "fn": "hl", "sel": "[data-vn=risk-card]" }
+      ]
+    },
+    {
+      "id": 3,
+      "durationSec": 6,
+      "text": "Any card translates into a Course of Action with one click.",
+      "actions": [
+        { "fn": "unhl" },
+        { "fn": "scrollToEl", "sel": "[data-vn=feed-refresh]", "opts": { "instant": true } }
+      ]
+    }
+  ]
+}

@@ -424,7 +424,7 @@ export default function BriefingsPage() {
             Showing {filteredBriefings.length} of {briefings.length} Records
           </span>
         </div>
-        <table className="w-full text-left border-collapse">
+        <table data-vn="brief-table" className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-surface-container-lowest/30">
               {columns.map((col) => (

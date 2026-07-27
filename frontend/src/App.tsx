@@ -13,10 +13,17 @@ const RiskFeedPage = lazy(() => import('./pages/RiskFeedPage'));
 const KnowledgeGraphPage = lazy(() => import('./pages/KnowledgeGraphPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
+const LandingPage = lazy(() => import('./pages/landing/LandingPage'));
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   if (!getToken()) return <Navigate to="/login" replace />;
   return children;
+}
+
+/** "/" shows the public marketing page; signed-in users go straight to the app. */
+function LandingGate() {
+  if (getToken()) return <Navigate to="/risk-feed" replace />;
+  return <LandingPage />;
 }
 
 function RequireAdmin({ children }: { children: React.ReactElement }) {
@@ -31,6 +38,7 @@ export default function App() {
   return (
     <Suspense fallback={null}>
       <Routes>
+        <Route path="/" element={<LandingGate />} />
         <Route path="/login" element={<LoginPage />} />
         <Route
           element={
@@ -39,7 +47,6 @@ export default function App() {
             </RequireAuth>
           }
         >
-          <Route index element={<Navigate to="/risk-feed" replace />} />
           <Route path="risk-feed" element={<RiskFeedPage />} />
           <Route path="search" element={<SearchPage />} />
           <Route path="knowledge-graph" element={<KnowledgeGraphPage />} />

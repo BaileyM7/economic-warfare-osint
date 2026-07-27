@@ -62,6 +62,7 @@ function DemoButton() {
       variant="ghost"
       size="sm"
       className="w-full"
+      data-vn="wg-play-demo"
       onClick={handleClick}
     >
       {playing ? <Square size={12} /> : <Play size={12} />}

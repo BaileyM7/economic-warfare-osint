@@ -106,6 +106,10 @@ to keep the initial bundle small — heavy pages (Wargame, Monitoring) load on
 demand. Don't add a top-level eager import for a page; it'll bloat the
 initial bundle and erase the lazy-loading benefit for everyone.
 
+`/` is a **public marketing landing page** ([src/pages/landing/](src/pages/landing/)) —
+`LandingGate` in App.tsx redirects signed-in users to `/risk-feed` instead. Its demo
+clips live in `public/videos/` and are recorded via the repo-root `demo-videos/` pipeline.
+
 `RequireAuth` (no token → redirect to `/login`) wraps the AppShell.
 `RequireAdmin` additionally checks the `useAuth().isAdmin` flag — fetched
 from the backend on mount. Adding a new admin-only page: wrap it in

@@ -61,5 +61,10 @@ benchmarks/ui/node_modules/
 benchmarks/ui/playwright-report/
 benchmarks/ui/test-results/
 
+# Vendored auto-loom skill (demo-videos recording engine): commit the scripts,
+# not its installed deps or recording outputs.
+.claude/skills/auto-loom/node_modules/
+.claude/skills/auto-loom/demo-video-out/
+
 # Local scratch / temp working files
 FRAGILITY_METHODOLOGY.tmp.md

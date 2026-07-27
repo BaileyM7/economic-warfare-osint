@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "title": "Knowledge Graph walkthrough",
+    "slug": "knowledge-graph",
+    "targetLengthSec": 22
+  },
+  "baseUrl": "http://127.0.0.1:8000",
+  "viewport": { "width": 1920, "height": 1080 },
+  "auth": {
+    "loginUrl": "/login",
+    "steps": [
+      { "fill": "input[type=text]", "value": "env:DEMO_USERNAME" },
+      { "fill": "input[type=password]", "value": "env:DEMO_PASSWORD" },
+      { "click": "button[type=submit]" }
+    ],
+    "success": { "urlGlob": "**/search*" }
+  },
+  "beats": [
+    {
+      "id": 1,
+      "page": "/knowledge-graph",
+      "durationSec": 6,
+      "text": "Every analysis accumulates into the team's shared knowledge graph, clustered by community.",
+      "actions": [
+        { "fn": "waitFor", "sel": "[data-vn=graph-views]" },
+        { "fn": "wait", "ms": 1500 }
+      ]
+    },
+    {
+      "id": 2,
+      "durationSec": 6,
+      "text": "Focus view centres any entity and rings its neighbours by hop distance.",
+      "actions": [
+        { "fn": "clickEl", "sel": "[data-vn=graph-views] button:nth-of-type(2)" }
+      ]
+    },
+    {
+      "id": 3,
+      "durationSec": 5,
+      "text": "The map view lays relationships across geography.",
+      "actions": [
+        { "fn": "clickEl", "sel": "[data-vn=graph-views] button:nth-of-type(3)" }
+      ]
+    },
+    {
+      "id": 4,
+      "durationSec": 5,
+      "text": "And the matrix view reveals blocs and cross-bloc ties beyond the hairball.",
+      "actions": [
+        { "fn": "clickEl", "sel": "[data-vn=graph-views] button:nth-of-type(4)" }
+      ]
+    }
+  ]
+}

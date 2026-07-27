@@ -89,6 +89,7 @@ export default function RiskFeedCard({ item, busy, onAction }: Props) {
 
   return (
     <div
+      data-vn="risk-card"
       className={`bg-surface-container-low border border-outline-variant/10 border-l-2 ${border} rounded-lg p-4 transition-all hover:bg-surface-container hover:shadow-md`}
     >
       <div className="flex items-start justify-between gap-3 mb-2">
