@@ -112,6 +112,11 @@ semantic features (vector search, agent memory). A **cron** service fires the we
 and any unmatched path (SPA history-mode routing). No separate static host, and no submodule checkout.
 Detail: [07-submodules/frontend.md](07-submodules/frontend.md).
 
+Cache headers: `index.html` (root and SPA fallback) is served `Cache-Control: no-cache` so every
+load revalidates against the ETag — without this, browsers heuristically cache it and keep running
+a pre-deploy bundle for hours after a release. `/assets/*` are Vite content-hashed and served
+`public, max-age=31536000, immutable`.
+
 ## Environment-variable matrix
 
 **Legend — "Set via":** `yaml` = literal value in render.yaml · `secret` = render.yaml `sync:false`
