@@ -44,7 +44,7 @@ print(f'{max(0.0, src_dur - keep):.2f}')
   ffmpeg -y -ss "$keep" -i "$src" \
     -an \
     -vf "scale=1920:-2" \
-    -c:v libx264 -preset slow -crf 25 -pix_fmt yuv420p \
+    -c:v libx264 -preset slow -crf 27 -pix_fmt yuv420p \
     -movflags +faststart \
     "$DEST/$slug.mp4" 2>/dev/null
   # Poster: a mid-video frame (first frames can be mid-load), 1280w is plenty.

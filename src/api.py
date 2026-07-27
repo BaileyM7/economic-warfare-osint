@@ -409,6 +409,14 @@ async def health():
 async def serve_static_or_spa(filename: str):
     static_file = _DIST / filename
     if static_file.is_file():
+        # Landing-page demo media: cacheable at the edge and in browsers so the
+        # single dyno doesn't stream every byte of every play (uncached video is
+        # what made clips stall under load). Re-recorded clips may take up to a
+        # day to propagate — fine for marketing media.
+        if filename.startswith("videos/"):
+            return FileResponse(
+                str(static_file), headers={"Cache-Control": "public, max-age=86400"}
+            )
         return FileResponse(str(static_file))
     index = _DIST / "index.html"
     if index.exists():

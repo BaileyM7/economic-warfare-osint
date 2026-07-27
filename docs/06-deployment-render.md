@@ -115,7 +115,9 @@ Detail: [07-submodules/frontend.md](07-submodules/frontend.md).
 Cache headers: `index.html` (root and SPA fallback) is served `Cache-Control: no-cache` so every
 load revalidates against the ETag — without this, browsers heuristically cache it and keep running
 a pre-deploy bundle for hours after a release. `/assets/*` are Vite content-hashed and served
-`public, max-age=31536000, immutable`.
+`public, max-age=31536000, immutable`. `/videos/*` (landing-page demo clips) are served
+`public, max-age=86400` so the edge/browser caches them — uncached, every play streamed from the
+single dyno and clips stalled whenever it was busy.
 
 ## Environment-variable matrix
 
