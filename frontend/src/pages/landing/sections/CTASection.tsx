@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Button, MotifHeading } from '../../../brand';
 import Reveal from '../components/Reveal';
+import { launchTarget } from '../hooks';
 
 const ArrowGlyph = () => (
   <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
@@ -22,7 +23,7 @@ export default function CTASection() {
             Sign in and put the swarm to work on your next question.
           </p>
           <div className="mt-10">
-            <Button variant="primary" icon={<ArrowGlyph />} onClick={() => navigate('/login')}>
+            <Button variant="primary" icon={<ArrowGlyph />} onClick={() => navigate(launchTarget())}>
               Launch app
             </Button>
           </div>

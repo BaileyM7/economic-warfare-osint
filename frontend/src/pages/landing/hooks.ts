@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
+import { getToken } from '../../api';
+
+/** Where "Launch app" goes: signed-in visitors skip the login screen. */
+export function launchTarget(): string {
+  return getToken() ? '/risk-feed' : '/login';
+}
 
 /**
  * Landing-page-local hooks. The landing chunk is self-contained by design —

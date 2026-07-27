@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '../../../brand';
 import TessellationCanvas from '../components/TessellationCanvas';
 import Reveal from '../components/Reveal';
+import { launchTarget } from '../hooks';
 
 const ArrowGlyph = () => (
   <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
@@ -43,7 +44,7 @@ export default function HeroSection() {
         </Reveal>
         <Reveal delay={300}>
           <div className="mt-10 flex flex-wrap items-center gap-5">
-            <Button variant="primary" icon={<ArrowGlyph />} onClick={() => navigate('/login')}>
+            <Button variant="primary" icon={<ArrowGlyph />} onClick={() => navigate(launchTarget())}>
               Launch app
             </Button>
             <Button
