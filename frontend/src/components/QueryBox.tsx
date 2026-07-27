@@ -167,6 +167,7 @@ export default function QueryBox({ loading, health, onAnalyze, onDeepAnalyze, on
             <textarea
               rows={3}
               autoFocus
+              data-vn="ask-input"
               className="w-full bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-3 py-2.5 text-on-surface font-body text-sm placeholder:text-outline focus:ring-0 focus:outline-none resize-none"
               placeholder="e.g. What happens to global semiconductor supply if we sanction Fujian Jinhua?"
               value={question}
@@ -213,6 +214,7 @@ export default function QueryBox({ loading, health, onAnalyze, onDeepAnalyze, on
           )}
           <div className="flex gap-2 pt-1">
             <button
+              data-vn="ask-run"
               className="bg-accent text-white px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-accent-hover transition-all disabled:opacity-50"
               disabled={loading || checking || !question.trim()}
               onClick={handleDeep}

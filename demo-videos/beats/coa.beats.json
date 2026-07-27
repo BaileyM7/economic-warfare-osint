@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "title": "COA Workspace walkthrough",
+    "slug": "coa",
+    "targetLengthSec": 14
+  },
+  "baseUrl": "http://127.0.0.1:8000",
+  "viewport": { "width": 1920, "height": 1080 },
+  "auth": {
+    "loginUrl": "/login",
+    "steps": [
+      { "fill": "input[type=text]", "value": "env:DEMO_USERNAME" },
+      { "fill": "input[type=password]", "value": "env:DEMO_PASSWORD" },
+      { "click": "button[type=submit]" }
+    ],
+    "success": { "urlGlob": "**/search*" }
+  },
+  "beats": [
+    {
+      "id": 1,
+      "page": "/coa",
+      "durationSec": 5,
+      "text": "The Course of Action workspace models economic and tactical escalation paths.",
+      "actions": [
+        { "fn": "waitFor", "sel": "[data-vn=coa-board]" },
+        { "fn": "wait", "ms": 800 }
+      ]
+    },
+    {
+      "id": 2,
+      "durationSec": 5,
+      "text": "Options move from draft through review, approval, and execution.",
+      "actions": [
+        { "fn": "hl", "sel": "[data-vn=coa-board]" }
+      ]
+    },
+    {
+      "id": 3,
+      "durationSec": 4,
+      "text": "Each option carries its type and confidence, ready to brief.",
+      "actions": [
+        { "fn": "unhl" }
+      ]
+    }
+  ]
+}

@@ -99,7 +99,7 @@ export default function MonitoringPage() {
   return (
     <div className="h-[calc(100vh-48px)] p-6 flex flex-col gap-6 overflow-hidden">
       {/* KPI Cards */}
-      <section className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-none">
+      <section data-vn="kpis" className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-none">
         {kpiCards.map((kpi) => (
           <div
             key={kpi.label}
@@ -245,7 +245,7 @@ export default function MonitoringPage() {
         </div>
 
         {/* Activity Log */}
-        <div className="col-span-12 lg:col-span-4 flex flex-col min-h-0">
+        <div data-vn="activity-log" className="col-span-12 lg:col-span-4 flex flex-col min-h-0">
           <div className="bg-surface-container rounded-lg flex flex-col h-full overflow-hidden">
             <div className="p-4 border-b border-outline-variant/15 flex justify-between items-center">
               <div className="flex items-center gap-2">

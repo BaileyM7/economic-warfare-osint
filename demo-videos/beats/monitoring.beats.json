@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "title": "Monitoring walkthrough",
+    "slug": "monitoring",
+    "targetLengthSec": 15
+  },
+  "baseUrl": "http://127.0.0.1:8000",
+  "viewport": { "width": 1920, "height": 1080 },
+  "auth": {
+    "loginUrl": "/login",
+    "steps": [
+      { "fill": "input[type=text]", "value": "env:DEMO_USERNAME" },
+      { "fill": "input[type=password]", "value": "env:DEMO_PASSWORD" },
+      { "click": "button[type=submit]" }
+    ],
+    "success": { "urlGlob": "**/search*" }
+  },
+  "beats": [
+    {
+      "id": 1,
+      "page": "/monitoring",
+      "durationSec": 5,
+      "text": "Monitoring keeps live posture on one screen. Key indicators stream in over a live connection.",
+      "actions": [
+        { "fn": "waitFor", "sel": "[data-vn=kpis]" },
+        { "fn": "hl", "sel": "[data-vn=kpis]" }
+      ]
+    },
+    {
+      "id": 2,
+      "durationSec": 5,
+      "text": "Activity plots onto the global map as it happens.",
+      "actions": [
+        { "fn": "unhl" },
+        { "fn": "hl", "sel": ".leaflet-container" }
+      ]
+    },
+    {
+      "id": 3,
+      "durationSec": 5,
+      "text": "And the chronological log keeps the full audit trail.",
+      "actions": [
+        { "fn": "unhl" },
+        { "fn": "hl", "sel": "[data-vn=activity-log]" }
+      ]
+    }
+  ]
+}

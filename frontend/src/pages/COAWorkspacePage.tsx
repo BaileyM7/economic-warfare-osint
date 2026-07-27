@@ -562,7 +562,7 @@ export default function COAWorkspacePage() {
         </header>
 
         {/* Kanban Columns */}
-        <div className="flex-1 overflow-x-auto px-6 pb-6 flex gap-4 items-start">
+        <div data-vn="coa-board" className="flex-1 overflow-x-auto px-6 pb-6 flex gap-4 items-start">
           {loading && coas.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
               <span className="material-symbols-outlined text-3xl text-outline animate-spin">

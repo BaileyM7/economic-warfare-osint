@@ -235,7 +235,7 @@ export default function SwarmPanel({ events, loading }: Props) {
   if (events.length === 0) return null
 
   return (
-    <div className="bg-surface-container mb-6 border border-outline-variant/10">
+    <div data-vn="swarm" className="bg-surface-container mb-6 border border-outline-variant/10">
       {/* Header: phase stepper + agent counter */}
       <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-outline-variant/10">
         <div className="flex items-center gap-2">

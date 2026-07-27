@@ -116,6 +116,12 @@
   .rounded-full { border-radius: 0 !important; }
 }
 
+/* Navy canvas at the document level so lazy route chunks (e.g. the landing
+   page) never flash a white background while loading. */
+body {
+  background: #061033;
+}
+
 /* Glass panel utility — brand forbids backdrop-blur elevation; flat navy. */
 .glass-panel {
   background: var(--color-surface-container-low);

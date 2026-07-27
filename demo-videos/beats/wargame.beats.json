@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "title": "Wargame walkthrough",
+    "slug": "wargame",
+    "targetLengthSec": 24
+  },
+  "baseUrl": "http://127.0.0.1:8000",
+  "viewport": { "width": 1920, "height": 1080 },
+  "auth": {
+    "loginUrl": "/login",
+    "steps": [
+      { "fill": "input[type=text]", "value": "env:DEMO_USERNAME" },
+      { "fill": "input[type=password]", "value": "env:DEMO_PASSWORD" },
+      { "click": "button[type=submit]" }
+    ],
+    "success": { "urlGlob": "**/search*" }
+  },
+  "beats": [
+    {
+      "id": 1,
+      "page": "/wargame",
+      "durationSec": 5,
+      "text": "The wargame plays a scenario out on a live globe.",
+      "actions": [
+        { "fn": "waitFor", "sel": "[data-vn=wg-play-demo]" },
+        { "fn": "wait", "ms": 2000 }
+      ]
+    },
+    {
+      "id": 2,
+      "durationSec": 3,
+      "text": "Run the scripted demo scenario.",
+      "actions": [
+        { "fn": "clickEl", "sel": "[data-vn=wg-play-demo]" }
+      ]
+    },
+    {
+      "id": 3,
+      "durationSec": 16,
+      "text": "Agent factions trade cyber, kinetic, economic, and information moves, arcing between capitals in real time.",
+      "actions": [
+        { "fn": "wait", "ms": 500 }
+      ]
+    }
+  ]
+}

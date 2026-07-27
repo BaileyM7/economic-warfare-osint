@@ -1,0 +1,67 @@
+{
+  "meta": {
+    "title": "Ask Anything walkthrough",
+    "slug": "ask-anything",
+    "targetLengthSec": 32
+  },
+  "baseUrl": "http://127.0.0.1:8000",
+  "viewport": { "width": 1920, "height": 1080 },
+  "auth": {
+    "loginUrl": "/login",
+    "steps": [
+      { "fill": "input[type=text]", "value": "env:DEMO_USERNAME" },
+      { "fill": "input[type=password]", "value": "env:DEMO_PASSWORD" },
+      { "click": "button[type=submit]" }
+    ],
+    "success": { "urlGlob": "**/search*" }
+  },
+  "beats": [
+    {
+      "id": 1,
+      "page": "/search",
+      "durationSec": 3.5,
+      "text": "Ask Anything takes a plain language question from the analyst.",
+      "actions": [
+        { "fn": "waitFor", "sel": "[data-vn=ask-input]" },
+        { "fn": "hl", "sel": "[data-vn=ask-input]" }
+      ]
+    },
+    {
+      "id": 2,
+      "durationSec": 5,
+      "text": "Type the question exactly as you would ask a colleague.",
+      "actions": [
+        { "fn": "unhl" },
+        { "fn": "type", "sel": "[data-vn=ask-input]", "value": "What happens to global semiconductor supply if we sanction Fujian Jinhua?", "opts": { "delay": 32 } }
+      ]
+    },
+    {
+      "id": 3,
+      "durationSec": 3,
+      "text": "Run the deep analysis.",
+      "actions": [
+        { "fn": "hl", "sel": "[data-vn=ask-run]" },
+        { "fn": "clickEl", "sel": "[data-vn=ask-run]" }
+      ]
+    },
+    {
+      "id": 4,
+      "durationSec": 13,
+      "text": "The orchestrator decomposes the question and a swarm of agents reports in across sanctions, corporate, trade, and market domains.",
+      "actions": [
+        { "fn": "unhl" },
+        { "fn": "waitFor", "sel": "[data-vn=swarm]" },
+        { "fn": "scrollToEl", "sel": "[data-vn=swarm]" }
+      ]
+    },
+    {
+      "id": 5,
+      "durationSec": 8,
+      "text": "The findings fuse into a structured assessment with an entity relationship graph.",
+      "actions": [
+        { "fn": "waitFor", "sel": "[data-vn=graph-views]" },
+        { "fn": "scrollToEl", "sel": "[data-vn=graph-views]" }
+      ]
+    }
+  ]
+}

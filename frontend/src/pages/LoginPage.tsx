@@ -1,42 +1,52 @@
-import { useState, FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { login, setToken } from '../api'
+import { useState, FormEvent } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { login, setToken } from '../api';
 
 export default function LoginPage() {
-  const navigate = useNavigate()
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
+  const navigate = useNavigate();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
+    e.preventDefault();
+    setLoading(true);
+    setError('');
     try {
-      const res = await login(username, password)
-      setToken(res.access_token)
-      navigate('/search', { replace: true })
+      const res = await login(username, password);
+      setToken(res.access_token);
+      navigate('/search', { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-surface-dim p-6">
+      <Link
+        to="/"
+        className="fixed left-6 top-6 font-label text-xs uppercase tracking-wide text-on-surface-variant border border-outline-variant px-3 py-2 hover:bg-surface-container transition-colors"
+      >
+        Back to home
+      </Link>
       <div className="w-full max-w-md bg-surface-container rounded-xl p-8 border border-outline-variant/15">
         <div className="text-center mb-8">
           <p className="font-headline text-xs uppercase tracking-[0.2em] text-on-surface-variant mb-3">
             <span className="font-bold">Agile</span> <span className="font-normal">Defense</span>
           </p>
-          <h1 className="text-3xl font-headline font-bold uppercase tracking-widest text-on-surface">Emissary</h1>
+          <h1 className="text-3xl font-headline font-bold uppercase tracking-widest text-on-surface">
+            Emissary
+          </h1>
           <p className="text-sm text-on-surface-variant mt-2">Sign in to continue</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="text-[10px] font-headline font-bold uppercase tracking-[0.15em] text-outline block mb-1.5">Username</label>
+            <label className="text-[10px] font-headline font-bold uppercase tracking-[0.15em] text-outline block mb-1.5">
+              Username
+            </label>
             <input
               type="text"
               autoFocus
@@ -47,7 +57,9 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="text-[10px] font-headline font-bold uppercase tracking-[0.15em] text-outline block mb-1.5">Password</label>
+            <label className="text-[10px] font-headline font-bold uppercase tracking-[0.15em] text-outline block mb-1.5">
+              Password
+            </label>
             <input
               type="password"
               autoComplete="current-password"
@@ -67,11 +79,18 @@ export default function LoginPage() {
             className="w-full bg-accent text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-accent-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {loading ? (
-              <><span className="material-symbols-outlined text-base animate-spin">progress_activity</span>Signing in...</>
-            ) : 'Sign In'}
+              <>
+                <span className="material-symbols-outlined text-base animate-spin">
+                  progress_activity
+                </span>
+                Signing in...
+              </>
+            ) : (
+              'Sign In'
+            )}
           </button>
         </form>
       </div>
     </div>
-  )
+  );
 }
