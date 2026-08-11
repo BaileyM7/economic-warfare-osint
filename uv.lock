@@ -863,7 +863,7 @@ requires-dist = [
     { name = "langchain-community", marker = "extra == 'wargame'", specifier = ">=0.3.5" },
     { name = "langgraph", marker = "extra == 'wargame'", specifier = ">=0.2.40" },
     { name = "limits", extras = ["redis"], specifier = ">=3.13.0" },
-    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2.0.0" },
     { name = "networkx", specifier = ">=3.3" },
     { name = "openai", marker = "extra == 'local'", specifier = ">=1.0.0" },
     { name = "orjson", marker = "extra == 'wargame'", specifier = ">=3.10.11" },

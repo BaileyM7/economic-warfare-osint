@@ -6,7 +6,9 @@ requires-python = ">=3.12"
 dependencies = [
     # LLM / Agent
     "anthropic>=0.52.0",
-    "mcp>=1.0.0",
+    # mcp 2.0 removed mcp.server.fastmcp (FastMCP split out); our tool servers
+    # import it, so stay on 1.x until they're migrated.
+    "mcp>=1.0.0,<2.0.0",
     # Data models & config (pydantic floor bumped for swarm compat)
     "pydantic>=2.9.2",
     "python-dotenv>=1.0",

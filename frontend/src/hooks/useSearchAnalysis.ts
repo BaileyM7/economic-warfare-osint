@@ -32,6 +32,42 @@ import type {
 
 export type ViewMode = 'company' | 'person' | 'sector' | 'vessel' | 'orchestrator'
 
+// The most recent orchestrator run for this tab. The backend keeps running the
+// analysis after the page unmounts (asyncio.create_task) and serves it back via
+// GET /api/analyze/{id} for ~1h — this key is how we find our way back to it
+// when the user navigates away mid-run (e.g. to demo the wargame) and returns.
+const ACTIVE_ANALYSIS_KEY = 'emissary_active_analysis'
+
+interface ActiveAnalysis {
+  analysisId: string
+  query: string
+  startedAt: string
+}
+
+function readActiveAnalysis(): ActiveAnalysis | null {
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_ANALYSIS_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as ActiveAnalysis
+    return parsed.analysisId ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function writeActiveAnalysis(analysisId: string, query: string) {
+  try {
+    sessionStorage.setItem(
+      ACTIVE_ANALYSIS_KEY,
+      JSON.stringify({ analysisId, query, startedAt: new Date().toISOString() }),
+    )
+  } catch { /* storage full — ignore */ }
+}
+
+function clearActiveAnalysis() {
+  sessionStorage.removeItem(ACTIVE_ANALYSIS_KEY)
+}
+
 function classifyClient(query: string): ViewMode | null {
   const raw = query.trim()
   const digits = raw.replace(/[\s-]/g, '')
@@ -64,8 +100,37 @@ export function useSearchAnalysis() {
   const [hiddenDatasets, setHiddenDatasets] = useState<Set<number>>(new Set())
   const chartRef = useRef<ImpactChartHandle>(null)
 
+  // Flipped on unmount so an in-flight poll loop from a previous visit stops
+  // instead of setting state on a dead component forever. The backend job is
+  // unaffected — the resume effect below reattaches on the next mount.
+  const unmountedRef = useRef(false)
+  useEffect(() => {
+    unmountedRef.current = false
+    return () => {
+      unmountedRef.current = true
+    }
+  }, [])
+
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => {})
+  }, [])
+
+  // Reattach to the tab's last orchestrator run. If it's still processing the
+  // live progress/swarm stream picks up where it left off; if it finished while
+  // we were away, the first poll returns the completed result immediately.
+  useEffect(() => {
+    const saved = readActiveAnalysis()
+    if (!saved) return
+    setQuery(saved.query)
+    setMode('orchestrator')
+    setLoading(true)
+    setProgress([{
+      msg: `Reattaching to pipeline (ID: ${saved.analysisId})...`,
+      type: 'step',
+      time: new Date().toLocaleTimeString(),
+    }])
+    void pollOrchestrator(saved.analysisId, saved.query, { resume: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function addProgress(msg: string, type: ProgressEntry['type'] = 'step') {
@@ -90,6 +155,7 @@ export function useSearchAnalysis() {
     setUboLoading(false)
     setUboTargetName('')
     setHiddenDatasets(new Set())
+    clearActiveAnalysis()
   }
 
   async function loadEntityGraph(ticker: string) {
@@ -141,6 +207,9 @@ export function useSearchAnalysis() {
     setProgress([])
     setHiddenDatasets(new Set())
     setMode(null)
+    // A new search supersedes any saved orchestrator run for this tab; the
+    // orchestrator path below re-writes the key with its fresh analysis id.
+    clearActiveAnalysis()
 
     let detectedMode = classifyClient(raw)
 
@@ -313,14 +382,31 @@ export function useSearchAnalysis() {
       const started = await apiStartOrchestrator(raw, getAnalysisSessionId())
       const { analysis_id } = started
       if (started.session_id) setAnalysisSessionId(started.session_id)
+      writeActiveAnalysis(analysis_id, raw)
       addProgress(`Pipeline started (ID: ${analysis_id})`)
+      await pollOrchestrator(analysis_id, raw)
+    } catch (e) {
+      addProgress(`Error: ${(e as Error).message}`, 'error')
+      setLoading(false)
+    }
+  }
 
+  async function pollOrchestrator(
+    analysisId: string,
+    raw: string,
+    opts: { resume?: boolean } = {},
+  ) {
+    try {
       let done = false
       while (!done) {
         // ~0.9s cadence per the Phase 3 contract — fast enough for the swarm to
         // feel live without hammering the backend.
         await new Promise<void>((r) => setTimeout(r, 900))
-        const status = await pollAnalysisStatus(analysis_id)
+        // Navigated away mid-run: stop this loop; the backend keeps working and
+        // the next mount's resume effect reattaches via ACTIVE_ANALYSIS_KEY.
+        if (unmountedRef.current) return
+        const status = await pollAnalysisStatus(analysisId)
+        if (unmountedRef.current) return
 
         const entries: ProgressEntry[] = status.progress.map((msg) => ({
           msg,
@@ -340,6 +426,7 @@ export function useSearchAnalysis() {
           setGraphData(assessmentToEntityGraph(status.result, raw))
           done = true
         } else if (status.status === 'failed') {
+          clearActiveAnalysis()
           setProgress((prev) => [
             ...prev,
             { msg: `Failed: ${status.error ?? 'Unknown error'}`, type: 'error', time: '' },
@@ -348,9 +435,20 @@ export function useSearchAnalysis() {
         }
       }
     } catch (e) {
-      addProgress(`Error: ${(e as Error).message}`, 'error')
+      if (unmountedRef.current) return
+      if (opts.resume) {
+        // The saved run expired from the backend store (1h TTL) or the id is
+        // gone — reset to a clean search page rather than surfacing an error
+        // for something the user didn't just do.
+        clearActiveAnalysis()
+        setMode(null)
+        setProgress([])
+        setQuery('')
+      } else {
+        addProgress(`Error: ${(e as Error).message}`, 'error')
+      }
     } finally {
-      setLoading(false)
+      if (!unmountedRef.current) setLoading(false)
     }
   }
 
@@ -383,6 +481,7 @@ export function useSearchAnalysis() {
     setHiddenDatasets(new Set())
     setMode(entityType)
     setQuery(cleanQuestion)
+    clearActiveAnalysis()
 
     if (entityType === 'company') {
       await runCompanyAnalysis(cleanEntity, cleanQuestion)
